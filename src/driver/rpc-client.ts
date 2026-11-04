@@ -381,11 +381,6 @@ export class RpcClient extends EventEmitter {
     });
   }
 
-  /** Answer a parked extension_ui_request. NOT a correlated command: the
-   *  record's `id` field IS the payload (it must equal the request's id —
-   *  routing it through command() would overwrite it with a fresh
-   *  correlation id and pi would drop the reply silently). Fire-and-forget
-   *  on stdin, like the protocol defines. */
   /** Track a parked request; when the child advertises a dialog timeout,
    *  garbage-collect the park at that deadline (the child resolves its side
    *  silently — no record ever reaches the host). Signal-based un-parks are
@@ -394,6 +389,8 @@ export class RpcClient extends EventEmitter {
   private trackPark(id: string, timeoutMs?: number): void {
     this.openUiRequests.add(id);
     if (timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      const stale = this.parkTimers.get(id);
+      if (stale) clearTimeout(stale); // duplicate-id defense (uuid: unreachable)
       const timer = setTimeout(() => {
         this.parkTimers.delete(id);
         if (this.openUiRequests.delete(id) && this.openUiRequests.size === 0) {
@@ -405,6 +402,11 @@ export class RpcClient extends EventEmitter {
     }
   }
 
+  /** Answer a parked extension_ui_request. NOT a correlated command: the
+   *  record's `id` field IS the payload (it must equal the request's id —
+   *  routing it through command() would overwrite it with a fresh
+   *  correlation id and pi would drop the reply silently). Fire-and-forget
+   *  on stdin, like the protocol defines. */
   replyUi(res: UiResponse): void {
     if (this.exited || this.proc === null) {
       this.emit("ui_reply_error", new Error("rpc child is not running"));
