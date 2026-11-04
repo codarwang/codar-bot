@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| 版本 | v1.1（修订记录见文末） |
+| 版本 | v1.2（修订记录见文末） |
 | 日期 | 2026-11-04 |
 | 作者 | ZCode（代 Felix 起草），调研底稿见附录 |
-| 状态 | §15-1/2/3 已拍板（2026-11-04）；§15-4 M0 期内定 provider；§15-5 商标人工查 + WorkerOS 仓处置待 Felix；域名三件待 Felix 购入（本人操作）；M0 未开工 |
-| 品牌资产 | npm 包 `codar-bot`（空闲）· GitHub `codarwang/codar-bot` · CLI `codar` · 数据目录 `~/.codar-bot/` · 主域 codarbot.com + 防御域 codar-bot.com + 文档域 codarbot.dev（均 RDAP 核实未注册） |
+| 状态 | §15-1/2/3 已拍板（2026-11-04）；§15-4 M0 期内定 provider；§15-5 商标人工查 + WorkerOS 仓处置待 Felix；域名 codarbot.com 单枚、可选、非阻塞（Felix 自购）；M0 未开工 |
+| 品牌资产 | npm 包 `codar-bot`（空闲）· GitHub `codarwang/codar-bot` · CLI `codar` · 数据目录 `~/.codar-bot/` · 主域 codarbot.com（唯一必买项；防御域 codar-bot.com 仅项目起势后选购） |
 
 ---
 
@@ -246,11 +246,11 @@ set|show`、`codar audit tail`。
 | A5 | 审计 = append-only JSONL，非事件溯源库 | 保留因果可查价值，砍掉投影/折叠/迁移复杂度（d1 事故直接教训） |
 | A6 | WorkerOS 资产按库捐赠（见 §14） | 已被 5383 测试钉过；捐语义优先于捐代码 |
 | A7 | pi 版本 pin，升级走显式 bump + 回归闸 | WorkerOS 七关学费；pi 1.3→1.5 已有 API 漂移先例 |
-| A8 | 品牌 codar-bot；主域 codarbot.com（无连字符）+ 防御域 301 | 连字符域名给无杠版打工；npm/GitHub/RDAP 已核零冲突；域名购买先于 npm publish/开仓（防抢注机器人） |
+| A8 | 品牌 Codar Bot（两词书写）；域名只购 **codarbot.com** 一枚，且为可选步骤（DS-Bot 零域名先例，M3 前无硬需求）；防御域 codar-bot.com 起势后加购；文档不设独立域。**终审 2026-11-04，不再复议** | 域名=品牌书写的去空格映射：同构先例 7/7 融合（React Native→reactnative.dev、React Router→reactrouter.com、Node-RED→nodered.org 等，官网 title 实测）、bot 品类 4/4 融合（Dependabot/Renovatebot/ImgBot/Greenkeeper）；npm/GitHub 的杠是小写转写非品牌拼写；打字吸引子不对称（人只漏杠不加杠）；npm/GitHub/RDAP 已核零冲突。注：Auto-GPT=autogpt.net 论据实测失效（该域现为 AI 资讯站，官方为 agpt.co），不采信 |
 
 ## 11. 发布序列（顺序不可乱）
 
-1. 注册域名三件（codarbot.com / codar-bot.com / codarbot.dev）
+1. 域名（可选）：只买 codarbot.com 一枚（~$10/年，防抢注保险；DS-Bot 先例=零域名也能跑到 5.5k★，M3 前产品功能不需要域名；防御域 codar-bot.com 仅起势后加购）
 2. `npm publish` 占名 codar-bot（占位 README）+ 建仓 `codarwang/codar-bot`（即公开，Apache-2.0，双语 README——§15-1 已决）
 3. M0 spike（S1-S4 硬闸门）
 4. M1 → M2（dogfood 闸门）→ M3（新用户 30 分钟闸门）
@@ -274,7 +274,7 @@ set|show`、`codar audit tail`。
 | 多 Bot 群聊成本失控 → 用户流失 | 高 | 预算即 M2 功能（非 M3）；默认群模式=admin 应答（省钱姿态） |
 | 又犯 WorkerOS 病（治理前置/渠道化/控制面膨胀） | 高 | §2.2 非目标为红线；每里程碑评审第一项=对照非目标自查 |
 | 「科搭 Codar」中文市场混淆/商标摩擦 | 低-中 | 英文生态先发；中文只用英文名；CODAR 拉丁商标（9/42 类）人工核实后决定反向注册（§15-5） |
-| 名字被抢注（域名/npm/商标） | 中 | 发布序列 §11：域名→npm→开仓顺序锁死；本周内完成 1-2 步 |
+| 名字被抢注（域名/npm/商标） | 中 | §11-1 已修订：域名单枚可选、不锁 npm/开仓前置（DS-Bot 零域名到 5.5k★ 先例）；接受的风险：codarbot.com 延购窗口内或被第三方持有（README homepage 可改）；防御域后置=起势时 codar-bot.com 或已被占（v1.2） |
 
 ## 14. WorkerOS 资产捐赠表
 
@@ -320,3 +320,9 @@ set|show`、`codar audit tail`。
   Vite+React SPA、新仓从零+按 §14 捐）；§11 第 2/5 步措辞相应更新；§15-4
   限期 M0 期内确认；§15-5 维持待办（商标人工查、WorkerOS 仓处置）。其余
   未改动。
+- **2026-11-04 v1.2**：域名决策终审（Felix）：只购 codarbot.com 一枚，且
+  为可选步骤（DS-Bot 零域名先例，M3 前无硬需求）——防御域 codar-bot.com
+  起势后加购，文档域 codarbot.dev 取消（文档走仓库/主站）。§11-1/状态行/
+  风险表相应更新；A8 重写并移除失效论据（Auto-GPT=autogpt.net 实测为 AI
+  资讯站；有效证据=同构先例 7/7、bot 品类 4/4 融合，经 pi(devin/swe-2:max)
+  两轮调研 + npm registry/官网 title 硬验证）。
