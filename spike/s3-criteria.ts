@@ -68,9 +68,10 @@ async function criterion123(): Promise<{ usages: UsageShape[]; costScaleHint: st
   client.on("event", (e: AgentEvent) => events.push(e));
   let usages: UsageShape[] = [];
   try {
-    // SESSON MODE: S3 needs a real session file for get_session_stats
-    // (--no-session disabled). Two prompts, one session.
-    await client.start({ extensionPath: EXTENSION, thinking: "low", noSession: false });
+    // Session mode: get_session_stats reconciliation needs the session's
+    // in-memory counters (--no-session keeps nothing on disk but stats work;
+    // verified by this very run).
+    await client.start({ extensionPath: EXTENSION, thinking: "low" });
 
     // ③ set_auto_retry round-trip
     const off = await client.command({ type: "set_auto_retry", enabled: false } as Record<string, unknown>);
@@ -108,19 +109,21 @@ async function criterion123(): Promise<{ usages: UsageShape[]; costScaleHint: st
       output: usages.reduce((a, u) => a + num(u.output), 0),
       cacheRead: usages.reduce((a, u) => a + num(u.cacheRead), 0),
       cacheWrite: usages.reduce((a, u) => a + num(u.cacheWrite), 0),
+      totalTokens: usages.reduce((a, u) => a + num(u.totalTokens), 0),
     };
     const costSum = usages.reduce((a, u) => a + num(u.cost?.total), 0);
     const t = data.tokens ?? {};
     const tokenOk =
       sum.input === num(t.input) && sum.output === num(t.output) &&
-      sum.cacheRead === num(t.cacheRead) && sum.cacheWrite === num(t.cacheWrite);
+      sum.cacheRead === num(t.cacheRead) && sum.cacheWrite === num(t.cacheWrite) &&
+      (num(t.total) === 0 || sum.totalTokens === num(t.total)); // total dimension when reported
     const costOk = Math.abs(costSum - num(data.cost)) < 1e-9;
     record("①", "message_end.usage sums == get_session_stats (tokens + cost)",
       tokenOk && costOk && usages.length >= 2,
       [
         `assistant usage reports: ${usages.length} (need ≥2)`,
-        `sum  input=${sum.input} output=${sum.output} cacheRead=${sum.cacheRead} cacheWrite=${sum.cacheWrite} cost=${costSum}`,
-        `stat input=${num(t.input)} output=${num(t.output)} cacheRead=${num(t.cacheRead)} cacheWrite=${num(t.cacheWrite)} cost=${num(data.cost)}`,
+        `sum  input=${sum.input} output=${sum.output} cacheRead=${sum.cacheRead} cacheWrite=${sum.cacheWrite} totalTokens=${sum.totalTokens} cost=${costSum}`,
+        `stat input=${num(t.input)} output=${num(t.output)} cacheRead=${num(t.cacheRead)} cacheWrite=${num(t.cacheWrite)} total=${num(t.total)} cost=${num(data.cost)}`,
         `tokens match: ${tokenOk}; cost match: ${costOk}`,
       ]);
 
@@ -144,19 +147,24 @@ async function criterion123(): Promise<{ usages: UsageShape[]; costScaleHint: st
     return { usages, costScaleHint };
   } finally {
     client.kill();
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 
 async function criterion4Custom(): Promise<void> {
   // Custom provider chain: PI_CODING_AGENT_DIR + models.json + $ENV key.
-  const auth = JSON.parse(readFileSync(join(process.env.HOME!, ".pi/agent/auth.json"), "utf8")) as {
-    deepseek?: { apiKey?: string; key?: string; type?: string } | string;
-  };
-  const deepseekKey =
-    typeof auth.deepseek === "string" ? auth.deepseek : (auth.deepseek?.apiKey ?? auth.deepseek?.key);
-  if (!deepseekKey) {
+  // Round-1 review proved deepseek is OUT OF BALANCE (402) — use the funded
+  // zai endpoint as the custom target so the chain drives a REAL successful
+  // call (which is what lets us also verify catalog-price cost behavior).
+  const auth = JSON.parse(readFileSync(join(process.env.HOME!, ".pi/agent/auth.json"), "utf8")) as Record<
+    string,
+    { apiKey?: string; key?: string } | string | undefined
+  >;
+  const zaiEntry = auth["zai-coding-cn"];
+  const zaiKey = typeof zaiEntry === "string" ? zaiEntry : (zaiEntry?.apiKey ?? zaiEntry?.key);
+  if (!zaiKey) {
     record("④", "custom provider chain (PI_CODING_AGENT_DIR + models.json + $ENV)", false, [
-      "no deepseek key in ~/.pi/agent/auth.json — cannot drive a real OpenAI-compatible call",
+      "no zai-coding-cn key in ~/.pi/agent/auth.json — cannot drive a funded custom call",
     ]);
     return;
   }
@@ -169,58 +177,76 @@ async function criterion4Custom(): Promise<void> {
     providers: {
       s3custom: {
         api: "openai-completions",
-        baseUrl: "https://api.deepseek.com",
+        baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4",
         apiKey: "$S3_TEST_KEY",
         models: [{
-          id: "deepseek-chat",
-          name: "DeepSeek Chat (s3 custom chain)",
+          id: "glm-5.3",
+          name: "GLM-5.3 (s3 custom chain)",
           input: ["text"],
-          cost: { input: 0.27, output: 1.1, cacheRead: 0.07, cacheWrite: 0 },
-          contextWindow: 64000,
-          maxTokens: 8192,
+          cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 },
+          contextWindow: 128_000,
+          maxTokens: 8_192,
           type: "chat",
         }],
       },
     },
   }, null, 2));
 
-  const dir = workDir;
   const events: AgentEvent[] = [];
+  const failures: string[] = [];
   const client = new RpcClient({
-    cwd: dir,
+    cwd: workDir,
     env: {
       PI_CODING_AGENT_DIR: confDir,
-      S3_TEST_KEY: deepseekKey,
-      CODAR_GATE_AUDIT: join(dir, "audit.jsonl"),
+      S3_TEST_KEY: zaiKey,
+      CODAR_GATE_AUDIT: join(workDir, "audit.jsonl"),
     },
     idleTimeoutMs: 240_000,
     wallTimeoutMs: 8 * 60_000,
   });
   client.on("event", (e: AgentEvent) => events.push(e));
+  client.on("bot_failed", (f) => failures.push(JSON.stringify(f).slice(0, 200)));
+  client.on("stderr", (s: string) => { if (/error|fail/i.test(s)) failures.push(s.slice(0, 200)); });
   try {
-    await client.start({ extensionPath: EXTENSION, model: "s3custom/deepseek-chat" });
+    await client.start({ extensionPath: EXTENSION, model: "s3custom/glm-5.3" });
     let settled = false;
     client.on("settled", () => { settled = true; });
     const pr = await client.prompt("Reply with the single word CUSTOM.");
     if (!pr.success) throw new Error(`prompt rejected: ${pr.error}`);
     const deadline = Date.now() + 5 * 60_000;
     while (!settled && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
+
+    // STRONG assertion (round-1 fix): an errored call also emits an assistant
+    // message_end with an all-zero usage object — usage presence alone proved
+    // nothing. Require: no bot_failed, last stopReason not error, real output.
+    const last = await client.command({ type: "get_last_assistant_text" } as Record<string, unknown>);
+    const lastText =
+      last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
+        ? (last.data as { text: string }).text
+        : "";
+    const errored = events.some((e) => {
+      if (e.type !== "message_end") return false;
+      const m = (e as { message?: { role?: string; stopReason?: string } }).message;
+      return m?.role === "assistant" && m.stopReason === "error";
+    });
     const usages = messageEndUsages(events);
-    const gotText = usages.length > 0;
+    const outputTokens = usages.reduce((a, u) => a + num(u.output), 0);
     const costs = usages.map((u) => num(u.cost?.total));
     const costNonZero = costs.some((c) => c > 0);
-    record("④", "custom provider chain drives a real OpenAI-compatible call",
-      gotText,
+    const pass = failures.length === 0 && !errored && outputTokens > 0 && lastText.length > 0;
+    record("④", "custom provider chain drives a REAL successful OpenAI-compatible call", pass,
       [
-        `PI_CODING_AGENT_DIR redirect + models.json + $S3_TEST_KEY interpolation: ${gotText ? "worked end-to-end" : "FAILED"}`,
-        `usage reports: ${usages.length}; cost.totals: ${JSON.stringify(costs)}`,
+        `PI_CODING_AGENT_DIR redirect + models.json + $S3_TEST_KEY interpolation: ${pass ? "worked end-to-end" : "FAILED"}`,
+        `output tokens: ${outputTokens}; last text: ${JSON.stringify(lastText.slice(0, 60))}; errored message_end: ${errored}; bot_failed: ${failures.length}`,
+        `cost.totals from models.json catalog price: ${JSON.stringify(costs)}`,
         costNonZero
-          ? "custom-endpoint cost resolved from models.json catalog price (risk closed)"
-          : "cost=0 on custom endpoint ⇒ TOKEN-BUDGET FALLBACK risk recorded (§4: cost budgets degrade to token budgets for unpriced custom endpoints)",
+          ? "custom catalog price IS used for usage cost (calculateCost path confirmed empirically)"
+          : "cost=0 despite a successful priced custom call — token-budget fallback boundary CONFIRMED",
       ]);
   } finally {
     client.kill();
     rmSync(confDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
   }
 }
 
@@ -258,7 +284,9 @@ function criterion5Sqlite(usages: UsageShape[]): void {
     db.close();
     const sumIn = usages.reduce((a, u) => a + num(u.input), 0);
     const sumOut = usages.reduce((a, u) => a + num(u.output), 0);
-    const sumCostMicros = Math.round(usages.reduce((a, u) => a + num(u.cost?.total), 0) * 1e6);
+    // Rounding consistency (round-1 P3): ingest is sum-of-rounds, so the
+    // expectation must be too (round-of-sum can differ by ±1 on ties).
+    const sumCostMicros = usages.reduce((a, u) => a + Math.round(num(u.cost?.total) * 1e6), 0);
     const ok = row.input === sumIn && row.output === sumOut && row.cost_micros === sumCostMicros && existsSync(dbPath);
     record("⑤", "usage.sqlite §4 schema ingests and queries back", ok, [
       `rows ingested: ${usages.length}; aggregate input=${row.input} output=${row.output} cost_micros=${row.cost_micros}`,

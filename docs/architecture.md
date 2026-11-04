@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.7（M0-S2/S3 已实测落地） |
+| 版本 | v0.8（M0-S2/S3 已实测落地；v0.7 误判已修正） |
 | 日期 | 2026-11-05 |
 | 上游 | `docs/PRD.md` v1.4（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
@@ -312,11 +312,16 @@ CREATE TABLE usage (
   反指标）；host 崩溃恢复时以 `get_session_stats` 补账——补账前提：**每
   session 持久化「已入账水位」**（最近一次入账的 settled 序号/累计值，随
   state.json 存），补账 = 当前累计 − 水位，按 hour/kind 差量重建。
-- **自定义端点计价事实**（2026-11-05 M0-S3 实测）：`PI_CODING_AGENT_DIR` +
-  models.json 自定义 provider 链路端到端可用（含 `$ENV` key 插值，key 不
-  落盘），但**即使 models.json 写了目录价，usage 的 cost 仍恒 0**——pi 不
-  将自定义目录价用于计价。⇒ 架构结论：自定义端点的费用型预算降级为
-  token 型预算（UI 诚实标注），成为已知边界而非待验风险。
+- **自定义端点计价事实**（2026-11-05 M0-S3 实测，修正 v0.7 的错误推断）：
+  `PI_CODING_AGENT_DIR` + models.json 自定义 provider 链路端到端可用（含
+  `$ENV` key 插值，key 不落盘）；**models.json 的目录价会被 pi-ai
+  `calculateCost` 用于 usage 计价**（实测：自定义 glm-5.3 定义价 1.4/4.4 →
+  成功调用 cost=0.0159，与目录价精确对应）。v0.7 曾据「cost 恒 0」推断
+  「pi 不用自定义目录价」——该观测实为 provider 402 错误路径的全零 usage
+  （错误 assistant message_end 同样携带 usage 对象），推断错误，特此修正。
+  遗留边界：**errored message_end 的 usage 全零**——预算层不得把错误回合
+  计为消费（自然对账兼容：session_stats 同口径求和）。未报价的自定义模
+  型（models.json 无 cost 段）cost 才为 0 ⇒ 费用型预算降级 token 型。
 - **memory-review 执行载体**（P3，方向性约定）：review 由 host 驱动一个
   专用**短命 pi 子进程**（reviewModel 配置）执行，usage 入台账
   `bot_id = 被记的 scope id`（bot_xxx / room_xxx / team——与 state.json id
@@ -520,3 +525,9 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
   确认 USD 小数（换算不变）；message_end.usage 与 get_session_stats 交叉
   一致零漂移（对账闭环成立）；自定义 provider 链路可用但 cost 恒 0（目录
   价不参与计价）⇒ 费用型预算在自定义端点降级为 token 型（已知边界）。
+- 2026-11-05 v0.8：修正 v0.7 的错误机制推断（S3 review 取证：deepseek 402
+  错误路径产生全零 usage，曾被误读为「pi 不用自定义目录价」）。实测重验：
+  自定义链路成功调用（output>0、stopReason 正常）的 cost 与 models.json
+  目录价精确对应——pi-ai `calculateCost` 确用自定义目录价。§4 相应改写；
+  新增边界：errored message_end usage 全零（预算层不得计为消费）；未报价
+  自定义模型才是 cost=0 → token 降级。
