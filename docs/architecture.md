@@ -39,7 +39,7 @@ schema、关键时序、故障域。PRD 回答「做什么/为什么」，本文
       │ (Docker 容器) │    │ (Docker 容器) │    │ (Docker 容器) │
       │ + extension  │    │ + extension  │    │ + extension  │
       └──────────────┘    └──────────────┘    └──────────────┘
-            ~/.codar-bot/（全部状态：state.json · sessions/ · memory/ ·
+            ~/.codar-bot/（全部状态：state.json · pi-conf/（含 sessions）· memory/ ·
                           usage.sqlite · audit.jsonl · logs/）
 ```
 
@@ -94,7 +94,7 @@ schema、关键时序、故障域。PRD 回答「做什么/为什么」，本文
    成功（WorkerOS 实测：pi 把 provider 拒绝表现为 error assistant message 后
    正常 settle）。
 4. **会话恢复**：Bot 重启后以 `switch_session(sessionPath)` 接续（session 文件
-   由 pi session-manager 落盘在 `~/.codar-bot/sessions/<botId>/`）。
+   由 pi session-manager 落盘在 `~/.codar-bot/pi-conf/<botId>/sessions/<项目目录>/`，v0.9）。
 
 ### 2.3a RPC spawn 契约
 
@@ -221,8 +221,9 @@ Chief 的特权操作（PRD §5：建/改/停 Bot 与群、指派模型、看全
 | `~/.codar-bot/extensions/codar-gate/` | `/opt/codar-ext` | codar extension（只读挂载） |
 
 key 走 env，不挂载。**路径规则**：store 里一律存宿主绝对路径；driver 在
-spawn / `switch_session` 时按本表换算为容器内路径（S4 实测路径源：
-`get_state` 响应的 `sessionFile` 给出容器内路径，按表反向换算，M1 采用）。
+spawn / `switch_session` 时按本表换算为容器内路径（换算的确定性来源：
+`get_state` 响应的 `sessionFile` 字段——pi 1.5.0 类型已核实
+`rpc-types.d.ts`，spike 中暂以目录扫描实现，M1 改用该字段）。
 v0.9 撤销 v0.5 的独立 sessions 挂载行（`/state/sessions` 实测未用，session
 由 pi-conf 挂载携带）。
 
@@ -232,13 +233,13 @@ v0.9 撤销 v0.5 的独立 sessions 挂载行（`/state/sessions` 实测未用�
 ~/.codar-bot/
   state.json                  # store 原子写，0600
   keys.json                   # 0600，§3.3（独立于 state.json）
-  sessions/<botId>/…          # pi session 文件（pi 自管，host 只存路径引用）
   rooms/<roomId>/messages.jsonl   # 群消息 append-only 流（turn-engine 写）
   memory/
     bots/<botId>/{entry.md,main.md,topics/*.md}
     rooms/<roomId>/{entry.md,main.md,topics/*.md}
     team/{entry.md,main.md,topics/*.md}
-  pi-conf/<botId>/…           # host 生成的 pi provider 配置片段（自定义端点）
+  pi-conf/<botId>/…           # host 生成的 models.json（$ENV key 插值）+
+                               # pi 落盘的 sessions/<项目目录>/（S4 实测，§3.4）
   usage.sqlite
   audit.jsonl
   logs/host.log
@@ -253,8 +254,9 @@ v0.9 撤销 v0.5 的独立 sessions 挂载行（`/state/sessions` 实测未用�
     "id": "bot_xxx", "name": "Writer", "role": "…", "avatar": "…",
     "model": {"provider": "anthropic", "modelId": "…", "thinkingLevel": "high"},
     "workDir": "/abs/path",          // Bot 私有卷（容器内 ~/work，可写）
-    "sessionPath": "/Users/you/.codar-bot/sessions/bot_xxx/…",   // 宿主绝对路径
-                                                                  // （§3.4 路径规则）
+    "sessionPath": "/Users/you/.codar-bot/pi-conf/bot_xxx/sessions/--home-bot-work--/….jsonl",
+                                                                  // 宿主绝对路径（§3.4 路径规则；
+                                                                  //  session 由 pi-conf 挂载携带，v0.9）
     "sandbox": {"mode": "docker" | "host-not-isolated"},
     "budget": {"maxTokens": 5e6, "maxCostMicros": 20000000, "maxTurns": 2000, "maxWallMs": 3600000},
     "status": "idle"            // 运行态快照，重启后由 driver 重建

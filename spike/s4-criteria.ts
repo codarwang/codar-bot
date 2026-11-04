@@ -49,11 +49,11 @@ function makeSandbox(key: string): Sandbox {
   const work = join(root, "work");
   const shared = join(root, "shared");
   const conf = join(root, "pi-conf");
-  const sessions = join(root, "sessions");
-  for (const d of [work, shared, conf, sessions]) mkdirSync(d, { recursive: true });
+  for (const d of [work, shared, conf]) mkdirSync(d, { recursive: true });
   // pi agent dir redirected into the mount: models.json defines the provider
   // with $ENV key interpolation (S3-proven chain); pi writes sessions under
-  // <agentDir>/sessions — i.e. HOST-side via this mount.
+  // <agentDir>/sessions — i.e. HOST-side via this mount (§3.4 v0.9: the
+  // pi-conf mount IS the session carrier; no separate sessions bind).
   writeFileSync(join(conf, "models.json"), JSON.stringify({
     providers: {
       "zai-coding-cn": {
@@ -73,13 +73,12 @@ function makeSandbox(key: string): Sandbox {
     "-v", `${work}:/home/bot/work`,
     "-v", `${shared}:/home/bot/shared`,
     "-v", `${conf}:/state/pi-conf`,
-    "-v", `${sessions}:/state/sessions`,
     "-v", `${resolve(REPO, "extensions/codar-gate")}:/opt/codar-ext:ro`,
     "-e", `CODAR_BOT_KEY=${key}`,
     "-e", "PI_CODING_AGENT_DIR=/state/pi-conf",
     IMAGE,
   ];
-  return { root, work, shared, conf, sessions, dockerArgs };
+  return { root, work, shared, conf, sessions: join(conf, "sessions"), dockerArgs };
 }
 
 function makeClient(sb: Sandbox, extra: Record<string, string> = {}): RpcClient {
@@ -148,8 +147,15 @@ async function criterion1And2(): Promise<void> {
     // The gate must have MEDIATED the write: an approval line in the audit
     // proves the confirm crossed the container boundary (without it, a bare
     // ungated write could fake `written` — review round-1 tightening).
-    const auditText = auditExists ? readFileSync(auditPath, "utf8") : "";
-    const approvalMediated = auditText.includes('"kind":"approval"') && auditText.includes('"approved":true');
+    // Per-line JSON parse (the S2-verified pattern), not substring scan.
+    const approvalMediated = auditExists
+      ? readFileSync(auditPath, "utf8").trim().split("\n").some((line) => {
+          try {
+            const entry = JSON.parse(line) as { kind?: string; approved?: boolean };
+            return entry.kind === "approval" && entry.approved === true;
+          } catch { return false; }
+        })
+      : false;
     record("①", "containerized pi RPC: mounts live, ui-bridge approval through the boundary, gated write lands HOST-side",
       written && approvalMediated,
       [
@@ -262,8 +268,8 @@ async function main(): Promise<void> {
     "",
     `Date: ${new Date().toISOString()}`,
     `Image: ${IMAGE} (node:24-alpine + pi 1.5.0 pinned, tini PID-1, unprivileged 'node' user)`,
-    `Mounts (§3.4): work→/home/bot/work · shared→/home/bot/shared · pi-conf→/state/pi-conf (agent dir, models.json + sessions) · sessions→/state/sessions · codar-gate→/opt/codar-ext:ro`,
-    `Note: sessions land under the pi-conf mount (PI_CODING_AGENT_DIR=<agentDir>/sessions) — §3.4's separate sessions row is satisfied by the pi-conf mount carrying them; the standalone /state/sessions bind is reserved for M1 layout.`,
+    `Mounts (§3.4 v0.9): work→/home/bot/work · shared→/home/bot/shared · pi-conf→/state/pi-conf (RW agent dir: models.json + sessions carrier) · codar-gate→/opt/codar-ext:ro`,
+    `Note: sessions land under the pi-conf mount (PI_CODING_AGENT_DIR=<agentDir>/sessions/<project-dir>/) — the pi-conf mount IS the session carrier (§3.4 v0.9; no separate sessions bind).`,
     "",
     "## Verdicts",
     "",
