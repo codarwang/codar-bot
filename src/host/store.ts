@@ -1,0 +1,306 @@
+/**
+ * state.json store — the single writer for roster/rooms/works
+ * (architecture §3/§4).
+ *
+ * - Atomic persistence: write to a temp file in the same directory, fsync,
+ *   rename over the target (crash never leaves a torn state).
+ * - Cross-process lock: O_EXCL lockfile carrying pid+ts; stale after
+ *   LOCK_STALE_MS (pid not alive ⇒ breakable). Single-writer discipline is
+ *   primarily in-process (the host); the lock guards external editors and
+ *   double-started hosts.
+ * - schemaVersion + migrations: forward-only, each step a pure function.
+ */
+import {
+  existsSync,
+  mkdirSync,
+  openSync,
+  closeSync,
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
+
+export const SCHEMA_VERSION = 1;
+const LOCK_STALE_MS = 30_000;
+
+export interface BotModelRef {
+  provider: string;
+  modelId: string;
+  thinkingLevel: string;
+}
+
+export interface BotBudget {
+  maxTokens: number;
+  maxCostMicros: number;
+  maxTurns: number;
+  maxWallMs: number;
+}
+
+export interface BotRecord {
+  id: string;
+  name: string;
+  role: string;
+  chief: boolean;
+  model: BotModelRef;
+  workDir: string;
+  sessionPath: string | null;
+  sandbox: { mode: "docker" | "host-not-isolated" };
+  budget: BotBudget;
+}
+
+export interface RoomRecord {
+  id: string;
+  name: string;
+  members: string[];
+  admin: string;
+  mode: "admin-reply" | "round-robin";
+  sharedDir: string;
+  budget: BotBudget;
+  goal: string | null;
+  guards: { pingPongN: number; replyTimeoutMs: number };
+  status: "active" | "paused";
+}
+
+export interface WorkRecord {
+  id: string;
+  parent: string;
+  child: string;
+  requestId: string;
+  status: "pending" | "working" | "done" | "failed" | "rejected";
+  roomId: string;
+}
+
+export interface StateDoc {
+  schemaVersion: number;
+  bots: BotRecord[];
+  rooms: RoomRecord[];
+  works: WorkRecord[];
+  reviewModel: BotModelRef | null;
+}
+
+export function emptyState(): StateDoc {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    bots: [],
+    rooms: [],
+    works: [],
+    reviewModel: null,
+  };
+}
+
+export function defaultBudget(): BotBudget {
+  return { maxTokens: 5_000_000, maxCostMicros: 20_000_000, maxTurns: 2_000, maxWallMs: 3_600_000 };
+}
+
+// --- migrations (forward-only; SCHEMA_VERSION is the target) ----------------
+
+type Migration = (doc: Record<string, unknown>) => Record<string, unknown>;
+const MIGRATIONS: Record<number, Migration> = {
+  // 0→1: nothing yet — v1 is the birth schema. The machinery stays so the
+  // first real migration is a one-entry change, not new plumbing.
+};
+
+function migrate(doc: Record<string, unknown>): { doc: StateDoc; migrated: boolean } {
+  let current = doc;
+  let migrated = false;
+  let from = typeof current["schemaVersion"] === "number" ? (current["schemaVersion"] as number) : 0;
+  if (from > SCHEMA_VERSION) {
+    throw new Error(`state.json schemaVersion ${from} is newer than this host knows (${SCHEMA_VERSION}) — upgrade codar-bot first`);
+  }
+  while (from < SCHEMA_VERSION) {
+    const step = MIGRATIONS[from];
+    current = step ? step(current) : current;
+    from += 1;
+    migrated = true;
+  }
+  return { doc: current as unknown as StateDoc, migrated };
+}
+
+// --- lock --------------------------------------------------------------------
+
+interface LockHandle {
+  release(): void;
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function acquireLock(lockPath: string): LockHandle {
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const tryCreate = (): boolean => {
+    try {
+      const fd = openSync(lockPath, "wx");
+      closeSync(fd);
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), "utf8");
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    }
+  };
+  if (tryCreate()) {
+    return {
+      release(): void {
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          /* already gone */
+        }
+      },
+    };
+  }
+  // Existing lock: break it only when provably stale (dead pid or ancient ts).
+  let info: { pid?: number; ts?: number } = {};
+  try {
+    info = JSON.parse(readFileSync(lockPath, "utf8")) as { pid?: number; ts?: number };
+  } catch {
+    /* unreadable — treat via ts below */
+  }
+  const pidAlive = typeof info.pid === "number" && isPidAlive(info.pid);
+  const age = typeof info.ts === "number" ? Date.now() - info.ts : Infinity;
+  if (pidAlive && age < LOCK_STALE_MS) {
+    throw new Error(`state.json is locked by pid ${info.pid} (age ${Math.round(age / 1000)}s)`);
+  }
+  try {
+    unlinkSync(lockPath);
+  } catch {
+    /* racing another breaker — the wx create below arbitrates */
+  }
+  if (!tryCreate()) {
+    throw new Error("state.json lock race lost to another writer");
+  }
+  return {
+    release(): void {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* already gone */
+      }
+    },
+  };
+}
+
+// --- store -------------------------------------------------------------------
+
+export class Store {
+  private doc: StateDoc;
+  private readonly lock: LockHandle | null;
+
+  private constructor(
+    public readonly statePath: string,
+    doc: StateDoc,
+    lock: LockHandle | null
+  ) {
+    this.doc = doc;
+    this.lock = lock;
+  }
+
+  static open(statePath: string, opts: { create?: boolean } = {}): Store {
+    mkdirSync(dirname(statePath), { recursive: true });
+    let raw: Record<string, unknown> | null = null;
+    if (existsSync(statePath)) {
+      raw = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+    } else if (opts.create !== true) {
+      throw new Error(`no state at ${statePath} (call open(..., {create:true}) to initialize)`);
+    }
+    const { doc, migrated } = raw ? migrate(raw) : { doc: emptyState(), migrated: false };
+    const store = new Store(statePath, doc, null);
+    if (!raw || migrated) store.persist();
+    return store;
+  }
+
+  /** Exclusive-writer open: one process owns mutations. */
+  static openExclusive(statePath: string, opts: { create?: boolean } = {}): Store {
+    const store = Store.open(statePath, opts);
+    const lock = acquireLock(`${statePath}.lock`);
+    return new Store(statePath, store.doc, lock);
+  }
+
+  get state(): StateDoc {
+    return this.doc;
+  }
+
+  bot(id: string): BotRecord | undefined {
+    return this.doc.bots.find((b) => b.id === id);
+  }
+
+  room(id: string): RoomRecord | undefined {
+    return this.doc.rooms.find((r) => r.id === id);
+  }
+
+  chief(): BotRecord | undefined {
+    return this.doc.bots.find((b) => b.chief);
+  }
+
+  addBot(bot: Omit<BotRecord, "id"> & { id?: string }): BotRecord {
+    if (bot.chief && this.chief() !== undefined) {
+      throw new Error("a chief bot already exists (single-chief invariant)");
+    }
+    const record: BotRecord = { ...bot, id: bot.id ?? `bot_${randomUUID().slice(0, 8)}` };
+    if (this.doc.bots.some((b) => b.name === record.name)) {
+      throw new Error(`bot name "${record.name}" already in use`);
+    }
+    this.doc.bots.push(record);
+    this.persist();
+    return record;
+  }
+
+  updateBot(id: string, patch: Partial<Omit<BotRecord, "id">>): BotRecord {
+    const idx = this.doc.bots.findIndex((b) => b.id === id);
+    if (idx === -1) throw new Error(`no bot ${id}`);
+    this.doc.bots[idx] = { ...this.doc.bots[idx]!, ...patch };
+    this.persist();
+    return this.doc.bots[idx]!;
+  }
+
+  removeBot(id: string): void {
+    this.doc.bots = this.doc.bots.filter((b) => b.id !== id);
+    this.persist();
+  }
+
+  addRoom(room: Omit<RoomRecord, "id" | "guards" | "status"> & Partial<Pick<RoomRecord, "guards" | "status">>): RoomRecord {
+    const record: RoomRecord = {
+      guards: { pingPongN: 4, replyTimeoutMs: 180_000 }, // D4 factory defaults
+      status: "active",
+      ...room,
+      id: `room_${randomUUID().slice(0, 8)}`,
+    };
+    this.doc.rooms.push(record);
+    this.persist();
+    return record;
+  }
+
+  updateRoom(id: string, patch: Partial<Omit<RoomRecord, "id">>): RoomRecord {
+    const idx = this.doc.rooms.findIndex((r) => r.id === id);
+    if (idx === -1) throw new Error(`no room ${id}`);
+    this.doc.rooms[idx] = { ...this.doc.rooms[idx]!, ...patch };
+    this.persist();
+    return this.doc.rooms[idx]!;
+  }
+
+  /** Atomic persistence: tmp file → fsync → rename (§3 store contract). */
+  persist(): void {
+    const tmp = `${this.statePath}.tmp-${process.pid}-${randomUUID().slice(0, 6)}`;
+    const payload = JSON.stringify(this.doc, null, 2);
+    const fd = openSync(tmp, "w");
+    try {
+      writeFileSync(fd, payload + "\n", "utf8");
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, this.statePath);
+  }
+
+  close(): void {
+    this.lock?.release();
+  }
+}
