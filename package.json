@@ -1,6 +1,9 @@
 {
   "name": "codar-bot",
-  "version": "0.0.1",
+  "version": "0.0.2",
+  "bin": {
+    "codar": "bin/codar.js"
+  },
   "description": "A home for your bot team on the pi runtime — self-hosted, bring-your-own-model, chat-style multi-bot collaboration with budgets, approvals, and an audit trail.",
   "license": "Apache-2.0",
   "repository": {
@@ -17,6 +20,7 @@
     "orchestration"
   ],
   "files": [
+    "bin/codar.js",
     "README.md",
     "LICENSE"
   ],
