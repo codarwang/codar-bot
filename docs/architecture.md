@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.6（M0-S2 已实测落地） |
+| 版本 | v0.7（M0-S2/S3 已实测落地） |
 | 日期 | 2026-11-05 |
 | 上游 | `docs/PRD.md` v1.4（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
@@ -304,13 +304,19 @@ CREATE TABLE usage (
 - **kind 判定规则**（P2 修复）：用户/admin 消息触发的回合 = `chat`；handoff
   派活触发的回合 = `tool`；memory review 调用 = `memory-review`（M2 起）。
   M1 只有前两类。
-- **cost_micros 换算**：`round(cost_usd × 1e6)`；pi `Usage.cost` 的实际单位
-  S3 实测确认，如有出入回改本节并记修订。
+- **cost_micros 换算**：`round(cost_usd × 1e6)`；**已实测（2026-11-05
+  M0-S3）**：pi `Usage.cost` 为 USD 小数（glm-5.3 单条 ~0.0033），换算成立；
+  zai/glm 不报 `cacheWrite1h`（列保留给会报的 provider）。
 - **对账闭环**（P2 修复）：每 `agent_settled` 后 driver 缓冲的 usage 事件与
   `get_session_stats` 交叉核对，偏差 > 1% 写 audit 告警事件（闭环 PRD §12
   反指标）；host 崩溃恢复时以 `get_session_stats` 补账——补账前提：**每
   session 持久化「已入账水位」**（最近一次入账的 settled 序号/累计值，随
   state.json 存），补账 = 当前累计 − 水位，按 hour/kind 差量重建。
+- **自定义端点计价事实**（2026-11-05 M0-S3 实测）：`PI_CODING_AGENT_DIR` +
+  models.json 自定义 provider 链路端到端可用（含 `$ENV` key 插值，key 不
+  落盘），但**即使 models.json 写了目录价，usage 的 cost 仍恒 0**——pi 不
+  将自定义目录价用于计价。⇒ 架构结论：自定义端点的费用型预算降级为
+  token 型预算（UI 诚实标注），成为已知边界而非待验风险。
 - **memory-review 执行载体**（P3，方向性约定）：review 由 host 驱动一个
   专用**短命 pi 子进程**（reviewModel 配置）执行，usage 入台账
   `bot_id = 被记的 scope id`（bot_xxx / room_xxx / team——与 state.json id
@@ -510,3 +516,7 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
   未应答 extension_ui_request 时挂起（审批 park 是设计内静默）、wall 改
   「进程级看门狗 24h」（单任务墙钟归预算层 §6.1a）、错误映射（settled
   aborted / 末条 assistant stopReason=error ⇒ 显式 bot_failed）。
+- 2026-11-05 v0.7：M0-S3 实测落文（`spike/s3-report.md`）——§4 cost 单位
+  确认 USD 小数（换算不变）；message_end.usage 与 get_session_stats 交叉
+  一致零漂移（对账闭环成立）；自定义 provider 链路可用但 cost 恒 0（目录
+  价不参与计价）⇒ 费用型预算在自定义端点降级为 token 型（已知边界）。
