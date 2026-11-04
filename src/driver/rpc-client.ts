@@ -156,6 +156,10 @@ export interface RpcClientOptions {
   wallTimeoutMs?: number;
   lineMaxBytes?: number;
   streamMaxBytes?: number;
+  /** argv injected between the binary and the fixed rpc flags — the sandbox
+   *  shim: ["run","-i","--rm","-v",...] + image, with the entrypoint being
+   *  pi itself (S4). Absent ⇒ bare-process spawn (S2/S3). */
+  argvPrefix?: string[];
   /** Called for every extension_ui_request. Unanswered requests park in the
    *  child; answer with client.replyUi(id, {...}) whenever ready. */
   onUiRequest?: (req: UiRequest) => void;
@@ -228,7 +232,7 @@ export class RpcClient extends EventEmitter {
     if (start.model) args.push("--model", start.model);
     if (start.thinking) args.push("--thinking", start.thinking);
 
-    this.proc = spawn(this.opts.bin ?? "pi", args, {
+    this.proc = spawn(this.opts.bin ?? "pi", [...(this.opts.argvPrefix ?? []), ...args], {
       cwd: this.opts.cwd,
       env: { ...process.env, ...this.opts.env },
       stdio: ["pipe", "pipe", "pipe"],
