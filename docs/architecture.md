@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| 版本 | v0.3（draft，循环审计中） |
+| 版本 | v0.4（draft，循环审计中） |
 | 日期 | 2026-11-05 |
-| 上游 | `docs/PRD.md` v1.2（需求权威；冲突时以 PRD 为准并走修订） |
+| 上游 | `docs/PRD.md` v1.3（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
 | 状态 | **评审闸门：本文档批准前不进 M0-S2/S3/S4 与 M1 编码** |
 
@@ -104,7 +104,9 @@ schema、关键时序、故障域。PRD 回答「做什么/为什么」，本文
 - **argv 模板**（cwd = 容器内 workDir 挂载点）：
   `pi --mode rpc --extension <codar-ext 路径> [--session <sessionPath>] [--model provider/modelId] [--thinking <level>]`
 - **ready 判定**：spawn 后发 `get_state`，收到首个 `success:true` response
-  即 starting→idle（具体事件序 S2 实测后固化，此处为契约目标）。
+  即 starting→idle（具体事件序 S2 实测后固化，此处为契约目标）。`get_state`
+  与 `set_auto_retry`（§8 重试依赖）未在 §2.2 清单逐条点名，一并纳入
+  S2-④/S3 实测确认范围。
 
 ### 2.4 Bot 进程生命周期状态机
 
@@ -124,8 +126,9 @@ schema、关键时序、故障域。PRD 回答「做什么/为什么」，本文
 
 ## 3. host 内部模块
 
-模块间只经显式接口通信；`store` 是唯一持久化写者；`audit` 是唯一 append-only
-写者。箭头 = 编译期依赖方向（禁止环）。
+模块间只经显式接口通信；**`store` 是 state.json 的唯一写者**；append-only
+面各有唯一写者：`audit.jsonl` ← audit 模块，`rooms/<id>/messages.jsonl` ←
+turn-engine。箭头 = 编译期依赖方向（禁止环）。
 
 ```
 api ──► turn-engine ──► handoff ──► driver
@@ -188,10 +191,14 @@ Chief 的特权操作（PRD §5：建/改/停 Bot 与群、指派模型、看全
 ### 3.3 Provider key 存储与注入（P1 修复 2026-11-05）
 
 - 存储：`~/.codar-bot/keys.json`（0600，**独立于 state.json**——state 可被
-  用户随意查看/备份，key 隔离），结构 `{providers: {<name>: {apiKey}}}`。
-- 注入：driver spawn 子进程时以环境变量注入（`ANTHROPIC_API_KEY` 等 pi
-  认可的 env 名；容器模式经 `docker run -e`，不落盘容器镜像）。key 永不
-  出现在 argv（进程列表可见）、永不入 state.json、永不回显完整值。
+  用户随意查看/备份，key 隔离），结构：
+  `{providers: {<name>: {apiKey, baseUrl?, models?}}}`——`baseUrl`/`models`
+  支撑 OpenAI 兼容自定义端点（写入 pi 的 provider 配置，见下）。
+- 注入：**标准 provider**（anthropic/openai/google 等 pi 内置）以环境变量
+  注入（`ANTHROPIC_API_KEY` 等 pi 认可的 env 名，容器模式经 `docker run -e`，
+  不落盘镜像）；**自定义 provider**（自定义 baseUrl）经挂载的 pi settings/
+  models 配置文件供给（§3.4 挂载表），host 从 keys.json 生成该片段。
+  key 永不出现在 argv（进程列表可见）、永不入 state.json、永不回显完整值。
 - 录入面：§7 `GET/PUT /api/settings/providers`（GET 脱敏回显 `sk-…abcd`）。
 
 ### 3.4 容器挂载表（P1 修复 2026-11-05）
@@ -202,19 +209,25 @@ Chief 的特权操作（PRD §5：建/改/停 Bot 与群、指派模型、看全
 | `<bot.workDir>` | `/home/bot/work` | Bot 私有卷，可写 |
 | `<room.sharedDir>` | `/home/bot/shared` | Room 共享卷，可写（多 Bot 同挂） |
 | `~/.codar-bot/extensions/codar-ext/` | `/opt/codar-ext` | codar extension（只读挂载） |
+| `~/.codar-bot/pi-conf/<botId>/` | `/state/pi-conf` | host 生成的 pi provider/models 配置片段（自定义端点用，只读） |
 
-key 走 env，不挂载。S4 判据含「session 文件持久化在宿主侧」验证项。
+key 走 env，不挂载。**路径规则**：store 里一律存宿主绝对路径；driver 在
+spawn / `switch_session` 时按本表换算为容器内路径。S4 判据含「session 文件
+持久化在宿主侧」验证项。
 
 ## 4. 数据模型（schema v1）
 
 ```
 ~/.codar-bot/
   state.json                  # store 原子写，0600
+  keys.json                   # 0600，§3.3（独立于 state.json）
   sessions/<botId>/…          # pi session 文件（pi 自管，host 只存路径引用）
+  rooms/<roomId>/messages.jsonl   # 群消息 append-only 流（turn-engine 写）
   memory/
     bots/<botId>/{entry.md,main.md,topics/*.md}
     rooms/<roomId>/{entry.md,main.md,topics/*.md}
     team/{entry.md,main.md,topics/*.md}
+  pi-conf/<botId>/…           # host 生成的 pi provider 配置片段（自定义端点）
   usage.sqlite
   audit.jsonl
   logs/host.log
@@ -281,8 +294,13 @@ CREATE TABLE usage (
   S3 实测确认，如有出入回改本节并记修订。
 - **对账闭环**（P2 修复）：每 `agent_settled` 后 driver 缓冲的 usage 事件与
   `get_session_stats` 交叉核对，偏差 > 1% 写 audit 告警事件（闭环 PRD §12
-  反指标）；host 崩溃恢复时以 `get_session_stats` 补账（消除 message_end→
-  sqlite 的丢失窗口）。
+  反指标）；host 崩溃恢复时以 `get_session_stats` 补账——补账前提：**每
+  session 持久化「已入账水位」**（最近一次入账的 settled 序号/累计值，随
+  state.json 存），补账 = 当前累计 − 水位，按 hour/kind 差量重建。
+- **memory-review 执行载体**（P3，方向性约定）：review 由 host 驱动一个
+  专用**短命 pi 子进程**（reviewModel 配置）执行，usage 入台账
+  `bot_id = 被记的 scope id`（bot:xxx / room:xxx / team），kind=
+  memory-review；细节 M2-2.3 定。
 
 **rooms/<roomId>/messages.jsonl**：群消息 append-only 流（P3 修复）——SSE
 断线重连/历史回放的数据源；与 audit.jsonl 分离（治理事件 vs 对话内容）。
@@ -324,7 +342,9 @@ Shared files live in ~/shared (prefix your writes with your name).
 ```
 
 - 本 Bot 自己的历史走 pi session 上下文（session 内天然有），对话段只渲染
-  **其他成员**的消息——避免重复注入；
+  **其他成员**的消息——避免重复注入；且为**增量注入**：每回合只注入上次
+  注入之后的新消息（历史由 pi session 上下文承载，防止上下文二次膨胀）；
+- 记忆快照（三作用域）注入于系统段尾部，随 memory 快照冻结而稳定（M2 细化）；
 - 「谁在干活 + 进度」注入即 PRD §5 statusOf 语义；
 - K 与摘要策略由 memory 模块决定（快照冻结保证前缀缓存稳定）。
 
@@ -348,6 +368,10 @@ budget.record 后 check(botId) 超限
      「Writer 本月预算已耗尽，已停机」
 ```
 
+**群级超限**（P3 补）：`check(roomId)` 超限 → 群内所有 working 成员
+`driver.abort` + 该群暂停收活（群 mode 置 paused，Bot 不销毁、私聊不受
+影响）→ 群广播 + audit；用户调整限额或次月自动恢复。
+
 ### 5.4 审批（M0-S2 验证机制，M3 产品化）
 
 ```
@@ -355,9 +379,14 @@ Bot 工具调用命中 gate → 子进程发 extension_ui_request{confirm}
   → driver 归一化 → approval.onGateRequest → 规则求值
      ├─ always → 自动 confirmed:true（audit 记录）
      ├─ never  → 自动 confirmed:false（工具被拒）
-     └─ ask    → SSE(approval) → UI 审批卡 → api.resolve
+     └─ ask    → SSE(approval) → 审批面 → api.resolve
   → driver 回写 extension_ui_response{id, confirmed} → pi 续跑
 ```
+
+**M1/M2 默认档**（P2 修复，防 M1 单 Bot 对话挂死）：读类工具 `always`、
+写类 `ask`——`ask` 的确认兜底**适用于全部 gate 请求**（不限于管理工具）：
+Web UI 以 SSE 审批事件 + 简版卡呈现，`codar chat` 终端以交互确认；M3 才
+做完整审批产品化（规则档/键盘流）。
 
 ### 5.5 host 崩溃恢复（PRD 3.3-3）
 
@@ -395,9 +424,11 @@ codar start → store.load（schema 迁移）→ 逐 Bot spawn + switch_session
 
 ```
 GET  /api/overview                 GET  /api/bots[/:id]
-POST /api/bots                     PATCH /api/bots/:id      DELETE /api/bots/:id(=stop)
-GET  /api/rooms[/:id]/messages?since=   POST /api/rooms/:id/messages
-GET  /api/usage?bot=&room=&since=  GET  /api/budget/:scope
+POST /api/bots                     PATCH /api/bots/:id
+POST /api/bots/:id/stop            DELETE /api/bots/:id      # 停机与删除分离（P2 修复）
+POST /api/rooms                    GET  /api/rooms[/:id]/messages?since=
+POST /api/rooms/:id/messages
+GET  /api/usage?bot=&room=&since=  GET  /api/budget/:scope   PUT /api/budget/:scope
 POST /api/approvals/:id/resolve    GET  /api/audit?filter…
 GET  /api/settings/providers       PUT  /api/settings/providers   # GET 脱敏回显
 GET  /api/events                   # SSE：message|progress|approval|budget|system
@@ -442,3 +473,12 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
   goal 缓建标注 + messages.jsonl 消息流、依赖图补 turn-engine→driver 直边、
   OpenAI 兼容端点 cost 目录价风险入 S3 判据；§7 补 settings/bot 改停/
   消息回放路由。
+- 2026-11-05 v0.4：循环审计第 2 轮（15/15 处置验证通过、无新 P1）4 P2 +
+  7 P3 处置——P2：自定义 provider 配置链路（§3.3 schema 扩 baseUrl/models +
+  §3.4 pi-conf 挂载行）；messages.jsonl 写者归属与单写者表述修正（§3/§4
+  目录树）；§7 补 POST /api/rooms + PUT /api/budget/:scope + stop/delete
+  分离；M1/M2 gate 默认档与全 gate 确认兜底（§5.4）。P3：文档头 PRD 版本
+  跟 v1.3；宿主/容器路径换算规则（§3.4）；补账水位持久化约束 + memory-
+  review 载体方向（§4）；§5.1a 增量注入 + 记忆注入位置；群级预算超限时序
+  （§5.3）；get_state/set_auto_retry 纳入实测点名（§2.3a）；PRD §9 命名
+  对齐（v1.4）。

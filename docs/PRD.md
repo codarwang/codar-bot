@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v1.3（修订记录见文末） |
+| 版本 | v1.4（修订记录见文末） |
 | 日期 | 2026-11-04 |
 | 作者 | ZCode（代 Felix 起草），调研底稿见附录 |
 | 状态 | §15-1/2/3 已拍板（2026-11-04）；§15-4 M0 期内定 provider；§15-5 商标人工查 + WorkerOS 仓处置待 Felix；域名 codarbot.com 单枚、可选、非阻塞（Felix 自购）；M0 未开工 |
@@ -228,12 +228,16 @@ set|show`、`codar audit tail`。
 ```
 ~/.codar-bot/
   state.json      bots{id,name,role,model,effort,workDir,budget,…}
-                  rooms{id,members,admin,mode,goal,workDir,log}
+                  rooms{id,members,admin,mode,goal,sharedDir,budget}
                   works{parent,child,requestId,status}     # handoff 工作树
-  memory/         bots/<id>/ · groups/<id>/ · team/        # 三作用域 Markdown
+  memory/         bots/<id>/ · rooms/<id>/ · team/         # 三作用域 Markdown
+  rooms/<id>/messages.jsonl   群消息 append-only 流（SSE 回放源）
   usage.sqlite    (hour × bot × model × kind) tokens/cost  # 台账
   audit.jsonl     append-only：tool-call · approval · budget-stop · lifecycle
 ```
+
+（命名对齐架构 v0.4：groups→rooms、log→messages.jsonl、room workDir→
+sharedDir，2026-11-05）
 
 ## 10. 架构决策记录（ADR 摘要）
 
@@ -330,3 +334,6 @@ set|show`、`codar audit tail`。
   模型（全局可配置，定位可比干活模型更强，默认策略 M2 定）」——Felix 拍板
   （gstack-spec D3 决议）：review 场景质量优先于成本。触发：循环审计第 1 轮
   P2 发现架构 v0.2 与 PRD v1.2 该处方向相反且未走修订，按规则补走。
+- **2026-11-05 v1.4**：§9 数据目录命名与架构 v0.4 对齐（groups/<id>→
+  rooms/<id>、room log→rooms/<id>/messages.jsonl、Room workDir→sharedDir）；
+  纯文档同步，无需求变更。
