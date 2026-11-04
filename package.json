@@ -2,10 +2,11 @@
   "name": "codar-bot",
   "version": "0.0.2",
   "bin": {
-    "codar": "bin/codar.js"
+    "codar": "bin/codar.cjs"
   },
   "description": "A home for your bot team on the pi runtime — self-hosted, bring-your-own-model, chat-style multi-bot collaboration with budgets, approvals, and an audit trail.",
   "license": "Apache-2.0",
+  "type": "module",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/codarwang/codar-bot.git"
@@ -20,9 +21,21 @@
     "orchestration"
   ],
   "files": [
-    "bin/codar.js",
+    "bin/codar.cjs",
     "README.md",
     "LICENSE"
   ],
+  "scripts": {
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "spike:s2": "tsx spike/s2-criteria.ts"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@sinclair/typebox": "^0.34.0",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
   "private": false
 }
