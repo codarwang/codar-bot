@@ -189,6 +189,11 @@ export class RpcClient extends EventEmitter {
    *  parked on a human-scale approval/bridge wait BY DESIGN and stays silent;
    *  the idle watchdog must not kill it for that silence. */
   private readonly openUiRequests = new Set<string>();
+  /** Per-request park GC: the child can silently UN-park (dialog timeout /
+   *  signal abort resolve child-side with NO record to the host — pi
+   *  rpc-mode.js createDialogPromise cleanup). Without GC the id stays here
+   *  forever and the watchdog is deaf for the rest of the process life. */
+  private readonly parkTimers = new Map<string, NodeJS.Timeout>();
   private readonly opts: Required<
     Pick<RpcClientOptions, "idleTimeoutMs" | "wallTimeoutMs" | "lineMaxBytes" | "streamMaxBytes">
   > &
@@ -296,7 +301,7 @@ export class RpcClient extends EventEmitter {
         // Track BEFORE re-running armIdle so the watchdog observes the park
         // state change on THIS record's pass (ordering was the round-2 bug).
         if (UI_METHODS_AWAITING_REPLY.has(record.method)) {
-          this.openUiRequests.add(record.id);
+          this.trackPark(record.id, record.timeout);
           this.armIdle(); // disarms while parked (see armIdle)
         }
         try {
@@ -381,13 +386,38 @@ export class RpcClient extends EventEmitter {
    *  routing it through command() would overwrite it with a fresh
    *  correlation id and pi would drop the reply silently). Fire-and-forget
    *  on stdin, like the protocol defines. */
+  /** Track a parked request; when the child advertises a dialog timeout,
+   *  garbage-collect the park at that deadline (the child resolves its side
+   *  silently — no record ever reaches the host). Signal-based un-parks are
+   *  invisible; the wall watchdog remains their only backstop (documented
+   *  contract gap, acceptable for M0/M1: codar extensions pass no signal). */
+  private trackPark(id: string, timeoutMs?: number): void {
+    this.openUiRequests.add(id);
+    if (timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      const timer = setTimeout(() => {
+        this.parkTimers.delete(id);
+        if (this.openUiRequests.delete(id) && this.openUiRequests.size === 0) {
+          this.armIdle();
+        }
+      }, timeoutMs + 1_000); // child resolves at its deadline; +1s grace
+      timer.unref?.();
+      this.parkTimers.set(id, timer);
+    }
+  }
+
   replyUi(res: UiResponse): void {
     if (this.exited || this.proc === null) {
       this.emit("ui_reply_error", new Error("rpc child is not running"));
       return;
     }
-    this.openUiRequests.delete(res.id);
-    if (this.openUiRequests.size === 0) {
+    const parkTimer = this.parkTimers.get(res.id);
+    if (parkTimer) {
+      clearTimeout(parkTimer);
+      this.parkTimers.delete(res.id);
+    }
+    // Only a tracked (still-open) park may re-arm: replying to stale ids
+    // must not postpone the watchdog (pi drops unknown-id replies silently).
+    if (this.openUiRequests.delete(res.id) && this.openUiRequests.size === 0) {
       // Fresh idle window after the park ends (the pre-park timer was
       // cleared on disarm; without this the child would run unprotected
       // until its next record).
@@ -404,7 +434,7 @@ export class RpcClient extends EventEmitter {
   }
 
   private armIdle(): void {
-    if (this.idleDeadline) return;
+    if (this.idleDeadline || this.dying || this.exited) return;
     // ALWAYS clear first: a stale timer armed before a park began would
     // otherwise fire mid-park (the round-2 ordering bug). Re-arm only when
     // nothing is parked.
@@ -434,6 +464,8 @@ export class RpcClient extends EventEmitter {
   private clearTimers(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.wallTimer) clearTimeout(this.wallTimer);
+    for (const t of this.parkTimers.values()) clearTimeout(t);
+    this.parkTimers.clear();
     this.idleTimer = null;
     this.wallTimer = null;
   }
