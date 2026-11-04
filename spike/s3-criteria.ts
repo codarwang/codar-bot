@@ -8,8 +8,8 @@
  *     vs micros), totalFromProvider flag — recorded; §4 revised if needed
  *  ③ set_auto_retry on/off round-trips at the response level
  *  ④ custom provider chain: PI_CODING_AGENT_DIR + models.json with $ENV key
- *     interpolation drives a real OpenAI-compatible call (deepseek);
- *     cost=0 ⇒ "token-budget fallback" risk recorded
+ *     interpolation drives a REAL successful call (funded zai endpoint as a
+ *     custom provider); catalog-price cost is recomputed and compared
  *  ⑤ usage.sqlite: the §4 schema ingests the observed records and queries
  *     back (node:sqlite DatabaseSync)
  *
@@ -54,6 +54,7 @@ const num = (v: number | undefined): number => (typeof v === "number" && Number.
 async function criterion123(): Promise<{ usages: UsageShape[]; costScaleHint: string }> {
   const dir = mkdtempSync(join(tmpdir(), "codar-s3-"));
   const events: AgentEvent[] = [];
+  const failures: string[] = [];
   const client = new RpcClient({
     cwd: dir,
     env: { CODAR_GATE_AUDIT: join(dir, "audit.jsonl") },
@@ -66,6 +67,7 @@ async function criterion123(): Promise<{ usages: UsageShape[]; costScaleHint: st
     },
   });
   client.on("event", (e: AgentEvent) => events.push(e));
+  client.on("error", (e: Error) => { failures.push(`[driver-error] ${String(e).slice(0, 200)}`); });
   let usages: UsageShape[] = [];
   try {
     // Session mode: get_session_stats reconciliation needs the session's
@@ -206,6 +208,7 @@ async function criterion4Custom(): Promise<void> {
   });
   client.on("event", (e: AgentEvent) => events.push(e));
   client.on("bot_failed", (f) => failures.push(JSON.stringify(f).slice(0, 200)));
+  client.on("error", (e: Error) => { failures.push(`[driver-error] ${String(e).slice(0, 200)}`); });
   client.on("stderr", (s: string) => { if (/error|fail/i.test(s)) failures.push(s.slice(0, 200)); });
   try {
     await client.start({ extensionPath: EXTENSION, model: "s3custom/glm-5.3" });
@@ -216,29 +219,43 @@ async function criterion4Custom(): Promise<void> {
     const deadline = Date.now() + 5 * 60_000;
     while (!settled && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
 
-    // STRONG assertion (round-1 fix): an errored call also emits an assistant
-    // message_end with an all-zero usage object — usage presence alone proved
-    // nothing. Require: no bot_failed, last stopReason not error, real output.
+    // STRONG assertion (round-1 fix; round-2 refined): an errored call also
+    // emits an assistant message_end with an all-zero usage object — usage
+    // presence alone proved nothing. Retry-friendly: only the LAST assistant
+    // message_end's stopReason decides (a retried-then-succeeded run must
+    // pass; transient error attempts are visible via bot_failed/stderr).
     const last = await client.command({ type: "get_last_assistant_text" } as Record<string, unknown>);
     const lastText =
       last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
         ? (last.data as { text: string }).text
         : "";
-    const errored = events.some((e) => {
+    const assistantEnds = events.filter((e) => {
       if (e.type !== "message_end") return false;
-      const m = (e as { message?: { role?: string; stopReason?: string } }).message;
-      return m?.role === "assistant" && m.stopReason === "error";
+      const m = (e as { message?: { role?: string } }).message;
+      return m?.role === "assistant";
     });
+    const lastStop = assistantEnds.length > 0
+      ? ((assistantEnds[assistantEnds.length - 1] as { message?: { stopReason?: string } }).message?.stopReason)
+      : undefined;
+    const errored = lastStop === "error";
     const usages = messageEndUsages(events);
     const outputTokens = usages.reduce((a, u) => a + num(u.output), 0);
     const costs = usages.map((u) => num(u.cost?.total));
     const costNonZero = costs.some((c) => c > 0);
+    // Catalog arithmetic: make "matches the models.json price" recomputable
+    // from the report (input/output/cacheRead × declared per-MTok USD).
+    const lastUsage = usages[usages.length - 1];
+    const expectedCost =
+      lastUsage !== undefined
+        ? (num(lastUsage.input) * 1.4 + num(lastUsage.output) * 4.4 + num(lastUsage.cacheRead) * 0.26) / 1e6
+        : 0;
+    const actualCost = costs.length > 0 ? costs[costs.length - 1]! : 0;
     const pass = failures.length === 0 && !errored && outputTokens > 0 && lastText.length > 0;
     record("④", "custom provider chain drives a REAL successful OpenAI-compatible call", pass,
       [
         `PI_CODING_AGENT_DIR redirect + models.json + $S3_TEST_KEY interpolation: ${pass ? "worked end-to-end" : "FAILED"}`,
-        `output tokens: ${outputTokens}; last text: ${JSON.stringify(lastText.slice(0, 60))}; errored message_end: ${errored}; bot_failed: ${failures.length}`,
-        `cost.totals from models.json catalog price: ${JSON.stringify(costs)}`,
+        `output tokens: ${outputTokens}; last text: ${JSON.stringify(lastText.slice(0, 60))}; last stopReason: ${lastStop}; failures: ${failures.length}`,
+        `cost arithmetic: catalog(input×1.4 + output×4.4 + cacheRead×0.26)/1e6 = ${expectedCost.toFixed(8)} vs observed ${actualCost}`,
         costNonZero
           ? "custom catalog price IS used for usage cost (calculateCost path confirmed empirically)"
           : "cost=0 despite a successful priced custom call — token-budget fallback boundary CONFIRMED",
@@ -322,7 +339,7 @@ async function main(): Promise<void> {
     "# M0-S3 Spike Report — usage metering",
     "",
     `Date: ${new Date().toISOString()}`,
-    `pi: 1.5.0 · providers: zai-coding-cn/glm-5.3 (main) + deepseek via custom chain`,
+    `pi: 1.5.0 · providers: zai-coding-cn/glm-5.3 (main) + zai as a CUSTOM provider chain (s3custom)`,
     `cost unit read: ${costScaleHint}`,
     "",
     "## Verdicts",
