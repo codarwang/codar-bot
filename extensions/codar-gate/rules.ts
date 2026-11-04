@@ -77,7 +77,7 @@ interface BashPatternSpec {
 /** Destructive / boundary patterns gated by the codar preset (donated list,
  *  egress included — the trusted tier did not survive the donation cut).
  *
- *  KNOWN-BYASSABLE BY DESIGN: these keyword regexes are advisory mediation,
+ *  KNOWN-BYPASSABLE BY DESIGN: these keyword regexes are advisory mediation,
  *  not a security boundary — structured variants (`rm -r -f`, `git -C x
  *  push`), unlisted binaries (dd/mkfs/docker), and >BASH_COMMAND_MATCH_MAX
  *  tails all slip past. The real boundary is the Docker sandbox (S4,

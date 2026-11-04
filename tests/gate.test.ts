@@ -171,14 +171,18 @@ test("bridge_echo: structured round-trip memo reported by execute; cancelled blo
     assert.equal(result.isError, false);
     assert.ok((result.content[0] as { text: string } | undefined)?.text.includes("M1"));
 
-    // Cancelled arm: host cancels the dialog ⇒ call blocked, nothing echoed.
+    // Cancelled arm: host cancels the dialog ⇒ call blocked. Blocked calls
+    // leave NO memo (leak-free), so execute() reports the honest unrouted
+    // routing-bug error.
     const verdict2 = await h.toolCall(
       { toolCallId: "c7", toolName: "bridge_echo", input: { payload: 1 } },
       h.ctx({ ui: { confirm: async () => true, input: async () => undefined } })
     );
     assert.equal(verdict2?.block, true);
     const result2 = await h.tools.get("bridge_echo")!.execute("c7", {});
-    assert.equal(result2.isError, true); // unrouted: blocked calls leave no memo
+    assert.equal(result2.isError, true);
+    const body2 = JSON.parse((result2.content[0] as { text: string }).text) as { code?: string };
+    assert.equal(body2.code, "bridge_echo_unrouted");
   } finally {
     h.restore();
   }
