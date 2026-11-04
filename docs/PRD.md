@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v1.2（修订记录见文末） |
+| 版本 | v1.3（修订记录见文末） |
 | 日期 | 2026-11-04 |
 | 作者 | ZCode（代 Felix 起草），调研底稿见附录 |
 | 状态 | §15-1/2/3 已拍板（2026-11-04）；§15-4 M0 期内定 provider；§15-5 商标人工查 + WorkerOS 仓处置待 Felix；域名 codarbot.com 单枚、可选、非阻塞（Felix 自购）；M0 未开工 |
@@ -143,7 +143,7 @@ d1 迁移门 boot 死循环（VPS 崩溃 14,900+ 次）和入站腿失联收场�
 | 回合引擎 | 真状态机：slots（waiting/speaking/posted/passed/working/failed…）、应答超时、工作不阻塞群聊、空闲乒乓守卫 | DS-Bot groups.js（其精华） |
 | 派活（Handoff） | @Bot 或 Chief 调 message_bot；工作树（parent/child）+ request_id 幂等 + 防环（不许给等你结果的人发消息）+ 结果自动回流上溯 | DS-Bot handoffs.js |
 | 进度 | 干活的 Bot 一句话状态实时进群；"谁在干活/第几分钟"注入群上下文 | DS-Bot statusOf |
-| 记忆 | 三作用域：Bot 私有 / 群内共享 / 全队；固定尺寸分层（entry/main/topic）；每轮后小模型自动 review；快照冻结保证前缀缓存稳定 | DS-Bot memory.js |
+| 记忆 | 三作用域：Bot 私有 / 群内共享 / 全队；固定尺寸分层（entry/main/topic）；每轮后自动 review（专用 review 模型，全局可配置，定位可比干活模型更强——Felix 拍板 2026-11-05，默认策略 M2 定）；快照冻结保证前缀缓存稳定 | DS-Bot memory.js |
 | 预算 | 每 Bot / 每群：maxTokens + maxCostMicros + maxTurns + 墙钟；host 层计量（pi usage:cost，WorkerOS 已验证），超限停机并群内广播 | WorkerOS reserve/settle 语义简化版 |
 | 审批 | 工具级：allow-once / allow-session / 规则（按工具×风险级）；默认写类操作询问 | WorkerOS gate 语义简化版 |
 | 审计 | append-only JSONL 时间线：谁·何时·调了什么工具·花了多少·谁批准 | WorkerOS 因果时间线轻量版 |
@@ -326,3 +326,7 @@ set|show`、`codar audit tail`。
   风险表相应更新；A8 重写并移除失效论据（Auto-GPT=autogpt.net 实测为 AI
   资讯站；有效证据=同构先例 7/7、bot 品类 4/4 融合，经 pi(devin/swe-2:max)
   两轮调研 + npm registry/官网 title 硬验证）。
+- **2026-11-05 v1.3**：§5 记忆行「小模型自动 review」修订为「专用 review
+  模型（全局可配置，定位可比干活模型更强，默认策略 M2 定）」——Felix 拍板
+  （gstack-spec D3 决议）：review 场景质量优先于成本。触发：循环审计第 1 轮
+  P2 发现架构 v0.2 与 PRD v1.2 该处方向相反且未走修订，按规则补走。

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.2（draft，待 Felix 评审） |
+| 版本 | v0.3（draft，循环审计中） |
 | 日期 | 2026-11-05 |
 | 上游 | `docs/PRD.md` v1.2（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
@@ -96,6 +96,16 @@ schema、关键时序、故障域。PRD 回答「做什么/为什么」，本文
 4. **会话恢复**：Bot 重启后以 `switch_session(sessionPath)` 接续（session 文件
    由 pi session-manager 落盘在 `~/.codar-bot/sessions/<botId>/`）。
 
+### 2.3a RPC spawn 契约
+
+- **二进制来源**：`@earendil-works/pi-coding-agent`（bin `pi`），版本 pin
+  1.5.0 于 host 的 package.json；用户侧两种安装形态（本机受管安装
+  `~/.pi/agent/` 或 host 内置依赖），`codar doctor` 负责探测。
+- **argv 模板**（cwd = 容器内 workDir 挂载点）：
+  `pi --mode rpc --extension <codar-ext 路径> [--session <sessionPath>] [--model provider/modelId] [--thinking <level>]`
+- **ready 判定**：spawn 后发 `get_state`，收到首个 `success:true` response
+  即 starting→idle（具体事件序 S2 实测后固化，此处为契约目标）。
+
 ### 2.4 Bot 进程生命周期状态机
 
 ```
@@ -119,11 +129,11 @@ schema、关键时序、故障域。PRD 回答「做什么/为什么」，本文
 
 ```
 api ──► turn-engine ──► handoff ──► driver
- │           │             │          ▲
- │           ▼             │          │
- │        memory ◄──────────┤       budget（读 driver 的 usage 事件）
- │           │             │          │
- ├──────► store ◄───────────┴────► approval ──► driver（ui_response 回写）
+ │           │    │          │          ▲
+ │           ▼    └──(prompt)─┼─────────┤（turn-engine 直接 prompt 应答者）
+ │        memory ◄───────────┤       budget（读 driver 的 usage 事件）
+ │           │               │          │
+ ├──────► store ◄─────────────┴────► approval ──► driver（ui_response 回写）
  │                                     │
  └───────────────────────────────► audit
 ```
@@ -160,6 +170,41 @@ pi 的工具在子进程内执行，而派活必须被 host 感知。机制：
 注：`@Bot` 文本路由仍由 turn-engine 解析（PRD §5 两条路并存：@ 派活 +
 message_bot 工具派活）；ui 桥是工具路专用的结构化通道。
 
+### 3.2 Chief 管理通道（P1 修复 2026-11-05）
+
+Chief 的特权操作（PRD §5：建/改/停 Bot 与群、指派模型、看全局用量）走与
+§3.1 **同一机制**：codar extension 注册管理工具集，调用经 ui 桥抛 host 执行：
+
+- 工具集（v1）：`create_bot(name, role, model, effort, budget)` /
+  `update_bot(id, …)` / `stop_bot(id)` / `create_room(name, members, mode)` /
+  `set_bot_model(id, provider, modelId)` / `view_usage(scope)`。
+- 审批：写类管理操作（stop/create/update）默认过 approval `ask` 档（M3
+  产品化前由 host 日志 + SSE 卡呈现，CLI 确认）；`view_usage` 只读直通。
+- **首启 bootstrap 时序**：`codar start` 检测 state.json 不存在 → 进入引导
+  （CLI/Web 表单）：录 provider key（→ `~/.codar-bot/keys.json`，0600）→ 选
+  Chief 模型 → host 创建 Chief bot + 默认 room（admin=Chief）→ 首次 spawn。
+  首启不依赖任何 Bot 工具调用（避免鸡生蛋）。
+
+### 3.3 Provider key 存储与注入（P1 修复 2026-11-05）
+
+- 存储：`~/.codar-bot/keys.json`（0600，**独立于 state.json**——state 可被
+  用户随意查看/备份，key 隔离），结构 `{providers: {<name>: {apiKey}}}`。
+- 注入：driver spawn 子进程时以环境变量注入（`ANTHROPIC_API_KEY` 等 pi
+  认可的 env 名；容器模式经 `docker run -e`，不落盘容器镜像）。key 永不
+  出现在 argv（进程列表可见）、永不入 state.json、永不回显完整值。
+- 录入面：§7 `GET/PUT /api/settings/providers`（GET 脱敏回显 `sk-…abcd`）。
+
+### 3.4 容器挂载表（P1 修复 2026-11-05）
+
+| 宿主路径 | 容器内路径 | 说明 |
+|---|---|---|
+| `~/.codar-bot/sessions/<botId>/` | `/state/sessions` | pi session 落**宿主侧**，容器重启不丢（P1-3 修复） |
+| `<bot.workDir>` | `/home/bot/work` | Bot 私有卷，可写 |
+| `<room.sharedDir>` | `/home/bot/shared` | Room 共享卷，可写（多 Bot 同挂） |
+| `~/.codar-bot/extensions/codar-ext/` | `/opt/codar-ext` | codar extension（只读挂载） |
+
+key 走 env，不挂载。S4 判据含「session 文件持久化在宿主侧」验证项。
+
 ## 4. 数据模型（schema v1）
 
 ```
@@ -192,9 +237,12 @@ message_bot 工具派活）；ui 桥是工具路专用的结构化通道。
   "rooms": [{
     "id": "room_xxx", "name": "…", "members": ["bot_a", "bot_b"],
     "admin": "bot_chief", "mode": "admin-reply" | "round-robin",
-    "sharedDir": "/abs/path"        // Room 共享卷（成员容器内 ~/shared，可写；
+    "sharedDir": "/abs/path",       // Room 共享卷（成员容器内 ~/shared，可写；
                                     //  D2 决议 2026-11-05：双卷拓扑。并发写冲突
                                     //  M2 靠约定（文件名带 Bot 前缀），检测排 P2）
+    "budget": {…},                  // 同 bots.budget 结构（群级限额，P2 修复）
+    "goal": null,                   // M2-2.4 stretch，缓建（P3 标注）
+    "guards": {"pingPongN": 4, "replyTimeoutMs": 180000}   // D4 出厂默认，可改
   }],
   "works": [{
     "id": "work_xxx", "parent": "bot_a", "child": "bot_b",
@@ -220,10 +268,24 @@ CREATE TABLE usage (
   output INTEGER NOT NULL DEFAULT 0,
   cache_read INTEGER NOT NULL DEFAULT 0,
   cache_write INTEGER NOT NULL DEFAULT 0,
+  cache_write_1h INTEGER NOT NULL DEFAULT 0,   -- pi Usage 档位拆分（P2 修复）
   cost_micros INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (hour, bot_id, model, kind)
 );
 ```
+
+- **kind 判定规则**（P2 修复）：用户/admin 消息触发的回合 = `chat`；handoff
+  派活触发的回合 = `tool`；memory review 调用 = `memory-review`（M2 起）。
+  M1 只有前两类。
+- **cost_micros 换算**：`round(cost_usd × 1e6)`；pi `Usage.cost` 的实际单位
+  S3 实测确认，如有出入回改本节并记修订。
+- **对账闭环**（P2 修复）：每 `agent_settled` 后 driver 缓冲的 usage 事件与
+  `get_session_stats` 交叉核对，偏差 > 1% 写 audit 告警事件（闭环 PRD §12
+  反指标）；host 崩溃恢复时以 `get_session_stats` 补账（消除 message_end→
+  sqlite 的丢失窗口）。
+
+**rooms/<roomId>/messages.jsonl**：群消息 append-only 流（P3 修复）——SSE
+断线重连/历史回放的数据源；与 audit.jsonl 分离（治理事件 vs 对话内容）。
 
 **audit.jsonl**（事件 union；每行 `{ts, kind, …}`）：
 `tool-call` / `approval`{decision, by} / `budget-stop`{limit, spent} /
@@ -235,11 +297,13 @@ CREATE TABLE usage (
 
 ```
 用户(admin) ── msg ──► api ──► turn-engine.ingest
-  turn-engine: slots 更新 → 选应答者（默认 admin 模式=Chief；@Bot 直达）
+  turn-engine: slots 更新 → 选应答者（默认 admin 模式=Chief）
+  → @Bot 文本派活 = 同样调 handoff.dispatch（requestId 从消息 id 派生，
+    过防环+幂等，P2 修复）→ handoff 决定即时应答或建工作树
   → driver.prompt(botId, 群上下文渲染, {streamingBehavior:"steer"})
   → message_update(text_delta) 逐条 → SSE → UI 流式
   → message_end(usage) ──► budget.record ──► usage.sqlite
-  → agent_settled → turn-engine 回合收尾 → 消息入群 log
+  → agent_settled → turn-engine 回合收尾 → 消息 append 入 messages.jsonl
 ```
 
 ### 5.1a 群聊上下文渲染格式（v0.2 草案，M2 实现期可调）
@@ -255,7 +319,6 @@ Shared files live in ~/shared (prefix your writes with your name).
 
 [对话段]（按时间序，非本 Bot 的发言以观察者视角呈现）
 [user @ admin] 用户消息原文
-[{bot.name}] 该 Bot 自己的历史发言（只保留最近 K 条 + 摘要）
 [{other_bot.name}] 其他 Bot 发言原文
 [system] 工作事件（派活受理/完成/预算停机等一句话广播）
 ```
@@ -316,6 +379,12 @@ codar start → store.load（schema 迁移）→ 逐 Bot spawn + switch_session
 - 确定性：引擎纯函数化（输入=消息流+花名册快照，输出=调度决策），单测用
   mock LLM 回放（学 DS-Bot mock-llm）。
 
+### 6.1a 预算窗口语义（P3 修复，M2-2.5 前可再调）
+
+- `maxTokens/maxCostMicros/maxTurns` 按**自然月**窗口累计（UTC 月初重置）；
+- `maxTurns` 计数 = `agent_settled` 事件次数；
+- `maxWallMs` = **单任务墙钟**（一次派活/一个回合的墙钟上限），非周期累计。
+
 ### 6.2 handoff 防环（M2 实现 + 单测）
 
 规则：**不允许给「正在等你结果」的 Bot 发消息**。实现=工作树 DFS 检查
@@ -325,10 +394,12 @@ codar start → store.load（schema 迁移）→ 逐 Bot spawn + switch_session
 ## 7. HTTP API 面（v1 不承诺稳定）
 
 ```
-GET  /api/overview                 GET  /api/bots[/:id]      POST /api/bots
-GET  /api/rooms[/:id]/messages     POST /api/rooms/:id/messages
+GET  /api/overview                 GET  /api/bots[/:id]
+POST /api/bots                     PATCH /api/bots/:id      DELETE /api/bots/:id(=stop)
+GET  /api/rooms[/:id]/messages?since=   POST /api/rooms/:id/messages
 GET  /api/usage?bot=&room=&since=  GET  /api/budget/:scope
 POST /api/approvals/:id/resolve    GET  /api/audit?filter…
+GET  /api/settings/providers       PUT  /api/settings/providers   # GET 脱敏回显
 GET  /api/events                   # SSE：message|progress|approval|budget|system
 ```
 
@@ -348,9 +419,9 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
 | 假设条款 | spike | 通过判据 |
 |---|---|---|
 | §2.2 协议事实在真实进程成立（命令/事件/ui 桥） | S1 ✅ | 已完成：类型逐字节读取 + 本机 pi 1.5.0 实测环境就绪 |
-| §5.4 审批桥：workeros-gate 在 1.5.0 扩展面可跑 | **S2** | 容器外裸进程：写文件 → confirm 请求到达 host mock → 拒绝则文件未写、同意则写入；audit 行落盘 |
-| §4 usage.sqlite + §2.2 usage 回读 | **S3** | 单 session 跑 ≥2 轮，message_end.usage 与 get_session_stats 交叉一致（误差 0），入库可查 |
-| §1 P-3 容器化驱动 | **S4** | docker run 起 pi RPC 容器 + workDir 挂载 + stdin/stdout 通透 + 无 Docker 时启动被拒（fail-closed） |
+| §5.4 审批桥 + §3.1 结构化桥（D1 核心） | **S2** | ① 容器外裸进程：workeros-gate 移植后，写文件 → confirm 请求到达 host mock → 拒绝则文件未写、同意则写入；audit 行落盘。② **自定义 ui_request 结构化往返**：extension 发自定义 method 请求（含参数），host 回结构化 value，子进程正确收到——D1 机制的前提。③ 长时 park：请求挂起 ≥60s 无响应，子进程不崩、可继续响应。④ §2.3a ready 判定事件序实测固化 |
+| §4 usage.sqlite + §2.2 usage 回读 | **S3** | 单 session 跑 ≥2 轮：message_end.usage 与 get_session_stats 交叉一致；**cacheWrite 档位与 Usage.cost 单位实测确认**（回改 §4 并记修订如有出入）；入库可查；若 OpenAI 兼容自定义端点 cost 恒 0 → 记录「token 预算兜底」风险（P3） |
+| §1 P-3 容器化驱动 + §3.4 挂载表 | **S4** | docker run 起 pi RPC 容器 + §3.4 全部挂载 + stdin/stdout 通透 + **session 文件落在宿主侧**（容器销毁重建后 switch_session 接续）+ 无 Docker 时启动被拒（fail-closed） |
 
 任一失败 ⇒ 暂停产品开发（PRD §6 硬闸门），回改本文档对应章节。
 
@@ -359,6 +430,15 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
 - 2026-11-05 v0.1：初稿（S1 结论落文 §2；M0-S2/S3/S4 判据固化 §9）。
 - 2026-11-05 v0.2：gstack-spec 审讯四决议落文——D1 `message_bot` 走
   extension_ui 桥（新增 §3.1）；D2 workDir 双卷拓扑（Bot 私有 + Room 共享，
-  §4）；D3 全局 review 专用模型槽位（§4，定位为更强的模型，默认策略 M2
-  细聊）；D4 乒乓守卫 N=4 / 应答超时 180s（§6.1）。补缺口：budget
-  `maxWallMs`（PRD §5 墙钟维度此前漏）；补群聊上下文渲染格式草案（§5.1a）。
+  §4）；D3 全局 review 专用模型槽位（§4）；D4 乒乓守卫 N=4 / 应答超时
+  180s（§6.1）。补缺口：budget `maxWallMs`；补群聊上下文渲染格式草案（§5.1a）。
+- 2026-11-05 v0.3：循环审计第 1 轮（GLM-5.3:max 独立审计）3 P1 + 8 P2 +
+  4 P3 全量处置——P1：新增 §3.2 Chief 管理通道与首启 bootstrap、§3.3
+  provider key 存储与注入、§3.4 容器挂载表（session 宿主持久化）；P2：
+  §2.3a RPC spawn 契约、§5.1a 渲染矛盾修正、usage kind 判定规则 +
+  cache_write_1h 列 + cost 换算与对账闭环、@派活接入 handoff 工作树、
+  rooms 级预算字段、S2 判据加结构化桥往返与长时 park、reviewModel 走
+  PRD v1.3 修订（见 PRD 修订记录）；P3：预算窗口语义（§6.1a）、rooms
+  goal 缓建标注 + messages.jsonl 消息流、依赖图补 turn-engine→driver 直边、
+  OpenAI 兼容端点 cost 目录价风险入 S3 判据；§7 补 settings/bot 改停/
+  消息回放路由。
