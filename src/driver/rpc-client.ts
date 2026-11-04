@@ -144,8 +144,6 @@ export class LineFramer {
 export interface RpcClientOptions {
   /** pi binary (default "pi"). */
   bin?: string;
-  /** Extra argv after the fixed rpc flags. */
-  extraArgs?: string[];
   /** Working directory for the child (the bot's workspace). */
   cwd?: string;
   /** Extra env (provider keys etc.). */

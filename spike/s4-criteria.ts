@@ -107,9 +107,10 @@ function makeClient(sb: Sandbox, extra: Record<string, string> = {}): RpcClient 
   return client;
 }
 
-async function waitSettled(client: RpcClient, minutes = 6): Promise<void> {
+async function waitSettled(client: RpcClient, minutes = 6, afterAttach: () => Promise<void>): Promise<void> {
   let settled = false;
   client.on("settled", () => { settled = true; });
+  await afterAttach(); // prompt sent AFTER the listener is attached (no race)
   const deadline = Date.now() + minutes * 60_000;
   while (!settled && Date.now() < deadline) await new Promise((r) => setTimeout(r, 250));
   if (!settled) throw new Error("agent never settled");
@@ -129,11 +130,12 @@ async function criterion1And2(): Promise<void> {
         thinking: "low",
         noSession: false,
       });
-      const pr = await c1.prompt(
-        "Two things: (1) Remember the secret word BANANA-7 for later. (2) Use the write tool to create out.txt in the current directory containing exactly: s4-hello. Do NOT use bash. Then reply DONE."
-      );
-      if (!pr.success) throw new Error(`prompt rejected: ${pr.error}`);
-      await waitSettled(c1);
+      await waitSettled(c1, 6, async () => {
+        const pr = await c1.prompt(
+          "Two things: (1) Remember the secret word BANANA-7 for later. (2) Use the write tool to create out.txt in the current directory containing exactly: s4-hello. Do NOT use bash. Then reply DONE."
+        );
+        if (!pr.success) throw new Error(`prompt rejected: ${pr.error}`);
+      });
     } finally {
       c1.kill();
     }
@@ -141,12 +143,18 @@ async function criterion1And2(): Promise<void> {
     await new Promise((r) => setTimeout(r, 2_000));
     const out = join(sb.work, "out.txt");
     const written = existsSync(out) && readFileSync(out, "utf8").trim() === "s4-hello";
-    const auditExists = existsSync(join(sb.work, ".codar-gate-audit.jsonl")) || existsSync(join(sb.root, "audit.jsonl"));
+    const auditPath = join(sb.work, ".codar-gate-audit.jsonl");
+    const auditExists = existsSync(auditPath);
+    // The gate must have MEDIATED the write: an approval line in the audit
+    // proves the confirm crossed the container boundary (without it, a bare
+    // ungated write could fake `written` — review round-1 tightening).
+    const auditText = auditExists ? readFileSync(auditPath, "utf8") : "";
+    const approvalMediated = auditText.includes('"kind":"approval"') && auditText.includes('"approved":true');
     record("①", "containerized pi RPC: mounts live, ui-bridge approval through the boundary, gated write lands HOST-side",
-      written,
+      written && approvalMediated,
       [
         `out.txt on host (content s4-hello): ${written} (${out})`,
-        `gate audit file written: ${auditExists} (host-visible)`,
+        `gate audit approval{approved:true} host-side: ${approvalMediated}`,
         `stdin/stdout JSONL transparency: proven by the approved-write round trip itself`,
       ]);
 
@@ -176,9 +184,10 @@ async function criterion1And2(): Promise<void> {
       const containerPath = `/state/pi-conf/sessions/${sessionFiles[0]}`;
       const sw = await c2.command({ type: "switch_session", sessionPath: containerPath } as Record<string, unknown>);
       if (!sw.success) throw new Error(`switch_session failed: ${sw.error}`);
-      const pr = await c2.prompt("What was the secret word I asked you to remember? Reply with just the word.");
-      if (!pr.success) throw new Error(`prompt rejected: ${pr.error}`);
-      await waitSettled(c2);
+      await waitSettled(c2, 6, async () => {
+        const pr = await c2.prompt("What was the secret word I asked you to remember? Reply with just the word.");
+        if (!pr.success) throw new Error(`prompt rejected: ${pr.error}`);
+      });
       const last = await c2.command({ type: "get_last_assistant_text" } as Record<string, unknown>);
       const text =
         last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"

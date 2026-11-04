@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.8（M0-S2/S3 已实测落地；v0.7 误判已修正） |
+| 版本 | v0.9（M0-S2/S3/S4 已实测落地） |
 | 日期 | 2026-11-05 |
 | 上游 | `docs/PRD.md` v1.4（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
@@ -215,15 +215,16 @@ Chief 的特权操作（PRD §5：建/改/停 Bot 与群、指派模型、看全
 
 | 宿主路径 | 容器内路径 | 说明 |
 |---|---|---|
-| `~/.codar-bot/sessions/<botId>/` | `/state/sessions` | pi session 落**宿主侧**，容器重启不丢（P1-3 修复） |
+| `~/.codar-bot/pi-conf/<botId>/` | `/state/pi-conf` | **可写**（v0.9 修正）：`PI_CODING_AGENT_DIR` 指向此，models.json（host 生成，`$ENV` key 插值）+ pi 落盘的 `sessions/<项目目录>/*.jsonl` 都在其中——session 由本挂载携带到宿主侧（S4 实测：容器销毁重建后 switch_session 接续成功；auth.json 为空文件，key 不落盘） |
 | `<bot.workDir>` | `/home/bot/work` | Bot 私有卷，可写 |
 | `<room.sharedDir>` | `/home/bot/shared` | Room 共享卷，可写（多 Bot 同挂） |
-| `~/.codar-bot/extensions/codar-ext/` | `/opt/codar-ext` | codar extension（只读挂载） |
-| `~/.codar-bot/pi-conf/<botId>/` | `/state/pi-conf` | host 生成的 pi provider/models 配置片段（自定义端点用，只读） |
+| `~/.codar-bot/extensions/codar-gate/` | `/opt/codar-ext` | codar extension（只读挂载） |
 
 key 走 env，不挂载。**路径规则**：store 里一律存宿主绝对路径；driver 在
-spawn / `switch_session` 时按本表换算为容器内路径。S4 判据含「session 文件
-持久化在宿主侧」验证项。
+spawn / `switch_session` 时按本表换算为容器内路径（S4 实测路径源：
+`get_state` 响应的 `sessionFile` 给出容器内路径，按表反向换算，M1 采用）。
+v0.9 撤销 v0.5 的独立 sessions 挂载行（`/state/sessions` 实测未用，session
+由 pi-conf 挂载携带）。
 
 ## 4. 数据模型（schema v1）
 
@@ -531,3 +532,10 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
   目录价精确对应——pi-ai `calculateCost` 确用自定义目录价。§4 相应改写；
   新增边界：errored message_end usage 全零（预算层不得计为消费）；未报价
   自定义模型才是 cost=0 → token 降级。
+- 2026-11-05 v0.9：M0-S4 实测落文（`spike/s4-report.md`）——§3.4 挂载表按
+  实测修正：pi-conf 挂载**可写**且携带 session（`PI_CODING_AGENT_DIR` 下
+  `sessions/<项目目录>/`，撤销 v0.5 独立 sessions 挂载行）；key 不落盘经
+  验证（容器内 auth.json 为空文件）；switch_session 跨容器接续成功；挂载
+  表新增「sessionFile 路径换算」实测来源。M1 待决清单：容器加固水位
+  （cap-drop/no-new-privileges/资源限额，§8）、Linux 宿主 uid≠1000 的挂载
+  写权限、镜像 base digest pin。

@@ -13,3 +13,7 @@ USER node
 WORKDIR /home/bot/work
 
 ENTRYPOINT ["/sbin/tini", "--", "pi"]
+
+# Supply-chain note (M1 backlog): base is a moving tag via the daocloud
+# mirror; pin by digest + verify npm integrity when the sandbox becomes a
+# shipped artifact (architecture v0.9 M1 list).
