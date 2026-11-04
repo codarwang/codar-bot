@@ -30,7 +30,9 @@
     "typecheck": "tsc --noEmit",
     "spike:s2": "tsx spike/s2-criteria.ts",
     "spike:s3": "tsx spike/s3-criteria.ts",
-    "spike:s4": "tsx spike/s4-criteria.ts"
+    "spike:s4": "tsx spike/s4-criteria.ts",
+    "host": "tsx src/host/cli.ts",
+    "host:fake": "CODAR_PI_BIN=node CODAR_PI_ARGV=$(pwd)/tests/fixtures/fake-pi.mjs CODAR_BOT_HOME=$(pwd)/.fake-home tsx src/host/cli.ts"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.5.0",
