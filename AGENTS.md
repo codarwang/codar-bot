@@ -1,7 +1,7 @@
 # AGENTS.md — Engineering rules for codar-bot
 
-Working on this repo? Read this first. `PRD.md` is the single source of truth
-for requirements; changes to it require a dated revision note (see its
+Working on this repo? Read this first. `docs/PRD.md` is the single source of
+truth for requirements; changes to it require a dated revision note (see its
 revision-log section).
 
 ## Hard rules (violating these = repeating the WorkerOS failure)
