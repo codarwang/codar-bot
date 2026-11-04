@@ -9,6 +9,18 @@ per-bot budgets, tool-call approvals, and an append-only audit trail.
 > **Status: early development.** Not yet usable. The CLI, HTTP API, and data
 > layout will change without notice.
 
+## Install (preflight alpha)
+
+```bash
+npm i -g codar-bot
+codar doctor   # environment preflight: node / pi / docker / data dir
+```
+
+The bot-team host is not shipped yet; `codar doctor` is the first usable
+piece — it checks the environment codar-bot will need (Node, the
+[pi](https://github.com/earendil-works/pi) CLI, Docker for per-bot
+sandboxing).
+
 ## What it will be
 
 - A single-user, self-hosted daemon (`codar`) with a thin Web UI
