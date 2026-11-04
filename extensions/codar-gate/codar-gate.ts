@@ -92,6 +92,10 @@ export default function codarGate(pi: ExtensionAPI): void {
   }
 
   const auditEnv = process.env[AUDIT_ENV];
+  // NOTE (S3/S4 prerequisite): when unset, the audit file defaults INTO the
+  // bot-writable cwd — acceptable only for bare-process spikes. The host must
+  // always set CODAR_GATE_AUDIT to a host-controlled path (outside workDir/
+  // sharedDir mounts); S4's container mount table carries it.
   const auditPath =
     auditEnv !== undefined && auditEnv !== ""
       ? auditEnv
@@ -116,16 +120,12 @@ export default function codarGate(pi: ExtensionAPI): void {
           })
         );
         if (!ctx.hasUI) {
-          bridgeEchoAnswers.set(event.toolCallId, {
-            ok: false,
-            code: "no_ui",
-            message: "no UI channel available (fail-closed)",
-          });
           return {
             block: true,
             reason: boundedReason("codar-gate: bridge_echo requires a UI channel and none is available (fail-closed)"),
           };
         }
+        const startedAt = Date.now();
         const outbound = JSON.stringify({ payload: (event.input as { payload?: unknown })?.payload ?? null });
         const answer = await ctx.ui.input(BRIDGE_ECHO_TITLE, outbound);
         let memo: BridgeEchoMemo;
@@ -147,7 +147,7 @@ export default function codarGate(pi: ExtensionAPI): void {
           ts: nowIso(),
           toolCallId: event.toolCallId,
           approved: memo.ok,
-          waitedMs: 0,
+          waitedMs: Date.now() - startedAt,
         });
         bridgeEchoAnswers.set(event.toolCallId, memo);
         if (!memo.ok) {
@@ -156,6 +156,7 @@ export default function codarGate(pi: ExtensionAPI): void {
             reason: boundedReason(`codar-gate: bridge_echo failed (${memo.code ?? "unknown"}) — nothing echoed`),
           };
         }
+        bridgeEchoAnswers.set(event.toolCallId, memo);
         return undefined;
       }
 

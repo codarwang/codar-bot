@@ -50,6 +50,9 @@ export interface UsageAuditRecord {
   readonly output: number;
   readonly cacheRead: number;
   readonly cacheWrite: number;
+  /** Subset of cacheWrite with 1h retention (Anthropic-only split, pi-ai
+   *  1.5.0); usage.sqlite has a dedicated column (architecture §4). */
+  readonly cacheWrite1h?: number;
   readonly totalTokens: number;
   readonly reasoning?: number;
   readonly cost: {
@@ -58,6 +61,9 @@ export interface UsageAuditRecord {
     readonly cacheRead: number;
     readonly cacheWrite: number;
     readonly total: number;
+    /** True when the provider's own billed total was used instead of the
+     *  catalog price (pi-ai 1.5.0) — the S3 cost-unit question in a flag. */
+    readonly totalFromProvider?: boolean;
   };
 }
 
@@ -113,6 +119,9 @@ export function projectUsage(raw: unknown): UsageAuditRecord | undefined {
     output: numOrZero(usage["output"]),
     cacheRead: numOrZero(usage["cacheRead"]),
     cacheWrite: numOrZero(usage["cacheWrite"]),
+    ...(typeof usage["cacheWrite1h"] === "number" && Number.isFinite(usage["cacheWrite1h"])
+      ? { cacheWrite1h: usage["cacheWrite1h"] }
+      : {}),
     totalTokens: numOrZero(usage["totalTokens"]),
     ...(typeof usage["reasoning"] === "number" && Number.isFinite(usage["reasoning"])
       ? { reasoning: usage["reasoning"] }
@@ -123,6 +132,7 @@ export function projectUsage(raw: unknown): UsageAuditRecord | undefined {
       cacheRead: numOrZero(cost["cacheRead"]),
       cacheWrite: numOrZero(cost["cacheWrite"]),
       total: numOrZero(cost["total"]),
+      ...(cost["totalFromProvider"] === true ? { totalFromProvider: true } : {}),
     },
   };
   const hasAnyNumber =

@@ -21,7 +21,9 @@ export const LINE_MAX_BYTES = 16 * 1024 * 1024;
 export const STREAM_MAX_BYTES = 512 * 1024 * 1024;
 export const PROMPT_MAX_BYTES = 4 * 1024 * 1024;
 export const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000;
-export const DEFAULT_WALL_TIMEOUT_MS = 30 * 60_000;
+/** PROCESS-level watchdog (see armWall): long-lived Bot sessions must
+ *  survive many prompts; per-task walls live in the host budget layer. */
+export const DEFAULT_WALL_TIMEOUT_MS = 24 * 60 * 60_000;
 const SHUTDOWN_GRACE_MS = 2_000;
 
 // --- protocol types (pi 1.5.0 rpc-types, host-side projection) --------------
@@ -92,13 +94,18 @@ export class LineFramer {
   private buffer: Buffer = Buffer.alloc(0);
   private totalBytes = 0;
 
-  /** Throws when a single line exceeds LINE_MAX_BYTES or the stream exceeds
-   *  STREAM_MAX_BYTES (bounded everything — a hostile/hung child cannot
-   *  balloon host memory). */
+  constructor(
+    private readonly lineMaxBytes: number = LINE_MAX_BYTES,
+    private readonly streamMaxBytes: number = STREAM_MAX_BYTES
+  ) {}
+
+  /** Throws when a single line exceeds lineMaxBytes (completed OR in
+   *  progress) or the stream exceeds streamMaxBytes (bounded everything — a
+   *  hostile/hung child cannot balloon host memory). */
   push(chunk: Buffer): Buffer[] {
     this.totalBytes += chunk.length;
-    if (this.totalBytes > STREAM_MAX_BYTES) {
-      throw new Error(`rpc stream exceeded STREAM_MAX_BYTES=${STREAM_MAX_BYTES}`);
+    if (this.totalBytes > this.streamMaxBytes) {
+      throw new Error(`rpc stream exceeded STREAM_MAX_BYTES=${this.streamMaxBytes}`);
     }
     this.buffer = Buffer.concat([this.buffer, chunk]);
     const lines: Buffer[] = [];
@@ -106,10 +113,15 @@ export class LineFramer {
     while ((idx = this.buffer.indexOf(0x0a)) !== -1) {
       const line = this.buffer.subarray(0, idx);
       this.buffer = this.buffer.subarray(idx + 1);
-      if (line.length > LINE_MAX_BYTES) {
-        throw new Error(`rpc line exceeded LINE_MAX_BYTES=${LINE_MAX_BYTES}`);
+      if (line.length > this.lineMaxBytes) {
+        throw new Error(`rpc line exceeded LINE_MAX_BYTES=${this.lineMaxBytes}`);
       }
       if (line.length > 0) lines.push(line);
+    }
+    // An unterminated remainder is an in-progress line: bound it too, or a
+    // never-newlining child would only die at the stream cap.
+    if (this.buffer.length > this.lineMaxBytes) {
+      throw new Error(`rpc line exceeded LINE_MAX_BYTES=${this.lineMaxBytes} (unterminated)`);
     }
     return lines;
   }
@@ -132,7 +144,11 @@ export interface RpcClientOptions {
   /** Extra env (provider keys etc.). */
   env?: Record<string, string>;
   idleTimeoutMs?: number;
+  /** Process-level watchdog (default 24h — NOT a per-task wall; per-task
+   *  wall limits belong to the host budget layer, architecture §6.1a). */
   wallTimeoutMs?: number;
+  lineMaxBytes?: number;
+  streamMaxBytes?: number;
   /** Called for every extension_ui_request. Unanswered requests park in the
    *  child; answer with client.replyUi(id, {...}) whenever ready. */
   onUiRequest?: (req: UiRequest) => void;
@@ -154,14 +170,21 @@ interface PendingCommand {
 
 export class RpcClient extends EventEmitter {
   private proc: ChildProcess | null = null;
-  private readonly framer = new LineFramer();
+  private readonly framer: LineFramer;
   private readonly pending = new Map<string, PendingCommand>();
   private idleTimer: NodeJS.Timeout | null = null;
   private wallTimer: NodeJS.Timeout | null = null;
   private idleDeadline = false;
   private exited = false;
+  private dying = false;
   private streamError: Error | null = null;
-  private readonly opts: Required<Pick<RpcClientOptions, "idleTimeoutMs" | "wallTimeoutMs">> &
+  /** Unanswered extension_ui_request ids — while non-empty the child is
+   *  parked on a human-scale approval/bridge wait BY DESIGN and stays silent;
+   *  the idle watchdog must not kill it for that silence. */
+  private readonly openUiRequests = new Set<string>();
+  private readonly opts: Required<
+    Pick<RpcClientOptions, "idleTimeoutMs" | "wallTimeoutMs" | "lineMaxBytes" | "streamMaxBytes">
+  > &
     RpcClientOptions;
 
   constructor(options: RpcClientOptions = {}) {
@@ -169,8 +192,11 @@ export class RpcClient extends EventEmitter {
     this.opts = {
       idleTimeoutMs: options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS,
       wallTimeoutMs: options.wallTimeoutMs ?? DEFAULT_WALL_TIMEOUT_MS,
+      lineMaxBytes: options.lineMaxBytes ?? LINE_MAX_BYTES,
+      streamMaxBytes: options.streamMaxBytes ?? STREAM_MAX_BYTES,
       ...options,
     };
+    this.framer = new LineFramer(this.opts.lineMaxBytes, this.opts.streamMaxBytes);
   }
 
   get pid(): number | undefined {
@@ -212,17 +238,27 @@ export class RpcClient extends EventEmitter {
 
     this.armWall();
     this.armIdle();
-    // Ready contract: first successful get_state response.
-    await this.command({ type: "get_state" } as const, 30_000);
+    // Ready contract: first successful get_state response. On failure the
+    // spawned child must not outlive the call (ready-failure leak).
+    try {
+      await this.command({ type: "get_state" } as const, 30_000);
+    } catch (error) {
+      this.fail(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
   }
+
+  /** Last assistant stopReason observed via message_end (error mapping,
+   *  architecture §2.3-3: provider failures must surface, never settle
+   *  silently). */
+  private lastAssistantStopReason: { stopReason?: string; errorMessage?: string } | null = null;
 
   private onStdout(chunk: Buffer): void {
     let lines: Buffer[];
     try {
       lines = this.framer.push(chunk);
     } catch (error) {
-      this.streamError = error instanceof Error ? error : new Error(String(error));
-      this.kill();
+      this.fail(error instanceof Error ? error : new Error(String(error)));
       return;
     }
     for (const line of lines) {
@@ -247,20 +283,50 @@ export class RpcClient extends EventEmitter {
         continue;
       }
       if (isUiRequest(record)) {
-        this.emit("ui_request", record);
-        this.opts.onUiRequest?.(record);
+        this.openUiRequests.add(record.id);
+        try {
+          this.emit("ui_request", record);
+          this.opts.onUiRequest?.(record);
+        } catch (error) {
+          this.emit("ui_handler_error", error);
+        }
         continue;
       }
-      this.emit("event", record as AgentEvent);
-      if ((record as { type?: string }).type === "agent_settled") {
-        this.emit("settled", record);
+      const event = record as AgentEvent;
+      if (event.type === "message_end") {
+        const message = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } })
+          .message;
+        if (message?.role === "assistant") {
+          this.lastAssistantStopReason = {
+            stopReason: message.stopReason,
+            errorMessage: message.errorMessage,
+          };
+        }
+      }
+      this.emit("event", event);
+      if (event.type === "agent_settled") {
+        this.emit("settled", event);
+        // Error mapping (§2.3-3): a settled run whose last assistant message
+        // errored (e.g. provider 402 budget_exhausted), or an aborted run,
+        // is a Bot failure — never a silent success.
+        const aborted = (event as { aborted?: boolean }).aborted === true;
+        const errored = this.lastAssistantStopReason?.stopReason === "error";
+        if (aborted || errored) {
+          this.emit("bot_failed", {
+            type: "bot_failed",
+            aborted,
+            stopReason: this.lastAssistantStopReason?.stopReason,
+            errorMessage: this.lastAssistantStopReason?.errorMessage,
+          });
+        }
+        this.lastAssistantStopReason = null;
       }
     }
   }
 
   /** Send a command; resolves with the correlated response. */
   command(body: Record<string, unknown>, timeoutMs = 60_000): Promise<RpcResponse> {
-    if (this.exited || this.proc === null) {
+    if (this.exited || this.dying || this.proc === null) {
       return Promise.reject(new Error("rpc child is not running"));
     }
     const id = randomUUID();
@@ -305,6 +371,7 @@ export class RpcClient extends EventEmitter {
       this.emit("ui_reply_error", new Error("rpc child is not running"));
       return;
     }
+    this.openUiRequests.delete(res.id);
     const bytes = Buffer.from(JSON.stringify({ ...res, type: "extension_ui_response" }) + "\n", "utf8");
     this.proc.stdin!.write(bytes, (err) => {
       if (err) this.emit("ui_reply_error", err);
@@ -318,6 +385,11 @@ export class RpcClient extends EventEmitter {
   private armIdle(): void {
     if (this.idleDeadline) return;
     if (this.idleTimer) clearTimeout(this.idleTimer);
+    // While an extension_ui_request is unanswered the child is parked on a
+    // human-scale wait BY DESIGN (approval cards, minute-scale — proven by
+    // M0-S2 criterion ③). Its silence must not arm the idle watchdog; the
+    // process-level wall watchdog is the backstop for a truly stuck park.
+    if (this.openUiRequests.size > 0) return;
     this.idleTimer = setTimeout(() => {
       this.idleDeadline = true;
       this.fail(new Error(`rpc idle timeout after ${this.opts.idleTimeoutMs}ms without a record`));
@@ -325,8 +397,11 @@ export class RpcClient extends EventEmitter {
   }
 
   private armWall(): void {
+    // PROCESS-level watchdog (not per-task): a long-lived Bot session must
+    // survive arbitrarily many prompts; per-task wall limits belong to the
+    // host budget layer (maxWallMs, architecture §6.1a), not here.
     this.wallTimer = setTimeout(() => {
-      this.fail(new Error(`rpc wall-clock timeout after ${this.opts.wallTimeoutMs}ms`));
+      this.fail(new Error(`rpc process watchdog fired after ${this.opts.wallTimeoutMs}ms`));
     }, this.opts.wallTimeoutMs);
   }
 
@@ -339,8 +414,11 @@ export class RpcClient extends EventEmitter {
 
   private fail(err: Error): void {
     this.streamError = this.streamError ?? err;
-    this.emit("error", err);
+    // Kill FIRST: emit("error") on an EventEmitter with no listener throws
+    // synchronously, and the child must not leak past that throw.
     this.kill();
+    this.failAllPending(err);
+    this.emit("error", err);
   }
 
   private failAllPending(err: Error): void {
@@ -353,6 +431,7 @@ export class RpcClient extends EventEmitter {
 
   /** SIGTERM → grace → SIGKILL (the supervisor pattern). */
   kill(): void {
+    this.dying = true;
     this.clearTimers();
     const proc = this.proc;
     if (proc === null || this.exited) return;
