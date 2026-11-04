@@ -1,0 +1,160 @@
+#!/usr/bin/env node
+/**
+ * fake-pi — a deterministic stub of the pi rpc protocol for offline tests.
+ *
+ * Speaks the same JSONL protocol as `pi --mode rpc` (byte-exact LF framing)
+ * with scripted, prompt-driven behavior:
+ *   "Reply with the single word ALPHA."  → streams "ALPHA", settles, usage 1
+ *   "...word BRAVO."                     → same with usage 2
+ *   prompt containing "FAIL"             → assistant message_end
+ *                                          stopReason:"error", settles
+ *                                          (exercises the bot_failed path)
+ *   prompt containing "PARK"             → emits extension_ui_request
+ *                                          (confirm), parks until the host
+ *                                          replies; confirmed=true ⇒ "PARKED"
+ *                                          else blocked-settles
+ * Commands: get_state / prompt / abort / get_last_assistant_text /
+ *           switch_session / set_auto_retry / get_session_stats
+ */
+import { readFileSync } from "node:fs";
+
+const out = (record) => process.stdout.write(JSON.stringify(record) + "\n");
+let seq = 0;
+const usage = (input, output) => ({
+  input, output, cacheRead: 0, cacheWrite: 0, totalTokens: input + output,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: (input + output) / 1e6 },
+});
+let lastText = null;
+let sessionFile = process.env.FAKE_PI_SESSION_FILE ?? null;
+let autoRetry = true;
+let pendingPark = null;
+
+function respond(id, command, data) {
+  out({ id, type: "response", command, success: true, data });
+}
+function fail(id, command, error) {
+  out({ id, type: "response", command, success: false, error });
+}
+
+async function runPrompt(id, message) {
+  respond(id, "prompt", { disposition: "started" });
+  out({ type: "agent_start" });
+  out({ type: "turn_start" });
+  // system message pair (mirrors the real first-turn shape)
+  out({ type: "message_start", message: { role: "system", content: "" } });
+  out({ type: "message_end", message: { role: "system", content: "" } });
+
+  if (message.includes("PARK")) {
+    const parkId = `park-${++seq}`;
+    pendingPark = parkId;
+    out({ type: "tool_execution_start", toolCallId: `call-${seq}`, toolName: "write", args: { path: "x" } });
+    out({ type: "extension_ui_request", id: parkId, method: "confirm", title: "codar-gate: approval required", message: "write" });
+    return; // parked; resumed by extension_ui_response below
+  }
+
+  if (message.includes("FAIL")) {
+    out({ type: "message_start", message: { role: "assistant" } });
+    out({
+      type: "message_end",
+      message: { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "error", errorMessage: "500: injected failure", usage: usage(0, 0) },
+    });
+    out({ type: "turn_end" });
+    out({ type: "agent_end" });
+    out({ type: "agent_settled", aborted: false });
+    return;
+  }
+
+  const word = message.includes("ALPHA") ? "ALPHA" : message.includes("BRAVO") ? "BRAVO" : message.includes("PARKED") ? "PARKED" : "OK";
+  const u = word === "ALPHA" ? usage(10, 1) : word === "BRAVO" ? usage(20, 2) : usage(5, 1);
+  lastText = word;
+  out({ type: "message_start", message: { role: "assistant" } });
+  for (const chunk of [word.slice(0, 1), word.slice(1) || ""].filter(Boolean)) {
+    out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: chunk } });
+  }
+  out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: word }], stopReason: "stop", usage: u } });
+  out({ type: "turn_end" });
+  out({ type: "agent_end" });
+  out({ type: "agent_settled", aborted: false });
+}
+
+function finishParked(confirmed) {
+  const parkId = pendingPark;
+  pendingPark = null;
+  if (confirmed) {
+    const word = "PARKED";
+    lastText = word;
+    out({ type: "message_start", message: { role: "assistant" } });
+    out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: word } });
+    out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: word }], stopReason: "stop", usage: usage(7, 1) } });
+    out({ type: "tool_execution_end", toolCallId: `call-${seq}` });
+  } else {
+    out({ type: "tool_execution_end", toolCallId: `call-${seq}` });
+    out({ type: "message_start", message: { role: "assistant" } });
+    out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "stop", usage: usage(3, 0) } });
+  }
+  out({ type: "turn_end" });
+  out({ type: "agent_end" });
+  out({ type: "agent_settled", aborted: false });
+  void parkId;
+}
+
+let buffer = "";
+process.stdin.on("data", (chunk) => {
+  buffer += chunk.toString("utf8");
+  let idx;
+  while ((idx = buffer.indexOf("\n")) !== -1) {
+    const line = buffer.slice(0, idx);
+    buffer = buffer.slice(idx + 1);
+    if (line.trim().length === 0) continue;
+    let cmd;
+    try {
+      cmd = JSON.parse(line);
+    } catch {
+      out({ type: "response", command: "parse", success: false, error: "bad json" });
+      continue;
+    }
+    if (cmd.type === "extension_ui_response") {
+      if (pendingPark !== null && cmd.id === pendingPark) finishParked(cmd.confirmed === true);
+      continue;
+    }
+    const { id, type } = cmd;
+    switch (type) {
+      case "get_state":
+        respond(id, "get_state", {
+          isStreaming: pendingPark !== null, sessionFile,
+          sessionId: "fake-session", messageCount: 0,
+        });
+        break;
+      case "prompt":
+        void runPrompt(id, String(cmd.message ?? ""));
+        break;
+      case "abort":
+        respond(id, "abort");
+        out({ type: "agent_settled", aborted: true });
+        break;
+      case "get_last_assistant_text":
+        respond(id, "get_last_assistant_text", { text: lastText });
+        break;
+      case "switch_session":
+        sessionFile = String(cmd.sessionPath ?? sessionFile);
+        respond(id, "switch_session", { cancelled: false });
+        break;
+      case "set_auto_retry":
+        autoRetry = cmd.enabled === true;
+        respond(id, "set_auto_retry");
+        break;
+      case "get_session_stats":
+        respond(id, "get_session_stats", {
+          sessionId: "fake-session", sessionFile,
+          userMessages: 0, assistantMessages: 0, toolCalls: 0, toolResults: 0, totalMessages: 0,
+          tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0,
+        });
+        break;
+      default:
+        fail(id, String(type), "fake-pi: unsupported command");
+    }
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+void readFileSync;
+void autoRetry;
