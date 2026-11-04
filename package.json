@@ -1,0 +1,20 @@
+{
+  "name": "codar-bot",
+  "version": "0.0.1",
+  "description": "A home for your bot team on the pi runtime — self-hosted, bring-your-own-model, chat-style multi-bot collaboration with budgets, approvals, and an audit trail.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codarwang/codar-bot.git"
+  },
+  "homepage": "https://codarbot.com",
+  "keywords": [
+    "pi",
+    "agent",
+    "multi-agent",
+    "bot-team",
+    "self-hosted",
+    "orchestration"
+  ],
+  "private": false
+}
