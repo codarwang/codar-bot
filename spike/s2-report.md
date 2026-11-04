@@ -1,6 +1,6 @@
 # M0-S2 Spike Report — workeros-gate port to pi 1.5.0
 
-Date: 2026-11-04T18:19:09.637Z
+Date: 2026-11-04T18:31:00.791Z
 Extension: extensions/codar-gate/codar-gate.ts (donated from workeros-gate, PRD §14)
 pi: 1.5.0 (managed install) · provider: configured default (zai-coding-cn/glm-5.3, thinking=low)
 
@@ -9,10 +9,10 @@ pi: 1.5.0 (managed install) · provider: configured default (zai-coding-cn/glm-5
 ### ✅ ①b write approved ⇒ file written with exact content + audit persisted
 - out.txt content ok: true
 - audit approval{approved:true, waitedMs≥park}: true
-- approvals: [{"kind":"approval","ts":"2026-11-04T18:18:44.869Z","toolCallId":"call_a3b52725e9c64b38806d2b4c","approved":true,"waitedMs":60002}]
+- approvals: [{"kind":"approval","ts":"2026-11-04T18:30:38.615Z","toolCallId":"call_de886358fa89483b935d9c9b","approved":true,"waitedMs":60007}]
 
 ### ✅ ③ confirm parked ≥60s; get_state answers mid-park; completes after reply
-- parked probe: {"aliveDuringPark":true,"parkedMs":60002}
+- parked probe: {"aliveDuringPark":true,"parkedMs":60006}
 - settled after late approval: true
 
 ### ✅ ④ ready sequence recorded (spawn → first successful get_state response)
@@ -23,7 +23,7 @@ pi: 1.5.0 (managed install) · provider: configured default (zai-coding-cn/glm-5
 - confirm request reached host: true
 - out.txt exists: false (must be false)
 - audit approval{approved:false}: true
-- audit lines: 4; last assistant: "The write was denied by the write-gate rule, so I couldn't create `out.txt`. The tool approval layer blocked it before t"
+- audit lines: 4; last assistant: "The write was blocked by a gate (`codar-gate: denied by approver, rule preset: write-gate`), so I could not create `out."
 
 ### ✅ ② structured round-trip over ui bridge (params out as placeholder JSON, structured value back)
 - ui_request input/codar:bridge-echo seen: true

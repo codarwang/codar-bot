@@ -83,6 +83,13 @@ function isUiRequest(r: unknown): r is UiRequest {
   );
 }
 
+/** ui methods that park the child waiting for an extension_ui_response
+ *  (pi rpc-mode registers these in its pendingExtensionRequests map). The
+ *  other methods (notify/setStatus/setWidget/setTitle/set_editor_text) are
+ *  one-way fire-and-forget: they must NEVER enter openUiRequests or the idle
+ *  watchdog would be suspended forever. */
+const UI_METHODS_AWAITING_REPLY: ReadonlySet<string> = new Set(["select", "confirm", "input", "editor"]);
+
 // --- framing ------------------------------------------------------------------
 
 /**
@@ -208,6 +215,9 @@ export class RpcClient extends EventEmitter {
   async start(start: StartOptions = {}): Promise<void> {
     if (this.proc !== null) throw new Error("rpc client already started");
     const args = ["--mode", "rpc", "--no-extensions", "--no-mcp"];
+    // SPIKE DEFAULT: --no-session keeps M0 runs out of the session store.
+    // M1 flips this (sessions persist host-side per architecture §2.3-4 and
+    // resume via switch_session).
     if (start.noSession !== false) args.push("--no-session");
     if (start.extensionPath) args.push("--extension", start.extensionPath);
     if (start.model) args.push("--model", start.model);
@@ -283,7 +293,12 @@ export class RpcClient extends EventEmitter {
         continue;
       }
       if (isUiRequest(record)) {
-        this.openUiRequests.add(record.id);
+        // Track BEFORE re-running armIdle so the watchdog observes the park
+        // state change on THIS record's pass (ordering was the round-2 bug).
+        if (UI_METHODS_AWAITING_REPLY.has(record.method)) {
+          this.openUiRequests.add(record.id);
+          this.armIdle(); // disarms while parked (see armIdle)
+        }
         try {
           this.emit("ui_request", record);
           this.opts.onUiRequest?.(record);
@@ -372,6 +387,12 @@ export class RpcClient extends EventEmitter {
       return;
     }
     this.openUiRequests.delete(res.id);
+    if (this.openUiRequests.size === 0) {
+      // Fresh idle window after the park ends (the pre-park timer was
+      // cleared on disarm; without this the child would run unprotected
+      // until its next record).
+      this.armIdle();
+    }
     const bytes = Buffer.from(JSON.stringify({ ...res, type: "extension_ui_response" }) + "\n", "utf8");
     this.proc.stdin!.write(bytes, (err) => {
       if (err) this.emit("ui_reply_error", err);
@@ -384,11 +405,16 @@ export class RpcClient extends EventEmitter {
 
   private armIdle(): void {
     if (this.idleDeadline) return;
+    // ALWAYS clear first: a stale timer armed before a park began would
+    // otherwise fire mid-park (the round-2 ordering bug). Re-arm only when
+    // nothing is parked.
     if (this.idleTimer) clearTimeout(this.idleTimer);
-    // While an extension_ui_request is unanswered the child is parked on a
-    // human-scale wait BY DESIGN (approval cards, minute-scale — proven by
-    // M0-S2 criterion ③). Its silence must not arm the idle watchdog; the
-    // process-level wall watchdog is the backstop for a truly stuck park.
+    this.idleTimer = null;
+    // While an extension_ui_request (select/confirm/input/editor) is
+    // unanswered the child is parked on a human-scale wait BY DESIGN
+    // (approval cards, minute-scale — proven by M0-S2 criterion ③). Its
+    // silence must not arm the idle watchdog; the process-level wall
+    // watchdog is the backstop for a truly stuck park.
     if (this.openUiRequests.size > 0) return;
     this.idleTimer = setTimeout(() => {
       this.idleDeadline = true;

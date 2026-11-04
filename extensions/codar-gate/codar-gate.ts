@@ -149,7 +149,8 @@ export default function codarGate(pi: ExtensionAPI): void {
           approved: memo.ok,
           waitedMs: Date.now() - startedAt,
         });
-        bridgeEchoAnswers.set(event.toolCallId, memo);
+        // Memo only on the allowed path: a blocked call never reaches
+        // execute(), so setting it here would leak one entry per failure.
         if (!memo.ok) {
           return {
             block: true,
