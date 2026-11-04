@@ -167,7 +167,7 @@ async function criterion1And2(): Promise<void> {
     // --- ② destroy container A, resume in container B via switch_session ---
     // pi nests sessions under a project dir derived from cwd
     // (sessions/--home-bot-work--/<file>.jsonl) — discover recursively.
-    const sessionDir = join(sb.conf, "sessions");
+    const sessionDir = sb.sessions;
     const sessionFiles: string[] = [];
     if (existsSync(sessionDir)) {
       for (const entry of readdirSync(sessionDir, { withFileTypes: true })) {

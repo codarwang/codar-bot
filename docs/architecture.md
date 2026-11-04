@@ -541,3 +541,7 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
   表新增「sessionFile 路径换算」实测来源。M1 待决清单：容器加固水位
   （cap-drop/no-new-privileges/资源限额，§8）、Linux 宿主 uid≠1000 的挂载
   写权限、镜像 base digest pin。
+- 2026-11-05 v0.9a：S4 review 第 2/3 轮清扫——同文档 5 处 session 路径
+  残留对齐 v0.9（顶层树/§2.3-4/§4 树/sessionPath 示例）；sessionFile 措辞
+  由「实测来源」修正为「类型已核实（spike 用目录扫描实现，M1 改用该字段）」
+  ——v0.9 条目中「实测路径源」表述以本条为准。
