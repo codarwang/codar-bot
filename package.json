@@ -16,5 +16,9 @@
     "self-hosted",
     "orchestration"
   ],
+  "files": [
+    "README.md",
+    "LICENSE"
+  ],
   "private": false
 }
