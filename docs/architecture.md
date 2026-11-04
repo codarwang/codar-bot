@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| 版本 | v0.4（draft，循环审计中） |
+| 版本 | v0.5（循环审计已收敛，待 Felix 终审） |
 | 日期 | 2026-11-05 |
-| 上游 | `docs/PRD.md` v1.3（需求权威；冲突时以 PRD 为准并走修订） |
+| 上游 | `docs/PRD.md` v1.4（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
 | 状态 | **评审闸门：本文档批准前不进 M0-S2/S3/S4 与 M1 编码** |
 
@@ -180,7 +180,11 @@ Chief 的特权操作（PRD §5：建/改/停 Bot 与群、指派模型、看全
 
 - 工具集（v1）：`create_bot(name, role, model, effort, budget)` /
   `update_bot(id, …)` / `stop_bot(id)` / `create_room(name, members, mode)` /
+  `update_room(id, …)` / `pause_room(id)` / `delete_room(id)` /
   `set_bot_model(id, provider, modelId)` / `view_usage(scope)`。
+- **单聊语义**（M1 首日决策，P3 收官拍板）：单聊 = 单成员 room（成员=该
+  Bot，admin=该 Bot 与用户），复用同一回合引擎与 messages.jsonl，无独立
+  代码路径。
 - 审批：写类管理操作（stop/create/update）默认过 approval `ask` 档（M3
   产品化前由 host 日志 + SSE 卡呈现，CLI 确认）；`view_usage` 只读直通。
 - **首启 bootstrap 时序**：`codar start` 检测 state.json 不存在 → 进入引导
@@ -196,8 +200,12 @@ Chief 的特权操作（PRD §5：建/改/停 Bot 与群、指派模型、看全
   支撑 OpenAI 兼容自定义端点（写入 pi 的 provider 配置，见下）。
 - 注入：**标准 provider**（anthropic/openai/google 等 pi 内置）以环境变量
   注入（`ANTHROPIC_API_KEY` 等 pi 认可的 env 名，容器模式经 `docker run -e`，
-  不落盘镜像）；**自定义 provider**（自定义 baseUrl）经挂载的 pi settings/
-  models 配置文件供给（§3.4 挂载表），host 从 keys.json 生成该片段。
+  不落盘镜像）；**自定义 provider**（自定义 baseUrl）经 pi 公开配置面供给：
+  容器设 `PI_CODING_AGENT_DIR=/state/pi-conf`（重定向 agent 目录），host 从
+  keys.json 在该目录生成 `models.json`（providers 段含 baseUrl/models）；
+  片段内 apiKey 用 `$ENV` 插值引用、不双份落盘（key 唯一实存于 keys.json）。
+  注意该 env 重定向的是整个 agent 目录（settings/auth/extensions 解析位
+  置随之变化），容器内的叠加影响 S3 实测确认。
   key 永不出现在 argv（进程列表可见）、永不入 state.json、永不回显完整值。
 - 录入面：§7 `GET/PUT /api/settings/providers`（GET 脱敏回显 `sk-…abcd`）。
 
@@ -242,7 +250,8 @@ spawn / `switch_session` 时按本表换算为容器内路径。S4 判据含「s
     "id": "bot_xxx", "name": "Writer", "role": "…", "avatar": "…",
     "model": {"provider": "anthropic", "modelId": "…", "thinkingLevel": "high"},
     "workDir": "/abs/path",          // Bot 私有卷（容器内 ~/work，可写）
-    "sessionPath": "sessions/bot_xxx/…",
+    "sessionPath": "/Users/you/.codar-bot/sessions/bot_xxx/…",   // 宿主绝对路径
+                                                                  // （§3.4 路径规则）
     "sandbox": {"mode": "docker" | "host-not-isolated"},
     "budget": {"maxTokens": 5e6, "maxCostMicros": 20000000, "maxTurns": 2000, "maxWallMs": 3600000},
     "status": "idle"            // 运行态快照，重启后由 driver 重建
@@ -250,6 +259,9 @@ spawn / `switch_session` 时按本表换算为容器内路径。S4 判据含「s
   "rooms": [{
     "id": "room_xxx", "name": "…", "members": ["bot_a", "bot_b"],
     "admin": "bot_chief", "mode": "admin-reply" | "round-robin",
+                                    // paused 不入 mode 枚举：群暂停是运行态
+                                    // （rooms.status: active|paused，重启保持，
+                                    //  次月窗口重置或用户手动恢复），见 §5.3
     "sharedDir": "/abs/path",       // Room 共享卷（成员容器内 ~/shared，可写；
                                     //  D2 决议 2026-11-05：双卷拓扑。并发写冲突
                                     //  M2 靠约定（文件名带 Bot 前缀），检测排 P2）
@@ -299,8 +311,8 @@ CREATE TABLE usage (
   state.json 存），补账 = 当前累计 − 水位，按 hour/kind 差量重建。
 - **memory-review 执行载体**（P3，方向性约定）：review 由 host 驱动一个
   专用**短命 pi 子进程**（reviewModel 配置）执行，usage 入台账
-  `bot_id = 被记的 scope id`（bot:xxx / room:xxx / team），kind=
-  memory-review；细节 M2-2.3 定。
+  `bot_id = 被记的 scope id`（bot_xxx / room_xxx / team——与 state.json id
+  同风格，P3 对齐），kind=memory-review；细节 M2-2.3 定。
 
 **rooms/<roomId>/messages.jsonl**：群消息 append-only 流（P3 修复）——SSE
 断线重连/历史回放的数据源；与 audit.jsonl 分离（治理事件 vs 对话内容）。
@@ -426,8 +438,9 @@ codar start → store.load（schema 迁移）→ 逐 Bot spawn + switch_session
 GET  /api/overview                 GET  /api/bots[/:id]
 POST /api/bots                     PATCH /api/bots/:id
 POST /api/bots/:id/stop            DELETE /api/bots/:id      # 停机与删除分离（P2 修复）
-POST /api/rooms                    GET  /api/rooms[/:id]/messages?since=
-POST /api/rooms/:id/messages
+POST /api/rooms                    GET  /api/rooms[/:id]
+PATCH /api/rooms/:id               DELETE /api/rooms/:id
+GET  /api/rooms[/:id]/messages?since=   POST /api/rooms/:id/messages
 GET  /api/usage?bot=&room=&since=  GET  /api/budget/:scope   PUT /api/budget/:scope
 POST /api/approvals/:id/resolve    GET  /api/audit?filter…
 GET  /api/settings/providers       PUT  /api/settings/providers   # GET 脱敏回显
@@ -451,7 +464,7 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
 |---|---|---|
 | §2.2 协议事实在真实进程成立（命令/事件/ui 桥） | S1 ✅ | 已完成：类型逐字节读取 + 本机 pi 1.5.0 实测环境就绪 |
 | §5.4 审批桥 + §3.1 结构化桥（D1 核心） | **S2** | ① 容器外裸进程：workeros-gate 移植后，写文件 → confirm 请求到达 host mock → 拒绝则文件未写、同意则写入；audit 行落盘。② **自定义 ui_request 结构化往返**：extension 发自定义 method 请求（含参数），host 回结构化 value，子进程正确收到——D1 机制的前提。③ 长时 park：请求挂起 ≥60s 无响应，子进程不崩、可继续响应。④ §2.3a ready 判定事件序实测固化 |
-| §4 usage.sqlite + §2.2 usage 回读 | **S3** | 单 session 跑 ≥2 轮：message_end.usage 与 get_session_stats 交叉一致；**cacheWrite 档位与 Usage.cost 单位实测确认**（回改 §4 并记修订如有出入）；入库可查；若 OpenAI 兼容自定义端点 cost 恒 0 → 记录「token 预算兜底」风险（P3） |
+| §4 usage.sqlite + §2.2 usage 回读 | **S3** | 单 session 跑 ≥2 轮：message_end.usage 与 get_session_stats 交叉一致；**cacheWrite 档位与 Usage.cost 单位实测确认**（回改 §4 并记修订如有出入）；`set_auto_retry` 行为确认；`PI_CODING_AGENT_DIR`+models.json 自定义 provider 链路实测（含 agent 目录重定向的容器内叠加影响）；入库可查；若 OpenAI 兼容自定义端点 cost 恒 0 → 记录「token 预算兜底」风险（P3） |
 | §1 P-3 容器化驱动 + §3.4 挂载表 | **S4** | docker run 起 pi RPC 容器 + §3.4 全部挂载 + stdin/stdout 通透 + **session 文件落在宿主侧**（容器销毁重建后 switch_session 接续）+ 无 Docker 时启动被拒（fail-closed） |
 
 任一失败 ⇒ 暂停产品开发（PRD §6 硬闸门），回改本文档对应章节。
@@ -482,3 +495,11 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
   review 载体方向（§4）；§5.1a 增量注入 + 记忆注入位置；群级预算超限时序
   （§5.3）；get_state/set_auto_retry 纳入实测点名（§2.3a）；PRD §9 命名
   对齐（v1.4）。
+- 2026-11-05 v0.5：循环审计第 3 轮**宣布收敛**（11/11 验证通过、无新
+  P1/P2、M0/M1 双就绪），8 项 P3 一次关闭——文档头版本同步；§3.3 点名
+  `PI_CODING_AGENT_DIR`+`models.json` 公开面与 `$ENV` 插值（审计员独立
+  取证核证）；§3.2 工具集补群管理（update/pause/delete_room）+ 单聊=单成员
+  room 拍板；§4 sessionPath 示例改绝对路径、rooms paused 状态语义（运行
+  态非 mode 枚举）、memory-review 台账 id 对齐下划线风格；§7 补 GET/
+  PATCH/DELETE rooms；§9 S3 判据补 set_auto_retry 与自定义 provider 链路
+  实测。状态：待 Felix 终审。
