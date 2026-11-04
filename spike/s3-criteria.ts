@@ -127,6 +127,7 @@ async function criterion123(): Promise<{ usages: UsageShape[]; costScaleHint: st
         `sum  input=${sum.input} output=${sum.output} cacheRead=${sum.cacheRead} cacheWrite=${sum.cacheWrite} totalTokens=${sum.totalTokens} cost=${costSum}`,
         `stat input=${num(t.input)} output=${num(t.output)} cacheRead=${num(t.cacheRead)} cacheWrite=${num(t.cacheWrite)} total=${num(t.total)} cost=${num(data.cost)}`,
         `tokens match: ${tokenOk}; cost match: ${costOk}`,
+        ...(failures.length > 0 ? [`driver failures: ${JSON.stringify(failures)}`] : []),
       ]);
 
     // ② field reality
@@ -223,7 +224,7 @@ async function criterion4Custom(): Promise<void> {
     // emits an assistant message_end with an all-zero usage object — usage
     // presence alone proved nothing. Retry-friendly: only the LAST assistant
     // message_end's stopReason decides (a retried-then-succeeded run must
-    // pass; transient error attempts are visible via bot_failed/stderr).
+    // pass; retried attempts are counted below for auditability).
     const last = await client.command({ type: "get_last_assistant_text" } as Record<string, unknown>);
     const lastText =
       last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
@@ -238,6 +239,9 @@ async function criterion4Custom(): Promise<void> {
       ? ((assistantEnds[assistantEnds.length - 1] as { message?: { stopReason?: string } }).message?.stopReason)
       : undefined;
     const errored = lastStop === "error";
+    const retriedAttempts = assistantEnds.filter(
+      (e) => (e as { message?: { stopReason?: string } }).message?.stopReason === "error"
+    ).length;
     const usages = messageEndUsages(events);
     const outputTokens = usages.reduce((a, u) => a + num(u.output), 0);
     const costs = usages.map((u) => num(u.cost?.total));
@@ -254,8 +258,8 @@ async function criterion4Custom(): Promise<void> {
     record("④", "custom provider chain drives a REAL successful OpenAI-compatible call", pass,
       [
         `PI_CODING_AGENT_DIR redirect + models.json + $S3_TEST_KEY interpolation: ${pass ? "worked end-to-end" : "FAILED"}`,
-        `output tokens: ${outputTokens}; last text: ${JSON.stringify(lastText.slice(0, 60))}; last stopReason: ${lastStop}; failures: ${failures.length}`,
-        `cost arithmetic: catalog(input×1.4 + output×4.4 + cacheRead×0.26)/1e6 = ${expectedCost.toFixed(8)} vs observed ${actualCost}`,
+        `output tokens: ${outputTokens}; last text: ${JSON.stringify(lastText.slice(0, 60))}; last stopReason: ${lastStop}; retried error attempts: ${retriedAttempts}; failures: ${failures.length}`,
+        `cost arithmetic: catalog(${num(lastUsage?.input)}×1.4 + ${num(lastUsage?.output)}×4.4 + ${num(lastUsage?.cacheRead)}×0.26)/1e6 = ${expectedCost.toFixed(8)} vs observed ${actualCost}`,
         costNonZero
           ? "custom catalog price IS used for usage cost (calculateCost path confirmed empirically)"
           : "cost=0 despite a successful priced custom call — token-budget fallback boundary CONFIRMED",
