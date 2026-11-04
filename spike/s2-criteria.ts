@@ -220,7 +220,7 @@ async function criterion1ApproveAnd3Park(): Promise<void> {
   record(
     "④",
     "ready sequence recorded (spawn → first successful get_state response)",
-    readyRecords.length > 0 && readyRecords.includes("response:get_state:ok"),
+    readyRecords[0] === "response:get_state:ok",
     [`${JSON.stringify(readyRecords)}`, `…criteria ④ detail in spike/s2-report.md`]
   );
   (globalThis as unknown as Record<string, unknown>).__s4Records = readyRecords;
@@ -286,9 +286,21 @@ async function main(): Promise<void> {
   console.log(`S2 spike — extension: ${EXTENSION}`);
   console.log(`pi: ${process.env.PI_BIN ?? "pi"} (provider/model = configured default, thinking=low)\n`);
 
-  await criterion1ApproveAnd3Park(); // also captures ④
-  await criterion1Deny();
-  await criterion2Bridge();
+  // Per-criterion isolation: one crashing criterion must not abort the run
+  // (a crash before the report write would leave a stale ALL-PASS report on
+  // disk — worse than no report at all).
+  const runners: Array<[string, () => Promise<void>]> = [
+    ["①b/③/④", criterion1ApproveAnd3Park],
+    ["①a", criterion1Deny],
+    ["②", criterion2Bridge],
+  ];
+  for (const [id, run] of runners) {
+    try {
+      await run();
+    } catch (error) {
+      record(id, `runner crashed — ${String(error).slice(0, 400)}`, false, [String(error).slice(0, 800)]);
+    }
+  }
 
   const failed = criteria.filter((c) => !c.pass);
   const report: string[] = [
@@ -322,6 +334,8 @@ async function main(): Promise<void> {
 }
 
 void main().catch((e) => {
+  // Even the outer crash path must not leave a stale report claiming success.
+  writeFileSync(join(HERE, "s2-report.md"), `# M0-S2 Spike Report\n\nCRASHED: ${String(e).slice(0, 800)}\n`, "utf8");
   console.error("spike crashed:", e);
   process.exit(2);
 });

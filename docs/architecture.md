@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.5（循环审计已收敛，待 Felix 终审） |
+| 版本 | v0.6（M0-S2 已实测落地） |
 | 日期 | 2026-11-05 |
 | 上游 | `docs/PRD.md` v1.4（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
@@ -104,9 +104,11 @@ schema、关键时序、故障域。PRD 回答「做什么/为什么」，本文
 - **argv 模板**（cwd = 容器内 workDir 挂载点）：
   `pi --mode rpc --extension <codar-ext 路径> [--session <sessionPath>] [--model provider/modelId] [--thinking <level>]`
 - **ready 判定**：spawn 后发 `get_state`，收到首个 `success:true` response
-  即 starting→idle（具体事件序 S2 实测后固化，此处为契约目标）。`get_state`
-  与 `set_auto_retry`（§8 重试依赖）未在 §2.2 清单逐条点名，一并纳入
-  S2-④/S3 实测确认范围。
+  即 starting→idle。**事件序已实测固化（2026-11-05 M0-S2，证据
+  `spike/s2-report.md` ④ 节）**：`response:get_state:ok` 为子进程首条
+  stdout 记录，随后 `response:prompt:ok → agent_start → turn_start → …`。
+  `get_state` 与 `set_auto_retry`（§8 重试依赖）未在 §2.2 清单逐条点名，
+  `get_state` 已实测；`set_auto_retry` 纳入 S3 实测确认范围。
 
 ### 2.4 Bot 进程生命周期状态机
 
@@ -503,3 +505,8 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
   态非 mode 枚举）、memory-review 台账 id 对齐下划线风格；§7 补 GET/
   PATCH/DELETE rooms；§9 S3 判据补 set_auto_retry 与自定义 provider 链路
   实测。状态：待 Felix 终审。
+- 2026-11-05 v0.6：M0-S2 完成后按 review 落文——§2.3a ready 事件序以
+  spike 实测固化（`spike/s2-report.md`）；§2.3 红线细化：idle 看门狗在有
+  未应答 extension_ui_request 时挂起（审批 park 是设计内静默）、wall 改
+  「进程级看门狗 24h」（单任务墙钟归预算层 §6.1a）、错误映射（settled
+  aborted / 末条 assistant stopReason=error ⇒ 显式 bot_failed）。
