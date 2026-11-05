@@ -119,7 +119,7 @@ M1 的 Overview/Chat/Usage 三 Tab 废弃，改为常驻三区（Grok Bot 同构
 
 - 进度实时更新（`tool_execution_update` 事件注入群上下文的同一句话）。
 - 卡片可点展开工作树全貌（parent/child/request_id/防环拒绝记录）。
-- 排队卡（pending）：`⌛ #w2 → Research (queued) — 等 Research 完成 #w1 的核对`
+- 排队卡（pending）：`⌛ #w2 → Research (pending) — 等 Research 完成 #w1 的核对`
   （无计时）。
 - 失败终态卡 ×2（works 五态全覆盖，评审 R2 补入契约）：
 
@@ -208,7 +208,7 @@ M1 的 Overview/Chat/Usage 三 Tab 废弃，改为常驻三区（Grok Bot 同构
 | `message`(assistant) | botId,role,text | 泡固化（文本 dedupe：以 message_end 为准，响应文本仅补洞）|
 | `message`(failure) *M1 impl* | botId,reason | composer 错误条 + roster 🔴 + turn 条 failed |
 | `message`(aborted) *M1 impl* | botId | 流式泡冻结 + 系统行 `⏹ stopped by you` |
-| `progress` *M2* | workId,botId,oneLiner,**status**(queued/working/done/failed/rejected) | 派活卡进度行与终态迁移 + roster 预览 + WORKS 面板行 |
+| `progress` *M2* | workId,botId,oneLiner,**status**(pending/working/done/failed/rejected) | 派活卡进度行与终态迁移 + roster 预览 + WORKS 面板行 |
 | `message`(handoff 系统行) *M2* | from[],workId | `── messages from @A ──` 交接行（可点跳）|
 | `budget` *M2* | scope,spent,limit / stopped | meter 更新 / 预警细行 / 停机广播卡 / 群 paused |
 | `approval` *M2 简版* | id,bot,tool,input | 审批卡（Allow/Deny）+ roster 🔴 + 🔐 |

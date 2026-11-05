@@ -131,8 +131,8 @@
     <div class="turnbar" id="turnbar"></div>
     <div class="composer" id="composer">
       <input id="input" />
-      <button class="send" onclick="fakeSend()">➤</button>
-      <button onclick="stopStream(); showErr()" title="stop">■</button>
+      <button class="send" id="sendbtn" onclick="fakeSend()">➤</button>
+      <button onclick="stopStream()">■</button>
     </div>
   </main>
   <aside class="context" id="context"></aside>
@@ -176,7 +176,7 @@ const I = {
     c_turn: "TURN", c_works: "WORKS", c_budget: "BUDGET", c_detail: "BOT DETAIL",
     c_room: "← room",
     w_run: "drafting…", w_done: "weekly draft", w_fail: "verify numbers",
-    w_pend: "queued", unpriced: "unpriced",
+    w_pend: "queued — pending", w_pend_badge: "pending", unpriced: "unpriced",
     newbot: "+ new bot / room", settings: "⚙ settings",
     sandbox_docker: "docker", sandbox_host: "host · not-isolated",
     d_model: "model", d_effort: "effort", d_budget: "budget", d_sandbox: "sandbox",
@@ -184,8 +184,9 @@ const I = {
     hover_hint: "hover: token breakdown · turns left · wall-clock",
     empty_works: "empty state: no active works in this room",
     host_note: "host: loopback · pi 1.5.0",
-    r_research_done: "idle · draft verified", mode_chip: "default · admin-reply",
-    mem_note: "entry / main / topics · snapshot frozen",
+    r_research_done: "idle · draft verified", r_research_denied: "idle · write denied",
+    a_allowed: "allowed", a_denied: "denied", mode_chip: "default · admin-reply",
+    mem_note: "entry / main / topics · snapshot frozen", w_cycle: "cycle guard", stopped_line: "⏹ stopped by you",
   },
   zh: {
     appname: "· Bot 团队", roomname: "default",
@@ -223,7 +224,7 @@ const I = {
     c_turn: "回合", c_works: "工作树", c_budget: "预算", c_detail: "BOT 详情",
     c_room: "← 返回群",
     w_run: "起草中…", w_done: "周报草稿", w_fail: "核对数字",
-    w_pend: "排队中", unpriced: "未计价",
+    w_pend: "排队 — pending", w_pend_badge: "pending", unpriced: "未计价",
     newbot: "+ 新建 Bot / 群", settings: "⚙ 设置",
     sandbox_docker: "docker", sandbox_host: "host · 未隔离",
     d_model: "模型", d_effort: "effort", d_budget: "预算", d_sandbox: "沙箱",
@@ -231,11 +232,12 @@ const I = {
     hover_hint: "悬停：token 明细 · 剩余回合 · 墙钟",
     empty_works: "空态示意：本群暂无进行中的工作",
     host_note: "host: loopback · pi 1.5.0",
-    r_research_done: "空闲 · 草稿已核对", mode_chip: "default · admin 应答",
-    mem_note: "entry / main / topics · 快照冻结",
+    r_research_done: "空闲 · 草稿已核对", r_research_denied: "空闲 · 写入被拒",
+    a_allowed: "已允许", a_denied: "已拒绝", mode_chip: "default · admin 应答",
+    mem_note: "entry / main / topics · 快照冻结", w_cycle: "防环拒绝", stopped_line: "⏹ 已由你停止",
   },
 };
-let lang = "en", pausedDemo = false, detailView = null, streamTimer = null, elapsedTimers = [], approvalResolved = false;
+let lang = "en", pausedDemo = false, detailView = null, streamTimer = null, elapsedTimers = [], approvalResolved = false, approvalState = { head: "" };
 const t = (k) => I[lang][k];
 
 function applyI18n() {
@@ -259,7 +261,10 @@ const BOTS = [
 function renderRoster() {
   const el = document.getElementById("roster");
   el.innerHTML = "";
-  for (const b of BOTS) {
+  const RANK = { attention: 0, working: 1, unread: 2, null: 3 };
+  const effDotOf = (b) => String(b.id === "research" && approvalResolved ? null : b.dot);
+  const ordered = [...BOTS].sort((a, b) => RANK[effDotOf(a)] - RANK[effDotOf(b)]);
+  for (const b of ordered) {
     const row = document.createElement("div");
     row.className = "row" + (b.id === "room" ? " sel" : "");
     row.onclick = () => { detailView = b.id === "room" ? null : b.id; renderContext(); };
@@ -268,7 +273,8 @@ function renderRoster() {
     const av = b.stacked
       ? `<span class="stacked">${b.stacked.map((e) => `<span class="avatar">${e}</span>`).join("")}${b.dot && b.id !== "research" ? `<span class="dot ${b.dot}" style="position:static;margin-left:4px"></span>` : ""}</span>`
       : `<span class="avatar">${b.emoji}${dotNow ? `<span class="dot ${dotNow}"></span>` : ""}</span>`;
-    const prevKey = b.id === "research" && approvalResolved ? "r_research_done" : b.preview;
+    const prevKey = b.id === "research" && approvalResolved
+      ? (approvalState.head.startsWith("✓") ? "r_research_done" : "r_research_denied") : b.preview;
     row.innerHTML = `${av}<div class="body"><div class="top"><span class="name">${b.name ?? t("roomname") + " 👥"}</span><span class="time">${b.time}</span></div><div class="preview">${t(prevKey)}</div></div>`;
     el.appendChild(row);
   }
@@ -322,7 +328,7 @@ function renderStream() {
   card(`${t("handoff_done")} <span class="spacer"></span><span class="badge done">✓ 3:02</span>`,
     `${t("handoff_done_body")} <span class="filechip">📄 weekly-draft.md · 2.1KB</span><div class="tree">${t("consumed")} · ${t("result_back")}</div>`)
     .querySelector(".filechip").onclick = () => { detailView = "file"; renderContext(); };
-  card(`${t("handoff_pend")} <span class="spacer"></span><span class="badge">${t("w_pend")}</span>`, t("pend_body"));
+  card(`${t("handoff_pend")} <span class="spacer"></span><span class="badge">${t("w_pend_badge")}</span>`, t("pend_body"));
   card(`${t("handoff_fail")}`, t("fail_body"), [[t("b_retry"), "primary"], [t("b_drop"), "danger"]], "failedcard");
   card(`${t("handoff_fail2")}`, t("fail2_body"), null, "failedcard");
   card(`${t("handoff_rej")}`, t("rej_body"));
@@ -330,17 +336,23 @@ function renderStream() {
     [[t("b_adjust"), "primary"], [t("b_once")], [t("b_keep"), "danger"]], "budgetcard");
   card(`<span>${t("roombudget_head")}</span>`, t("roombudget_body"),
     [[t("rb_resume"), "primary"], [t("rb_keep")]], "roombudget");
-  const ac = card(`${t("approve_head")}`, t("approve_body"),
-    [[t("a_once"), "primary"], [t("a_always"), "", true, t("m3tag")], [t("a_deny"), "danger"]], "approvecard");
-  const [allowBtn, , denyBtn] = ac.querySelectorAll(".actions button");
-  const resolveApproval = (ok) => {
-    ac.querySelector(".chead").textContent = ok ? `✓ ${t("a_once")}` : `⛔ ${t("a_deny")}`;
-    ac.querySelector(".actions").remove();
-    approvalResolved = true;
-    renderRoster(); renderTurnbar(); renderContext();
-  };
-  allowBtn.onclick = () => resolveApproval(true);
-  denyBtn.onclick = () => resolveApproval(false);
+  const ac = card(
+    approvalResolved ? approvalState.head : `${t("approve_head")}`,
+    t("approve_body"),
+    approvalResolved ? null : [[t("a_once"), "primary"], [t("a_always"), "", true, t("m3tag")], [t("a_deny"), "danger"]],
+    "approvecard");
+  if (!approvalResolved) {
+    const [allowBtn, , denyBtn] = ac.querySelectorAll(".actions button");
+    const resolveApproval = (ok) => {
+      approvalState = { head: ok ? `✓ ${t("a_allowed")}` : `⛔ ${t("a_denied")}` };
+      approvalResolved = true;
+      ac.querySelector(".chead").textContent = approvalState.head;
+      ac.querySelector(".actions").remove();
+      renderRoster(); renderTurnbar(); renderContext();
+    };
+    allowBtn.onclick = () => resolveApproval(true);
+    denyBtn.onclick = () => resolveApproval(false);
+  }
   // streaming bubble with live typing (distinct text from chief1)
   const full = t("chief_stream");
   const sd = msg({ ...BOTS[0], modelKey: "chief_model" }, "");
@@ -374,11 +386,13 @@ function renderTurnbar() {
     tb.innerHTML = `<span>${t("paused_bar")}</span><span class="demo" onclick="togglePause()">${t("normal_demo")}</span>`;
     comp.style.opacity = "0.5";
     inp.disabled = true;
+    document.getElementById("sendbtn").disabled = true;
     inp.placeholder = t("ph_msg");
     return;
   }
   comp.style.opacity = "";
   inp.disabled = false;
+  document.getElementById("sendbtn").disabled = false;
   inp.placeholder = t("ph_msg");
   const slot = (emoji, name, st, label) =>
     `<span class="slot"><span class="st ${st}"></span>${emoji} ${name} <span style="color:var(--dim)">· ${label}</span></span>`;
@@ -421,7 +435,9 @@ function renderContext() {
       <h3>${t("d_memory")} <span style="font-size:9px;color:var(--dim)">${t("d_m2")}</span></h3>
       <div class="note">${t("mem_note")}</div>
       <h3>${t("d_budget")}</h3>
-      <div class="meter ${b.id === "writer" ? "warn" : ""}"><div class="mrow"><b>${b.name}</b><span>${cny(b.id === "writer" ? "16.8 / 20.0" : "3.1 / 20.0")}</span></div><div class="bar"><div class="fill" style="width:${b.id === "writer" ? 84 : 16}%"></div></div><div class="sub">${t("hover_hint")}</div></div>`;
+      ${b.id === "research"
+        ? `<div class="meter"><div class="mrow"><b>${b.name}</b><span>${cny("— / 20.0")}</span></div><div class="bar"><div class="fill" style="width:0%"></div></div><div class="sub">${t("unpriced")} · ${t("token_fallback")}</div></div>`
+        : `<div class="meter ${b.id === "writer" ? "warn" : ""}"><div class="mrow"><b>${b.name}</b><span>${cny(b.id === "writer" ? "16.8 / 20.0" : "3.1 / 20.0")}</span></div><div class="bar"><div class="fill" style="width:${b.id === "writer" ? 84 : 16}%"></div></div><div class="sub">${t("hover_hint")}</div></div>`}`;
     return;
   }
   const slot = (emoji, name, st, stLabel) =>
@@ -430,13 +446,13 @@ function renderContext() {
     <h3>${t("c_turn")}</h3>
     ${slot("👑", "Chief", "speaking", t("t_speaking"))}
     ${slot("✍", "Writer", "working", t("t_working"))}
-    ${slot("🔬", "Research", "lock", t("t_locked"))}
+    ${approvalResolved ? slot("🔬", "Research", "waiting", t("t_waiting")) : slot("🔬", "Research", "lock", t("t_locked"))}
     <h3>${t("c_works")}</h3>
     <div class="work">▶ <b>#w1</b> ${t("w_run")} · ⏱3:12</div>
     <div class="work">⌛ <b>#w2</b> ${t("w_pend")}</div>
     <div class="work">✓ <b>#w0</b> ${t("w_done")}</div>
     <div class="work fail">✗ <b>#w3</b> ${t("w_fail")}</div>
-    <div class="work">⛔ <b>#w5</b> cycle guard</div>
+    <div class="work">⛔ <b>#w5</b> ${t("w_cycle")}</div>
     <div class="note">${t("empty_works")}</div>
     <h3>${t("c_budget")}</h3>
     <div class="meter warn"><div class="mrow"><b>Writer</b><span>${cny("16.8 / 20.0")}</span></div><div class="bar"><div class="fill" style="width:84%"></div></div><div class="sub">84% · ${t("sandbox_docker")}</div></div>
@@ -446,15 +462,18 @@ function renderContext() {
 }
 
 function fakeSend() {
+  if (pausedDemo) return; // paused room: composer disabled (§10.3)
   const inp = document.getElementById("input");
   const v = inp.value.trim() || "@Writer ";
+  if (v === "!fail") { inp.value = ""; showErr(); return; }
   msg("you", v);
   inp.value = "";
 }
 function stopStream() {
   if (streamTimer) clearInterval(streamTimer);
   const st = window.__stream;
-  if (st && document.body.contains(st.bubble)) { st.bubble.textContent = st.full; st.bubble.classList.remove("cursor"); }
+  if (st && document.body.contains(st.bubble)) { st.bubble.classList.remove("cursor"); } // freeze partial per §6
+  sysline(t("stopped_line"));
 }
 function showErr() {
   const e = document.getElementById("errbar");
@@ -469,6 +488,9 @@ function render() {
   renderTurnbar();
   renderContext();
 }
+document.getElementById("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); fakeSend(); }
+});
 render();
 </script>
 </body>
