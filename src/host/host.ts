@@ -3,6 +3,7 @@
  * `codar start` boots this; PID/port land in host.json for CLI discovery.
  */
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { Store } from "./store.js";
 import { UsageLedger } from "./usage-ledger.js";
 import { BotManager } from "./bot-manager.js";
@@ -20,6 +21,8 @@ export interface HostOptions {
   env?: Record<string, string>;
   /** Host dir containing the extension tree (docker mount source, §3.4). */
   extensionsDir?: string;
+  /** Built web UI dir; default ~/.codar-bot/web-dist when present. */
+  webDir?: string;
 }
 
 export class Host {
@@ -62,7 +65,10 @@ export class Host {
       extensionPath: opts.extensionPath,
       env: opts.env,
     }, p.keys, opts.extensionsDir);
-    const api = new HttpApi({ store, bots, ledger });
+    const api = new HttpApi({
+      store, bots, ledger,
+      webDir: opts.webDir ?? (existsSync(join(p.root, "web-dist")) ? join(p.root, "web-dist") : undefined),
+    });
     return new Host(opts, store, ledger, bots, api);
   }
 
