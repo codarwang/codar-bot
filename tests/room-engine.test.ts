@@ -227,7 +227,8 @@ test("reply timeout: no first token ⇒ slot timed-out, no ping-pong feed, water
     const sys: string[] = [];
     r.rooms.on("system", (e: { text: string }) => sys.push(e.text));
     const res = await r.rooms.userSay(r.roomId, "take it SLOW");
-    assert.deepEqual(res.responders, [r.chiefId]);
+    assert.deepEqual(res.selected, [r.chiefId], "selected = chief");
+    assert.deepEqual(res.responders, [], "nobody actually spoke (timed out)");
     assert.equal(r.rooms.slots(r.roomId)[r.chiefId], "timed-out");
     assert.ok(sys.some((t) => t.includes("timed out")));
     // Timeout did NOT feed the guard.
@@ -312,11 +313,14 @@ test("restart keeps a budget pause un-liftable (§5.3 / R1 P1-3)", async () => {
     // Ping-pong pause persists too, and a user message lifts it.
     r.rooms.resume(r.roomId, "resume");
     r.rooms.pause(r.roomId, "ping-pong", "idle talk");
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId);
     const rooms3 = new RoomEngine(r.store, r.bots, join(r.root, "rooms"));
     const res = await rooms3.userSay(r.roomId, "Reply with the single word OK.");
-    assert.equal(res.responders.length, 1);
+    assert.deepEqual(res.responders, [r.chiefId]);
     assert.equal(r.store.room(r.roomId)!.status, "active");
   } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
     await r.dispose();
   }
 });
