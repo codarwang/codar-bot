@@ -25,6 +25,7 @@ const usage = (input, output) => ({
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: (input + output) / 1e6 },
 });
 let lastText = null;
+const transcript = [];
 let sessionFile = process.env.FAKE_PI_SESSION_FILE ?? null;
 let autoRetry = true;
 let pendingPark = null;
@@ -37,6 +38,8 @@ function fail(id, command, error) {
 }
 
 async function runPrompt(id, message) {
+  transcript.push({ role: "user", content: message });
+  transcript.push({ role: "assistant", content: [{ type: "text", text: "…" }] });
   if (message.includes("SLOW")) {
     // Deterministic long run: started → 1.5s of silence → settle with OK.
     respond(id, "prompt", { disposition: "started" });
@@ -176,6 +179,9 @@ process.stdin.on("data", (chunk) => {
       case "set_auto_retry":
         autoRetry = cmd.enabled === true;
         respond(id, "set_auto_retry");
+        break;
+      case "get_messages":
+        respond(id, "get_messages", { messages: transcript });
         break;
       case "get_session_stats":
         respond(id, "get_session_stats", {

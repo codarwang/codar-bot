@@ -32,6 +32,7 @@ export class HttpApi {
     bots.on("delta", (e) => this.broadcast("delta", e));
     bots.on("message", (e) => this.broadcast("message", e));
     bots.on("failure", (e) => this.broadcast("failure", e));
+    bots.on("aborted", (e) => this.broadcast("aborted", e));
   }
 
   async listen(port: number, host = "127.0.0.1"): Promise<number> {
@@ -212,6 +213,11 @@ export class HttpApi {
         }
         const text = await this.deps.bots.prompt(id, body.message);
         this.send(res, 200, { text });
+        return;
+      }
+      if (req.method === "GET" && id !== undefined && action === "messages") {
+        const messages = await this.deps.bots.messages(id);
+        this.send(res, 200, { messages });
         return;
       }
       if (req.method === "POST" && id !== undefined && action === "abort") {
