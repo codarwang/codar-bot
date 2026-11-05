@@ -270,40 +270,28 @@ test("R4 regression: a failure arriving while a zombie chain holds the flag is h
   try {
     process.env.CODAR_M1_AUTOAPPROVE = "1";
     await r.bots.start(r.botId);
-    // Crash → chain arms (1s backoff, flag held).
+    // Crash #1 → zombie chain arms its 1s backoff, flag HELD.
     await assert.rejects(() => r.bots.prompt(r.botId, "please DIE now"), /exited mid-prompt/);
     assert.equal(r.bots.status(r.botId), "crashed");
-    // EXTERNAL start during the flag window → new generation (epoch bump).
-    // Its ready probe races the zombie chain; whichever way it lands, a
-    // subsequent failure must still be owned by SOMEONE.
-    const startPromise = r.bots.start(r.botId);
-    await new Promise((s) => setTimeout(s, 2_600)); // past zombie wake-up
-    await startPromise.catch(() => undefined);
-    // If the external start landed a live client, crash it again inside the
-    // window; if it lost the race the handover already ran. Either way the
-    // bot must NOT be permanently crashed/starting.
-    let deadline = Date.now() + 25_000;
-    while (Date.now() < deadline) {
-      const st = r.bots.status(r.botId);
-      if (st === "idle") break;
-      if (st === "crashed" || st === "starting") {
-        try {
-          await r.bots.prompt(r.botId, "Reply with the single word ALPHA.");
-          break;
-        } catch {
-          await new Promise((s) => setTimeout(s, 500));
-        }
-      } else if (st === "stopped") {
-        break; // honest terminal state is also acceptable
-      } else {
-        await new Promise((s) => setTimeout(s, 300));
-      }
+    // External start DURING the flag window → new generation (epoch bump).
+    // If it wins the race to idle, kill the NEW client inside the same 1s
+    // window — the failure parks at the single-flight early exit and MUST be
+    // handed over when the zombie exits (this is the guarded path).
+    await r.bots.start(r.botId).catch(() => undefined);
+    if (r.bots.status(r.botId) === "idle") {
+      await assert.rejects(() => r.bots.prompt(r.botId, "please DIE too"), /exited mid-prompt/);
+    }
+    // Handover re-funnels; converge to idle (or an honest stopped).
+    const deadline = Date.now() + 25_000;
+    while (r.bots.status(r.botId) !== "idle" && r.bots.status(r.botId) !== "stopped" && Date.now() < deadline) {
+      await new Promise((s) => setTimeout(s, 300));
     }
     const final = r.bots.status(r.botId);
-    assert.ok(
-      final === "idle" || final === "stopped",
-      `bot must converge to idle or stopped, got ${final}`
-    );
+    assert.ok(final === "idle" || final === "stopped", `must converge, got ${final}`);
+    if (final === "idle") {
+      const text = await r.bots.prompt(r.botId, "Reply with the single word ALPHA.");
+      assert.equal(text, "ALPHA");
+    }
   } finally {
     delete process.env.CODAR_M1_AUTOAPPROVE;
     await r.dispose();
