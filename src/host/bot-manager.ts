@@ -216,9 +216,15 @@ export class BotManager extends EventEmitter {
       }
     } catch (error) {
       if (m.client !== null) this.dropClient(m, m.client);
+      // Observability parity with runtime failures (R3 P3-4): the start
+      // path reports lastError/failure/audit too (the funnel owns STATUS).
+      const reason = String(error);
+      m.lastError = reason;
+      this.emit("failure", { botId, reason });
+      this.audit("start_failed", { botId, reason: reason.slice(0, 200) });
       // Recovery runs detached — the caller learns about THIS failure now,
       // not after the whole backoff ladder (R2: ~90s 500s).
-      void this.recoverFromFailure(bot, null, String(error)).catch(() => undefined);
+      void this.recoverFromFailure(bot, null, reason).catch(() => undefined);
       throw error;
     }
 
@@ -354,9 +360,10 @@ export class BotManager extends EventEmitter {
 
   private handleUi(client: RpcClient, req: UiRequest): void {
     // M1-A slice: no approval surface yet. CODAR_M1_AUTOAPPROVE=1 (tests and
-    // spikes only) auto-approves confirms; otherwise requests park until the
-    // M1-C approval API answers them. Never silently deny — a parked call is
-    // honest, a silent deny loses work.
+    // spikes only) auto-approves confirms; otherwise requests park until an
+    // approval surface exists (Web UI approval cards — M3 per §5.4; the M1
+    // UI surfaces parked state honestly). Never silently deny — a parked
+    // call is honest, a silent deny loses work.
     if (process.env.CODAR_M1_AUTOAPPROVE === "1" && req.method === "confirm") {
       client.replyUi({ type: "extension_ui_response", id: req.id, confirmed: true });
     }
@@ -461,8 +468,11 @@ export class BotManager extends EventEmitter {
       if (pending !== null && !m.stopRequested && m.client === null && m.epoch === myEpoch) {
         m.pendingFailure = null;
         void this.recoverFromFailure(bot, null, pending).catch(() => undefined);
-      } else if (pending !== null && m.epoch !== myEpoch) {
-        // We were superseded; the CURRENT generation needs the baton too.
+      } else if (pending !== null && m.epoch !== myEpoch && m.client === null) {
+        // We were superseded; the CURRENT generation needs the baton too —
+        // but only when nobody is live (a live client means the parked
+        // failure refers to OUR dead generation; re-funneling would burn
+        // the restart budget against "already running" (R3 P3-5)).
         m.pendingFailure = null;
         void this.recoverFromFailure(bot, null, pending).catch(() => undefined);
       } else {
