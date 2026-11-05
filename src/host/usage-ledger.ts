@@ -49,7 +49,10 @@ export class UsageLedger {
     this.db.exec(SCHEMA);
   }
 
-  /** Additive upsert — safe to call twice with the same record. */
+  /** Additive upsert onto the (hour, bot, model, kind) bucket. NOT idempotent
+   *  against replay: the caller dedupes via the per-session accounting
+   *  watermark (architecture §4 reconciliation — M1-B/D); re-recording the
+   *  same event double-counts by design of this sink. */
   record(u: UsageRecord): void {
     this.db
       .prepare(

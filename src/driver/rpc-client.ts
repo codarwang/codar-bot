@@ -258,7 +258,8 @@ export class RpcClient extends EventEmitter {
     // Ready contract: first successful get_state response. On failure the
     // spawned child must not outlive the call (ready-failure leak).
     try {
-      await this.command({ type: "get_state" } as const, 30_000);
+      const ready = await this.command({ type: "get_state" } as const, 30_000);
+      if (!ready.success) throw new Error(`get_state rejected: ${ready.error ?? "?"}`);
     } catch (error) {
       this.fail(error instanceof Error ? error : new Error(String(error)));
       throw error;
@@ -333,10 +334,12 @@ export class RpcClient extends EventEmitter {
         // is a Bot failure — never a silent success.
         const aborted = (event as { aborted?: boolean }).aborted === true;
         const errored = this.lastAssistantStopReason?.stopReason === "error";
-        if (aborted || errored) {
+        if (aborted) {
+          this.emit("aborted", { type: "aborted" });
+        } else if (errored) {
           this.emit("bot_failed", {
             type: "bot_failed",
-            aborted,
+            aborted: false,
             stopReason: this.lastAssistantStopReason?.stopReason,
             errorMessage: this.lastAssistantStopReason?.errorMessage,
           });

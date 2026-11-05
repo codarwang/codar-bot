@@ -181,3 +181,27 @@ test("SSE stream: hello + live status events flow to a connected client", async 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("epoch guard: a superseded recovery chain cannot mark a live bot stopped (R2 P2)", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.botId);
+    // Crash the child; the recovery chain arms its 1s backoff.
+    await assert.rejects(() => r.bots.prompt(r.botId, "please DIE now"), /exited mid-prompt/);
+    assert.equal(r.bots.status(r.botId), "crashed");
+    // Manual stop + start DURING the backoff — this bumps the epoch and
+    // supersedes the chain.
+    await r.bots.stop(r.botId);
+    await r.bots.start(r.botId);
+    assert.equal(r.bots.status(r.botId), "idle");
+    // Wait past the old chain's backoff horizon: it must exit silently.
+    await new Promise((s) => setTimeout(s, 4_500));
+    assert.equal(r.bots.status(r.botId), "idle", "superseded chain must not flip the live bot to stopped");
+    const text = await r.bots.prompt(r.botId, "Reply with the single word ALPHA.");
+    assert.equal(text, "ALPHA");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});

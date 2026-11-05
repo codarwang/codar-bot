@@ -36,7 +36,8 @@ export class HttpApi {
 
   async listen(port: number, host = "127.0.0.1"): Promise<number> {
     this.server = createServer((req, res) => this.dispatch(req, res));
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      this.server!.once("error", reject); // EADDRINUSE must reject, not throw unhandled
       this.server!.listen(port, host, () => {
         const addr = this.server!.address();
         resolve(typeof addr === "object" && addr !== null ? addr.port : port);
@@ -67,7 +68,10 @@ export class HttpApi {
     const url = new URL(req.url ?? "/", "http://localhost");
     const parts = url.pathname.split("/").filter(Boolean); // ["api", ...]
     void this.route(req, res, url, parts).catch((e) => {
-      this.send(res, 500, { error: String(e).slice(0, 400) });
+      const message = String(e);
+      // Input errors deserve 4xx, not 500s (R2 P3-9).
+      const bad = /not valid JSON|body too large|missing|already in use|no bot|no room|not running/.test(message);
+      this.send(res, bad ? 400 : 500, { error: message.slice(0, 400) });
     });
   }
 
@@ -122,16 +126,27 @@ export class HttpApi {
           // silently running bare while claiming isolation (§8).
           return this.send(res, 501, { error: "docker sandbox lands with the M1-D runner; use host-not-isolated" });
         }
-        const bot = this.deps.store.addBot({
-          name,
-          role: String(body.role ?? ""),
-          chief: body.chief === true,
-          model: body.model ?? { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" },
-          workDir,
-          sessionPath: null,
-          sandbox: { mode: "host-not-isolated" },
-          budget: body.budget ?? { maxTokens: 5_000_000, maxCostMicros: 20_000_000, maxTurns: 2_000, maxWallMs: 3_600_000 },
-        });
+        const model = body.model ?? { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" };
+        if (typeof model.provider !== "string" || typeof model.modelId !== "string" ||
+            typeof model.thinkingLevel !== "string") {
+          return this.send(res, 400, { error: "model needs string provider/modelId/thinkingLevel" });
+        }
+        const budget = body.budget ?? { maxTokens: 5_000_000, maxCostMicros: 20_000_000, maxTurns: 2_000, maxWallMs: 3_600_000 };
+        for (const k of ["maxTokens", "maxCostMicros", "maxTurns", "maxWallMs"] as const) {
+          if (typeof budget[k] !== "number" || !Number.isFinite(budget[k]) || budget[k] < 0) {
+            return this.send(res, 400, { error: `budget.${k} must be a non-negative number` });
+          }
+        }
+        let bot;
+        try {
+          bot = this.deps.store.addBot({
+            name, role: String(body.role ?? ""), chief: body.chief === true,
+            model, workDir, sessionPath: null,
+            sandbox: { mode: "host-not-isolated" }, budget,
+          });
+        } catch (e) {
+          return this.send(res, 409, { error: String(e).slice(0, 200) });
+        }
         this.send(res, 201, bot);
         return;
       }

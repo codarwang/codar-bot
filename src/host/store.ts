@@ -181,6 +181,19 @@ function acquireLock(lockPath: string): LockHandle {
   if (!tryCreate()) {
     throw new Error("state.json lock race lost to another writer");
   }
+  // Unlink-after-recreate guard (R2 P3-3): if a concurrent breaker's unlink
+  // removed OUR just-created lock, the re-read mismatches — refuse rather
+  // than run split-brained.
+  try {
+    const verify = JSON.parse(readFileSync(lockPath, "utf8")) as { pid?: number };
+    if (verify.pid !== process.pid) {
+      throw new Error("state.json lock was stolen mid-acquisition");
+    }
+  } catch (error) {
+    try { unlinkSync(lockPath); } catch { /* gone */ }
+    if (error instanceof Error && error.message.includes("stolen")) throw error;
+    throw new Error("state.json lock verification failed");
+  }
   return { release };
 }
 
