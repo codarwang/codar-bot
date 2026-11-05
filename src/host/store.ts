@@ -243,7 +243,6 @@ export class Store {
     for (const w of doc.works) {
       if (w.status === "pending" || w.status === "working") { w.status = "failed"; swept = true; }
     }
-    void swept;
     const store = new Store(statePath, doc, null);
     if (!raw || migrated || swept) store.persist();
     return store;

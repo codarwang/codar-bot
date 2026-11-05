@@ -61,7 +61,7 @@ export class Handoff extends EventEmitter {
         void this.bots.prompt(e.botId, wake, "chat").catch((err: unknown) => {
           // A failed wake is surfaced on the room log when possible — never
           // silently swallowed (M2-B R2 P2-a note).
-          if (e.botId !== undefined) {
+          {
             const roomId = this.store.state.rooms.find((r) => r.members.includes(e.botId))?.id;
             if (roomId !== undefined) {
               try { this.rooms.appendSystem(roomId, `wake delivery to ${this.botName(e.botId)} failed: ${String(err).slice(0, 140)}`); } catch { /* shutdown */ }
@@ -104,14 +104,9 @@ export class Handoff extends EventEmitter {
     if (existing !== undefined) {
       return { workId: existing.id, duplicate: true };
     }
-    const dead = this.store.state.works.find(
-      (w) => w.requestId === req.requestId && (w.status === "failed" || w.status === "rejected")
-    );
-    if (dead !== undefined) {
-      // Terminal works release the key: the caller may genuinely want a
-      // re-run — with a NEW work id (honest restart semantics).
-      void dead;
-    }
+    // Terminal (failed/rejected) works release the key implicitly: the
+    // find above skipped them, so a retry proceeds to a NEW work (honest
+    // restart semantics — M2-B R2 P2-b).
 
     // Anti-cycle: the target must not be a pending ancestor of the sender.
     this.assertNoCycle(req.fromBot, req.toBot);
