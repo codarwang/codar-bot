@@ -260,8 +260,12 @@ export class BotManager extends EventEmitter {
         return;
       }
       if (bot.sessionPath !== null) {
+        const childSession = this.toChildSessionPath(bot, bot.sessionPath);
+        if (childSession === null) {
+          throw new Error(`switch_session unmappable path (stale sessionPath after a data-root or workDir move?): ${bot.sessionPath}`);
+        }
         const sw = await client.command(
-          { type: "switch_session", sessionPath: this.toChildSessionPath(bot, bot.sessionPath) } as Record<string, unknown>
+          { type: "switch_session", sessionPath: childSession } as Record<string, unknown>
         );
         if (!sw.success) {
           throw new Error(`switch_session rejected: ${sw.error ?? "?"} (stale sessionPath?)`);
@@ -316,7 +320,7 @@ export class BotManager extends EventEmitter {
    *  its own mount namespace. Both directions live here so persist and
    *  resume can never drift apart (R2: resume used to ship host paths into
    *  the container — docker resume was 100% broken). */
-  private toHostSessionPath(bot: BotRecord, childPath: string): string {
+  private toHostSessionPath(bot: BotRecord, childPath: string): string | null {
     if (bot.sandbox.mode !== "docker") return childPath;
     if (childPath.startsWith("/state/pi-conf/")) {
       return join(botPiConfDir(this.dataRoot, bot.id), childPath.slice("/state/pi-conf/".length));
@@ -324,19 +328,25 @@ export class BotManager extends EventEmitter {
     if (childPath.startsWith("/home/bot/work/")) {
       return join(bot.workDir, childPath.slice("/home/bot/work/".length));
     }
-    return childPath;
+    // Unknown namespace: NEVER persist a container path into the store
+    // (§3.4 hard rule) — refuse and leave the previous value in place.
+    this.audit("session_path_unmappable", { botId: bot.id, childPath: childPath.slice(0, 200) });
+    return null;
   }
 
-  private toChildSessionPath(bot: BotRecord, hostPath: string): string {
+  private toChildSessionPath(bot: BotRecord, hostPath: string): string | null {
     if (bot.sandbox.mode !== "docker") return hostPath;
     const confDir = botPiConfDir(this.dataRoot, bot.id);
-    if (hostPath.startsWith(confDir)) {
+    if (hostPath.length > confDir.length && hostPath.startsWith(`${confDir}/`)) {
       return `/state/pi-conf/${hostPath.slice(confDir.length + 1)}`;
     }
-    if (hostPath.startsWith(bot.workDir)) {
+    if (hostPath.length > bot.workDir.length && hostPath.startsWith(`${bot.workDir}/`)) {
       return `/home/bot/work/${hostPath.slice(bot.workDir.length + 1)}`;
     }
-    return hostPath;
+    // Outside both mounts: the container cannot see this path; resume would
+    // be a lie. Refuse loudly (start() throws with the stale-path hint).
+    this.audit("session_path_unmappable", { botId: bot.id, hostPath: hostPath.slice(0, 200) });
+    return null;
   }
 
   /** Prompt a bot; resolves with the final assistant text when it settles.
@@ -401,7 +411,9 @@ export class BotManager extends EventEmitter {
         state.success ? ((state.data as { sessionFile?: unknown } | null)?.sessionFile) : undefined;
       if (typeof rawSession === "string" && rawSession !== "") {
         const sessionFile = this.toHostSessionPath(bot, rawSession);
-        if (sessionFile !== bot.sessionPath) this.store.updateBot(botId, { sessionPath: sessionFile });
+        if (sessionFile !== null && sessionFile !== bot.sessionPath) {
+          this.store.updateBot(botId, { sessionPath: sessionFile });
+        }
       }
     } catch {
       /* best-effort persistence; next successful prompt retries */
