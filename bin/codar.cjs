@@ -18,7 +18,7 @@ const DIM = (s) => (IS_TTY ? `\x1b[2m${s}\x1b[0m` : s);
 // Minimum Node version codar-bot assumes for the preflight. The real floor
 // follows what pi 1.5.0 requires and is pinned during M0; >=18 is the safe
 // interim baseline.
-const MIN_NODE_MAJOR = 18;
+const MIN_NODE_MAJOR = 22; // pi 1.5.0 engines >=22.19; node:sqlite needs >=22.5
 
 function run(cmd, timeoutMs = 5000) {
   try {
@@ -73,7 +73,7 @@ function doctor() {
     ok: nodeOk,
     line: nodeOk
       ? `node ${process.version}`
-      : `node ${process.version} (codar-bot assumes >= v${MIN_NODE_MAJOR}; final floor is pinned during M0)`,
+      : `node ${process.version} (codar-bot needs Node >= v${MIN_NODE_MAJOR} (pi engines + node:sqlite))`,
   });
 
   // 2. pi CLI

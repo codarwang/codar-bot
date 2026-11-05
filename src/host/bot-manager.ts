@@ -1,13 +1,17 @@
 /**
  * bot-manager — per-Bot RpcClient supervision (architecture §2.4, §3).
  *
- * Lifecycle: stopped → starting → idle ⇄ working; crash → backoff restart
- * (≤ MAX_RESTARTS, then stopped + alert); stop() → stopped (no auto-restart).
- * Streams per-bot events (deltas, status, failures) onto an EventBus the API
- * layer projects to SSE. Usage from message_end lands in the ledger
- * (kind=chat for every M1 turn — tool/memory-review kinds arrive with M2).
+ * Lifecycle: stopped → starting → idle ⇄ working; crash → SINGLE-FLIGHT
+ * exponential-backoff restart (≤ MAX_RESTARTS, then stopped + alert);
+ * stop() sets a stop-intent sentinel honored by every async path (a stop
+ * during starting/working never resurrects the bot).
+ *
+ * All lifecycle transitions append to the host audit log (§2.4). Usage from
+ * message_end lands in the ledger (kind=chat for M1 turns; tool and
+ * memory-review kinds arrive with M2).
  */
 import { EventEmitter } from "node:events";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { RpcClient, type AgentEvent, type UiRequest } from "../driver/rpc-client.js";
 import type { BotRecord } from "./store.js";
@@ -41,10 +45,14 @@ interface ManagedBot {
   status: BotStatus;
   restarts: number;
   lastError: string | null;
+  /** stop intent: once set, no async path may spawn this bot again. */
+  stopRequested: boolean;
+  /** single-flight restart guard (review R1: dual-chain race). */
+  restarting: boolean;
 }
 
 const MAX_RESTARTS = 3;
-const RESTART_BACKOFF_MS = 1_000;
+const RESTART_BASE_MS = 1_000; // exponential: base * 2^(n-1) ⇒ 1s/2s/4s
 
 interface UsageShape {
   input?: number; output?: number; cacheRead?: number; cacheWrite?: number;
@@ -76,137 +84,204 @@ export class BotManager extends EventEmitter {
     return [...this.bots.values()].map((b) => ({ botId: b.botId, status: b.status, lastError: b.lastError }));
   }
 
+  private audit(kind: string, body: Record<string, unknown>): void {
+    try {
+      appendFileSync(
+        join(this.dataRoot, "audit.jsonl"),
+        `${JSON.stringify({ kind, ts: new Date().toISOString(), ...body })}\n`,
+        "utf8"
+      );
+    } catch (error) {
+      // Audit failure must not take the host down; the in-memory event bus
+      // still carries the transition. (§5 audit is best-effort at this layer.)
+      console.error(`[audit] append failed: ${String(error).slice(0, 160)}`);
+    }
+  }
+
+  private managed(botId: string): ManagedBot {
+    let m = this.bots.get(botId);
+    if (m === undefined) {
+      m = { botId, client: null, status: "stopped", restarts: 0, lastError: null, stopRequested: false, restarting: false };
+      this.bots.set(botId, m);
+    }
+    return m;
+  }
+
+  private setStatus(m: ManagedBot, status: BotStatus, detail?: string): void {
+    const from = m.status;
+    m.status = status;
+    this.audit("lifecycle", { botId: m.botId, from, to: status, detail });
+    this.emit("status", { botId: m.botId, status, detail });
+  }
+
   async start(botId: string, spawnOverride: SpawnOptions = {}): Promise<void> {
     const bot = this.store.bot(botId);
     if (bot === undefined) throw new Error(`no bot ${botId}`);
-    let managed = this.bots.get(botId);
-    if (managed?.client) throw new Error(`bot ${botId} already running`);
-    if (managed === undefined) {
-      managed = { botId, client: null, status: "stopped", restarts: 0, lastError: null };
-      this.bots.set(botId, managed);
-    }
-    managed.status = "starting";
-    this.emit("status", { botId, status: "starting" });
+    const m = this.managed(botId);
+    if (m.client !== null) throw new Error(`bot ${botId} already running`);
+    m.stopRequested = false;
+    m.restarting = false;
+    this.setStatus(m, "starting");
+
+    // Host-controlled dirs must exist before the child starts (the gate's
+    // audit appendFileSync fails closed on ENOENT).
+    mkdirSync(botPiConfDir(this.dataRoot, botId), { recursive: true });
+    mkdirSync(bot.workDir, { recursive: true });
 
     const opts = { ...this.spawnDefaults, ...spawnOverride };
     const client = new RpcClient({
       bin: opts.bin,
       argvPrefix: opts.sandboxArgv,
       cwd: bot.workDir,
-      env: { ...opts.env, CODAR_GATE_AUDIT: this.auditPathFor(bot) },
+      env: { ...opts.env, CODAR_GATE_AUDIT: join(botPiConfDir(this.dataRoot, botId), "gate-audit.jsonl") },
       idleTimeoutMs: 5 * 60_000,
       wallTimeoutMs: 24 * 60 * 60_000,
-      onUiRequest: (req) => this.handleUi(bot, client, req),
+      onUiRequest: (req) => this.handleUi(client, req),
     });
-    managed.client = client;
+    m.client = client;
     client.on("event", (e: AgentEvent) => this.onEvent(bot, client, e));
-    client.on("error", (e: Error) => this.onChildFailure(bot, String(e)));
+    client.on("error", (e: Error) => void this.onChildFailure(bot, client, String(e)));
     client.on("bot_failed", (f) => {
       const reason = `stopReason=${String((f as { stopReason?: string }).stopReason ?? "?")} ${String((f as { errorMessage?: string }).errorMessage ?? "")}`.trim();
       this.emit("failure", { botId, reason });
+      this.audit("bot_failed", { botId, reason });
     });
-    client.on("exit", () => {
-      if (this.bots.get(botId)?.client === client) {
-        this.onChildFailure(bot, "rpc child exited");
-      }
-    });
+    client.on("exit", () => void this.onChildFailure(bot, client, "rpc child exited"));
 
     try {
-      await client.start({
+      const ready = await client.start({
         extensionPath: opts.extensionPath,
         model: `${bot.model.provider}/${bot.model.modelId}`,
         thinking: bot.model.thinkingLevel,
         noSession: false,
       });
-      // Session resume: host path → child path (bare mode: identical; the
-      // sandbox translation hook lands with the docker runner).
+      void ready;
+      if (m.stopRequested) {
+        // stop() raced the ready probe: honor it, do not surface idle.
+        this.dropClient(m, client);
+        this.setStatus(m, "stopped", "stop honored during startup");
+        return;
+      }
       if (bot.sessionPath !== null) {
-        await client.command(
+        const sw = await client.command(
           { type: "switch_session", sessionPath: bot.sessionPath } as Record<string, unknown>
         );
+        if (!sw.success) {
+          throw new Error(`switch_session rejected: ${sw.error ?? "?"} (stale sessionPath?)`);
+        }
       }
     } catch (error) {
-      managed.client = null;
-      await this.maybeRestart(bot, String(error));
+      this.dropClient(m, client);
+      await this.recoverFromFailure(bot, client, String(error));
       throw error;
     }
 
-    managed.status = "idle";
-    managed.lastError = null;
-    this.emit("status", { botId, status: "idle" });
+    m.restarts = 0;
+    m.lastError = null;
+    this.setStatus(m, "idle");
+  }
+
+  private dropClient(m: ManagedBot, client: RpcClient): void {
+    if (m.client === client) m.client = null;
+    client.kill();
   }
 
   async stop(botId: string): Promise<void> {
-    const managed = this.bots.get(botId);
-    if (managed === undefined || managed.client === null) return;
-    const client = managed.client;
-    managed.client = null;
-    managed.status = "stopped";
-    client.kill();
-    this.emit("status", { botId, status: "stopped" });
+    const m = this.bots.get(botId);
+    if (m === undefined) return;
+    m.stopRequested = true; // sentinel: no async path may respawn (R1 P1-2)
+    if (m.client === null) {
+      if (m.status !== "stopped") this.setStatus(m, "stopped");
+      return;
+    }
+    this.dropClient(m, m.client);
+    this.setStatus(m, "stopped");
   }
 
   async stopAll(): Promise<void> {
     await Promise.all([...this.bots.keys()].map((id) => this.stop(id)));
   }
 
-  /** Prompt a bot; resolves with the final assistant text when it settles. */
+  /** Prompt a bot; resolves with the final assistant text when it settles.
+   *  Rejections carry honest reasons (handled/queued disposition, child
+   *  death, stop) — never hangs (R1 P1-1: settled/error/exit race). */
   async prompt(botId: string, message: string, kind: UsageKind = "chat"): Promise<string> {
-    const managed = this.bots.get(botId);
-    if (managed?.client === null || managed === undefined) throw new Error(`bot ${botId} is not running`);
-    const client = managed.client!;
+    const m = this.bots.get(botId);
+    if (m === undefined || m.client === null) throw new Error(`bot ${botId} is not running`);
+    if (m.status === "working") throw new Error(`bot ${botId} is already working on a prompt`);
+    const client = m.client;
     const bot = this.store.bot(botId)!;
-    managed.status = "working";
-    this.emit("status", { botId, status: "working" });
+    this.setStatus(m, "working");
     (client as unknown as { __usageKind?: UsageKind }).__usageKind = kind;
-    const settle = this.waitForSettle(client);
-    const pr = await client.prompt(message);
-    if (!pr.success) {
-      managed.status = "idle";
-      this.emit("status", { botId, status: "idle", detail: "prompt rejected" });
-      throw new Error(`prompt rejected: ${pr.error}`);
+
+    // settle race: settled vs error vs exit — first wins, listeners detach
+    // on settlement (no leak across rejected prompts; R1 P1-1).
+    let detach: () => void = () => {};
+    const settleRace = new Promise<void>((resolve, reject) => {
+      const onSettled = (): void => resolve();
+      const onError = (e: Error): void => reject(new Error(`bot process failed: ${String(e)}`));
+      const onExit = (): void => reject(new Error(`bot process exited mid-prompt${m.stopRequested ? " (stopped)" : ""}`));
+      client.once("settled", onSettled);
+      client.once("error", onError);
+      client.once("exit", onExit);
+      detach = () => {
+        client.off("settled", onSettled);
+        client.off("error", onError);
+        client.off("exit", onExit);
+      };
+    });
+    void settleRace.then(detach, detach);
+
+    try {
+      const pr = await client.prompt(message);
+      if (!pr.success) throw new Error(`prompt rejected: ${pr.error}`);
+      const disposition = (pr.data as { disposition?: string } | null)?.disposition;
+      if (disposition !== "started") {
+        // "handled" (extension command) / "queued": no run will settle.
+        throw new Error(`prompt ${disposition} (no agent run — try a plain message)`);
+      }
+      await settleRace;
+      if (m.client !== client) {
+        throw new Error(m.stopRequested ? "bot stopped mid-prompt" : "bot replaced mid-prompt");
+      }
+    } catch (error) {
+      // setStatus("working") inside this function defeats TS's property
+      // narrowing — re-widen deliberately.
+      if (m.client === client && (m.status as BotStatus) === "working") {
+        this.setStatus(m, "idle", "prompt failed");
+      }
+      throw error;
     }
-    await settle;
-    managed.status = "idle";
-    this.emit("status", { botId, status: "idle" });
+
+    this.setStatus(m, "idle");
     // Persist the session path the child now reports (crash-safe resume).
     try {
       const state = await client.command({ type: "get_state" } as Record<string, unknown>);
       const sessionFile =
         state.success ? ((state.data as { sessionFile?: unknown } | null)?.sessionFile) : undefined;
-      if (typeof sessionFile === "string" && sessionFile !== bot.sessionPath) {
+      if (typeof sessionFile === "string" && sessionFile !== bot.sessionPath && sessionFile !== "") {
         this.store.updateBot(botId, { sessionPath: sessionFile });
       }
     } catch {
       /* best-effort persistence; next successful prompt retries */
     }
     const last = await client.command({ type: "get_last_assistant_text" } as Record<string, unknown>);
-    const text =
-      last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
-        ? (last.data as { text: string }).text
-        : "";
-    return text;
+    return last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
+      ? (last.data as { text: string }).text
+      : "";
   }
 
   async interrupt(botId: string): Promise<void> {
-    const managed = this.bots.get(botId);
-    if (managed?.client == null) throw new Error(`bot ${botId} is not running`);
-    await managed.client.abort();
+    const m = this.bots.get(botId);
+    if (m?.client == null) throw new Error(`bot ${botId} is not running`);
+    await m.client.abort();
   }
 
-  private waitForSettle(client: RpcClient): Promise<void> {
-    return new Promise((resolve) => {
-      const done = () => { client.off("settled", done); resolve(); };
-      client.on("settled", done);
-    });
-  }
-
-  private handleUi(bot: BotRecord, client: RpcClient, req: UiRequest): void {
+  private handleUi(client: RpcClient, req: UiRequest): void {
     // M1-A slice: no approval surface yet. CODAR_M1_AUTOAPPROVE=1 (tests and
     // spikes only) auto-approves confirms; otherwise requests park until the
     // M1-C approval API answers them. Never silently deny — a parked call is
     // honest, a silent deny loses work.
-    void bot;
     if (process.env.CODAR_M1_AUTOAPPROVE === "1" && req.method === "confirm") {
       client.replyUi({ type: "extension_ui_response", id: req.id, confirmed: true });
     }
@@ -221,8 +296,11 @@ export class BotManager extends EventEmitter {
       return;
     }
     if (e.type === "message_end") {
-      const message = (e as { message?: { role?: string; usage?: UsageShape; content?: Array<{ type?: string; text?: string }> } }).message;
-      if (message?.role === "assistant" && message.usage) {
+      const message = (e as { message?: { role?: string; usage?: UsageShape; content?: Array<{ type?: string; text?: string }>; stopReason?: string } }).message;
+      if (message?.role === "assistant" && message.usage && message.stopReason !== "error") {
+        // Errored message_end carries an all-zero usage object (M0-S3) —
+        // excluded from the ledger by the stopReason guard plus the all-zero
+        // natural no-op.
         const kind = (client as unknown as { __usageKind?: UsageKind }).__usageKind ?? "chat";
         const u = message.usage;
         this.ledger.record({
@@ -246,38 +324,50 @@ export class BotManager extends EventEmitter {
     }
   }
 
-  private auditPathFor(bot: BotRecord): string {
-    // Host-controlled audit location (§3.4 note: never inside the bot's
-    // writable workDir) — pi-conf/<botId>/gate-audit.jsonl.
-    return join(botPiConfDir(this.dataRoot, bot.id), "gate-audit.jsonl");
-  }
-
-  private async onChildFailure(bot: BotRecord, reason: string): Promise<void> {
-    const managed = this.bots.get(bot.id);
-    if (managed === undefined || managed.client === null) return; // stopped on purpose
-    managed.client = null;
-    managed.status = "crashed";
-    managed.lastError = reason;
-    this.emit("status", { botId: bot.id, status: "crashed", detail: reason });
+  /** Single failure-recovery funnel (R1 P1-4: exit/error handlers and the
+   *  start() catch path used to race). Only the CURRENT client's failure
+   *  may trigger recovery; a superseded client's late events are ignored. */
+  private async onChildFailure(bot: BotRecord, client: RpcClient, reason: string): Promise<void> {
+    const m = this.bots.get(bot.id);
+    if (m === undefined || m.client !== client) return; // superseded or stopped
+    m.client = null;
+    m.lastError = reason;
+    this.setStatus(m, "crashed", reason);
     this.emit("failure", { botId: bot.id, reason });
-    await this.maybeRestart(bot, reason);
+    client.kill();
+    await this.recoverFromFailure(bot, client, reason);
   }
 
-  private async maybeRestart(bot: BotRecord, reason: string): Promise<void> {
-    const managed = this.bots.get(bot.id);
-    if (managed === undefined) return;
-    if (managed.restarts >= MAX_RESTARTS) {
-      managed.status = "stopped";
-      this.emit("status", { botId: bot.id, status: "stopped", detail: `restart budget exhausted (${reason})` });
+  private async recoverFromFailure(bot: BotRecord, deadClient: RpcClient, reason: string): Promise<void> {
+    const m = this.bots.get(bot.id);
+    if (m === undefined) return;
+    if (m.client === deadClient) m.client = null;
+    if (m.stopRequested) {
+      if (m.status !== "stopped") this.setStatus(m, "stopped", `stop honored after failure: ${reason}`);
       return;
     }
-    managed.restarts += 1;
-    await new Promise((r) => setTimeout(r, RESTART_BACKOFF_MS * managed!.restarts));
+    if (m.restarting) return; // single-flight: one chain owns recovery
+    if (m.restarts >= MAX_RESTARTS) {
+      this.setStatus(m, "stopped", `restart budget exhausted (${reason})`);
+      return;
+    }
+    m.restarting = true;
     try {
-      await this.start(bot.id);
-      managed.restarts = 0;
-    } catch {
-      await this.maybeRestart(bot, reason);
+      while (m.restarts < MAX_RESTARTS && !m.stopRequested) {
+        m.restarts += 1;
+        const backoff = RESTART_BASE_MS * 2 ** (m.restarts - 1);
+        await new Promise((r) => setTimeout(r, backoff));
+        if (m.stopRequested) break;
+        try {
+          await this.start(bot.id);
+          return; // success — start() reset restarts/restarting
+        } catch {
+          /* retry loop continues */
+        }
+      }
+      if (!m.stopRequested) this.setStatus(m, "stopped", `restart budget exhausted (${reason})`);
+    } finally {
+      m.restarting = false;
     }
   }
 }

@@ -82,7 +82,7 @@ test("exclusive open locks out a second writer; stale lock is breakable", async 
   const { dir, path } = tmpState();
   try {
     const a = Store.openExclusive(path, { create: true });
-    assert.throws(() => Store.openExclusive(path), /locked by pid/);
+    assert.throws(() => Store.openExclusive(path), /locked by live pid/);
     a.close();
     const b = Store.openExclusive(path); // released ⇒ re-acquirable
     b.close();
