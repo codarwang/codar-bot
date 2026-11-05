@@ -233,3 +233,56 @@ test("§3.3 spawn integration: custom provider key reaches the child via env, mo
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("M2-E R3: parked approvals go stale when the client dies and can never resolve falsely", async () => {
+  const r = await rig();
+  try {
+    // NO auto-approve: the confirm request parks for the Web card.
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    const parked: Array<{ id: string; botId: string | null }> = [];
+    const settled: Array<{ id: string; confirmed: boolean; stale?: boolean }> = [];
+    r.bots.on("approval", (e: { id: string; botId: string | null }) => parked.push(e));
+    r.bots.on("approvalResolved", (e: { id: string; confirmed: boolean; stale?: boolean }) => settled.push(e));
+
+    const botId = r.store.state.bots[0]!.id;
+    await r.bots.start(botId);
+    const promptP = r.bots.prompt(botId, "please PARK on a write", "chat").catch(() => "client died — expected");
+    const dl = Date.now() + 5_000;
+    while (parked.length === 0 && Date.now() < dl) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    assert.equal(parked.length, 1, "one parked approval with a HOST id");
+    assert.match(parked[0]!.id, /^apr_/, "host-generated id, not the child id");
+    assert.equal(parked[0]!.botId, botId);
+
+    // The client dies (stop path: dropClient purges the park honestly).
+    await r.bots.stop(botId);
+    const dl2 = Date.now() + 5_000;
+    while (settled.length === 0 && Date.now() < dl2) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    assert.equal(settled.length, 1, "the parked card settles STALE, not silently");
+    assert.equal(settled[0]!.id, parked[0]!.id);
+    assert.equal(settled[0]!.stale, true);
+    assert.equal(settled[0]!.confirmed, false);
+
+    // A late Allow can never land and never lies "allowed".
+    assert.equal(r.bots.resolveApproval(parked[0]!.id, true), false, "purged park refuses to resolve");
+    assert.equal(settled.length, 1, "no second settlement event");
+
+    // Belt: an entry whose client is no longer any bot live client resolves
+    // stale instead of emitting confirmed:true (the false-allowed class).
+    // (Re-park on a restarted bot, then hard-kill via a DIE prompt.)
+    await r.bots.start(botId);
+    const promptP2 = r.bots.prompt(botId, "please PARK again then behave", "chat").catch(() => "client died — expected");
+    const dl3 = Date.now() + 5_000;
+    while (parked.length < 2 && Date.now() < dl3) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    assert.equal(parked.length, 2);
+    await r.bots.stop(botId); // stop path again for a clean shutdown
+    await Promise.allSettled([promptP, promptP2]);
+  } finally {
+    await r.dispose();
+  }
+});
