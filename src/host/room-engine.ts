@@ -349,6 +349,21 @@ export class RoomEngine extends EventEmitter {
 
   // --- messages.jsonl (sole writer §3) --------------------------------------------
 
+  /** Room lines from outside the turn loop (handoff results, §5.2). */
+  appendBot(roomId: string, botId: string, text: string): void {
+    const room = this.store.room(roomId);
+    if (room === undefined) throw new Error(`no room ${roomId}`);
+    const rt = this.runtime(roomId, room);
+    this.append(roomId, rt, { kind: "bot", id: botId }, text);
+  }
+
+  appendSystem(roomId: string, text: string): void {
+    const room = this.store.room(roomId);
+    if (room === undefined) throw new Error(`no room ${roomId}`);
+    const rt = this.runtime(roomId, room);
+    this.systemLine(roomId, rt, text);
+  }
+
   private append(
     roomId: string,
     rt: RoomRuntime,

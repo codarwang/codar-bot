@@ -32,12 +32,14 @@ import type { Store, BotRecord } from "./store.js";
 import { defaultBudget } from "./store.js";
 import type { UsageLedger } from "./usage-ledger.js";
 import type { RoomEngine } from "./room-engine.js";
+import type { Handoff } from "./handoff.js";
 
 export interface ApiDeps {
   store: Store;
   bots: BotManager;
   ledger: UsageLedger;
   rooms: RoomEngine;
+  handoff: Handoff;
   /** Built web UI dir (web/dist); absent ⇒ API-only mode. */
   webDir?: string;
 }
@@ -58,11 +60,13 @@ export class HttpApi {
     bots.on("message", (e) => this.broadcast("message", e));
     bots.on("failure", (e) => this.broadcast("failure", e));
     bots.on("aborted", (e) => this.broadcast("aborted", e));
-    const { rooms } = deps;
+    const { rooms, handoff } = deps;
     rooms.on("turn", (e) => this.broadcast("turn", e));
     rooms.on("system", (e) => this.broadcast("system", e));
     rooms.on("message", (e) => this.broadcast("roommessage", e));
     bots.on("tool", (e) => this.broadcast("tool", e));
+    handoff.on("progress", (e) => this.broadcast("progress", e));
+    handoff.on("work", (e) => this.broadcast("work", e));
   }
 
   /** Static serving of the built SPA (non-/api GET). Traversal-safe. */
@@ -389,6 +393,12 @@ export class HttpApi {
       }
     }
 
+    if (resource === "works") {
+      if (req.method === "GET" && parts.length === 2) {
+        this.send(res, 200, this.deps.handoff.works(url.searchParams.get("room") ?? undefined));
+        return;
+      }
+    }
     if (resource === "usage" && req.method === "GET" && parts.length === 2) {
       this.send(res, 200, this.deps.ledger.totals({
         botId: url.searchParams.get("bot") ?? undefined,

@@ -280,6 +280,20 @@ export class Store {
     return this.doc.bots[idx]!;
   }
 
+  addWork(work: Omit<WorkRecord, never> & { id: string }): WorkRecord {
+    this.doc.works.push(work);
+    this.persist();
+    return work;
+  }
+
+  updateWork(id: string, patch: Partial<Omit<WorkRecord, "id">>): WorkRecord | undefined {
+    const idx = this.doc.works.findIndex((w) => w.id === id);
+    if (idx === -1) return undefined;
+    this.doc.works[idx] = { ...this.doc.works[idx]!, ...patch };
+    this.persist();
+    return this.doc.works[idx];
+  }
+
   removeBot(id: string): void {
     this.doc.bots = this.doc.bots.filter((b) => b.id !== id);
     this.persist();
