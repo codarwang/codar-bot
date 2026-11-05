@@ -1,337 +1,282 @@
 /**
- * codar web — M1 plain UI (deliberately unstyled-first; the real
- * interaction-design pass lands between M1 and M2 per product decision).
- * Views: Overview (roster) · Chat (streaming + stop) · Usage (ledger).
+ * codar web — M2-E three-zone workstation (ui-design v1.3 contract):
+ * ROSTER inbox | CHAT timeline with inline cards | CONTEXT panel.
+ * The SSE hub lives here (§6 mapping); children are pure-ish views.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { makeT, type Lang } from "./i18n";
+import {
+  jsonFetch,
+  post,
+  type ApprovalEvent,
+  type BudgetRow,
+  type Overview,
+  type RoomMessage,
+  type TurnEvent,
+  type WorkRecord,
+} from "./api";
+import { Roster } from "./Roster";
+import { Chat } from "./Chat";
+import { ContextPanel } from "./ContextPanel";
 
-interface BotRecord {
-  id: string;
-  name: string;
-  role: string;
-  chief: boolean;
-  model: { provider: string; modelId: string; thinkingLevel: string };
-  sandbox: { mode: string };
-  sessionPath: string | null;
+export interface WorkView extends WorkRecord {
+  oneLiner?: string;
+  firstSeen: number;
+  endedAt?: number;
 }
-interface RuntimeStatus {
-  botId: string;
-  status: string;
-  lastError: string | null;
-}
-interface Overview {
-  bots: Array<BotRecord & { runtime?: RuntimeStatus }>;
-  rooms: Array<{ id: string; name: string; members: string[]; admin: string; mode: string }>;
-}
-
-type BotWithRuntime = BotRecord & { runtime?: RuntimeStatus };
-interface ChatMessage {
-  role: "user" | "assistant" | "system";
-  text: string;
-  streaming?: boolean;
-}
-interface UsageRow {
-  botId: string;
-  model: string;
-  kind: string;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  costMicros: number;
-}
-
-const jsonFetch = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-  const res = await fetch(path, init);
-  const body = (await res.json()) as T & { error?: string };
-  if (!res.ok) throw new Error(body.error ?? `${res.status}`);
-  return body;
-};
 
 export function App(): JSX.Element {
-  const [tab, setTab] = useState<"overview" | "chat" | "usage">("overview");
-  return (
-    <div className="app">
-      <header>
-        <h1>codar <span className="dim">bot team</span></h1>
-        <nav>
-          <button className={tab === "overview" ? "on" : ""} onClick={() => setTab("overview")}>Overview</button>
-          <button className={tab === "chat" ? "on" : ""} onClick={() => setTab("chat")}>Chat</button>
-          <button className={tab === "usage" ? "on" : ""} onClick={() => setTab("usage")}>Usage</button>
-        </nav>
-      </header>
-      <main>
-        {tab === "overview" && <Overview />}
-        {tab === "chat" && <Chat />}
-        {tab === "usage" && <Usage />}
-      </main>
-    </div>
+  const [lang, setLang] = useState<Lang>(() =>
+    (localStorage.getItem("codar.lang") as Lang | null) ?? "zh"
   );
-}
+  const t = useMemo(() => makeT(lang), [lang]);
+  const toggleLang = (): void => {
+    setLang((l) => {
+      const next = l === "zh" ? "en" : "zh";
+      localStorage.setItem("codar.lang", next);
+      return next;
+    });
+  };
 
-function Overview(): JSX.Element {
-  const [data, setData] = useState<Overview | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [newName, setNewName] = useState("");
-  const [newWorkDir, setNewWorkDir] = useState("");
-  const [newRole, setNewRole] = useState("");
-  const [newProvider, setNewProvider] = useState("zai-coding-cn");
-  const [newModelId, setNewModelId] = useState("glm-5.3");
-  const [newThinking, setNewThinking] = useState("low");
-  const refresh = useCallback(async () => {
-    try { setData(await jsonFetch<Overview>("/api/overview")); setError(null); }
-    catch (e) { setError(String(e)); }
+  const [overview, setOverview] = useState<Overview | null>(null);
+  const [roomId, setRoomId] = useState<string>("");
+  const [detailBotId, setDetailBotId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<RoomMessage[]>([]);
+  const [works, setWorks] = useState<Record<string, WorkView>>({});
+  const [turn, setTurn] = useState<TurnEvent | null>(null);
+  const [budgetRows, setBudgetRows] = useState<BudgetRow[]>([]);
+  const [approvals, setApprovals] = useState<Array<ApprovalEvent & { resolved?: boolean; outcome?: boolean }>>([]);
+  const [streaming, setStreaming] = useState<Record<string, string>>({});
+  const [statuses, setStatuses] = useState<Record<string, string>>({});
+  const [failures, setFailures] = useState<Record<string, string>>({});
+  const [sse, setSse] = useState<"connecting" | "live" | "reconnecting">("connecting");
+  const [ctxOpen, setCtxOpen] = useState(true);
+  const [rosterOpen, setRosterOpen] = useState(true);
+
+  const refreshOverview = useCallback(async () => {
+    try {
+      const o = await jsonFetch<Overview>("/api/overview");
+      setOverview(o);
+      setRoomId((cur) => (cur === "" && o.rooms.length > 0 ? o.rooms[0]!.id : cur));
+      setStatuses(Object.fromEntries(o.bots.map((b) => [b.id, b.runtime?.status ?? "stopped"])));
+    } catch {
+      /* surfaced via sse state + error surfaces */
+    }
   }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
-  useEffect(() => {
-    const es = new EventSource("/api/events");
-    es.addEventListener("status", () => void refresh());
-    return () => es.close();
-  }, [refresh]);
-
-  const act = async (id: string, action: "start" | "stop" | "delete"): Promise<void> => {
-    setBusy(id + action);
+  const refreshBudget = useCallback(async () => {
     try {
-      if (action === "delete") await jsonFetch(`/api/bots/${id}`, { method: "DELETE" });
-      else await jsonFetch(`/api/bots/${id}/${action}`, { method: "POST" });
-      await refresh();
-    } catch (e) { setError(String(e)); } finally { setBusy(null); }
-  };
-
-  const create = async (): Promise<void> => {
-    setBusy("create");
-    try {
-      await jsonFetch("/api/bots", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          name: newName, workDir: newWorkDir, role: newRole,
-          model: { provider: newProvider, modelId: newModelId, thinkingLevel: newThinking },
-        }),
-      });
-      setNewName(""); setNewWorkDir(""); setNewRole("");
-      await refresh();
-    } catch (e) { setError(String(e)); } finally { setBusy(null); }
-  };
-
-  return (
-    <section>
-      {error !== null && <div className="error">{error}</div>}
-      <table>
-        <thead><tr><th>bot</th><th>model</th><th>sandbox</th><th>status</th><th>actions</th></tr></thead>
-        <tbody>
-          {(data?.bots ?? []).map((b) => (
-            <tr key={b.id}>
-              <td>{b.name}{b.chief ? " ★" : ""}<div className="dim">{b.role}</div></td>
-              <td className="dim">{b.model.provider}/{b.model.modelId}</td>
-              <td className="dim">{b.sandbox.mode}</td>
-              <td><span className={`st st-${b.runtime?.status ?? "stopped"}`}>{b.runtime?.status ?? "stopped"}</span>
-                {b.runtime?.lastError != null && <div className="error">{b.runtime.lastError.slice(0, 120)}</div>}</td>
-              <td>
-                <button disabled={busy !== null} onClick={() => void act(b.id, b.runtime?.status === "stopped" || b.runtime?.status === "crashed" ? "start" : "stop")}>
-                  {b.runtime?.status === "stopped" || b.runtime?.status === "crashed" ? "start" : "stop"}
-                </button>{" "}
-                <button disabled={busy !== null} onClick={() => void act(b.id, "delete")}>delete</button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="row">
-        <input placeholder="name" value={newName} onChange={(e) => setNewName(e.target.value)} />
-        <input placeholder="role (optional)" value={newRole} onChange={(e) => setNewRole(e.target.value)} />
-        <input placeholder="workDir (absolute)" value={newWorkDir} onChange={(e) => setNewWorkDir(e.target.value)} />
-      </div>
-      <div className="row">
-        <input placeholder="provider" value={newProvider} onChange={(e) => setNewProvider(e.target.value)} />
-        <input placeholder="modelId" value={newModelId} onChange={(e) => setNewModelId(e.target.value)} />
-        <input placeholder="thinking" value={newThinking} onChange={(e) => setNewThinking(e.target.value)} />
-        <button disabled={busy !== null || newName === "" || newWorkDir === ""} onClick={() => void create()}>create bot</button>
-      </div>
-      <h3>rooms</h3>
-      <ul>
-        {(data?.rooms ?? []).map((r) => (
-          <li key={r.id}>{r.name} · {r.mode} · members: {r.members.length}</li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function Chat(): JSX.Element {
-  const [bots, setBots] = useState<BotRecord[]>([]);
-  const [botId, setBotId] = useState<string>("");
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [draft, setDraft] = useState("");
-  const [streaming, setStreaming] = useState(false);
-  const [status, setStatus] = useState<string>("stopped");
-  const [error, setError] = useState<string | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+      setBudgetRows(await jsonFetch<BudgetRow[]>("/api/budget"));
+    } catch {
+      /* meter shows stale — honest */
+    }
+  }, []);
 
   useEffect(() => {
-    // Hydrate the status pill for an already-running bot (no status event
-    // will arrive until the next transition).
-    void jsonFetch<Overview>("/api/overview")
-      .then((o) => {
-        const me: BotWithRuntime | undefined = o.bots.find((b) => b.id === botId);
-        if (me?.runtime) setStatus(me.runtime.status);
+    void refreshOverview();
+    void refreshBudget();
+  }, [refreshOverview, refreshBudget]);
+
+  // Room works hydration on selection + live merge via SSE below.
+  useEffect(() => {
+    if (roomId === "") return;
+    void jsonFetch<{ messages: RoomMessage[] }>(`/api/rooms/${roomId}/messages`)
+      .then((r) => setMessages(r.messages))
+      .catch(() => setMessages([]));
+    void jsonFetch<WorkRecord[]>(`/api/works?room=${roomId}`)
+      .then((ws) => {
+        const now = Date.now();
+        setWorks((prev) => {
+          const next = { ...prev };
+          for (const w of ws) next[w.id] = { ...w, oneLiner: next[w.id]?.oneLiner, firstSeen: next[w.id]?.firstSeen ?? now };
+          return next;
+        });
       })
       .catch(() => undefined);
-  }, [botId]);
-  useEffect(() => {
-    void jsonFetch<BotRecord[]>("/api/bots").then((bs) => {
-      setBots(bs);
-      if (bs.length > 0) setBotId((cur) => cur === "" ? bs[0]!.id : cur);
-    }).catch((e) => setError(String(e)));
-  }, []);
-  // History load (once per selected bot): the session transcript is the
-  // source of truth — a fresh page must not show an empty chat.
-  useEffect(() => {
-    if (botId === "") return;
-    setStreaming(false);
-    void jsonFetch<{ messages: ChatMessage[] }>(`/api/bots/${botId}/messages`)
-      .then((r) => setMessages(r.messages.map((m) => ({ role: m.role as ChatMessage["role"], text: m.text }))))
-      .catch(() => setMessages([])); // stopped bot or empty session
-  }, [botId]);
+    setDetailBotId(null);
+  }, [roomId]);
+
+  // --- SSE hub (§6 mapping) -------------------------------------------------------
+  const roomRef = useRef(roomId);
+  roomRef.current = roomId;
   useEffect(() => {
     const es = new EventSource("/api/events");
-    const onStatus = (e: MessageEvent): void => {
-      const d = JSON.parse(e.data) as { botId: string; status: string };
-      if (d.botId === botId) setStatus(d.status);
-    };
-    const onDelta = (e: MessageEvent): void => {
-      const d = JSON.parse(e.data) as { botId: string; text: string };
-      if (d.botId !== botId) return;
-      setStreaming(true);
-      setMessages((ms) => {
-        const last = ms[ms.length - 1];
-        if (last?.role === "assistant" && last.streaming) {
-          return [...ms.slice(0, -1), { ...last, text: last.text + d.text }];
+    const on = (name: string, fn: (d: unknown) => void): void => {
+      es.addEventListener(name, (e) => {
+        try {
+          fn(JSON.parse((e as MessageEvent).data));
+        } catch {
+          /* malformed frame — skip */
         }
-        return [...ms, { role: "assistant", text: d.text, streaming: true }];
       });
     };
-    const onMessage = (e: MessageEvent): void => {
-      const d = JSON.parse(e.data) as { botId: string; role: string; text: string };
-      if (d.botId !== botId || d.role !== "assistant") return;
-      setMessages((ms) => {
-        const last = ms[ms.length - 1];
-        if (last?.role === "assistant" && last.streaming === true) {
-          return [...ms.slice(0, -1), { role: "assistant", text: d.text }];
-        }
-        // Already landed via the /prompt response (same text): dedupe.
-        if (last?.role === "assistant" && last.text === d.text && d.text !== "") {
-          return ms;
-        }
-        // No streaming bubble and not a duplicate (event missed in a
-        // reconnect window): append instead of dropping.
-        return [...ms, { role: "assistant", text: d.text }];
-      });
-      setStreaming(false);
-    };
-    const onTerminal = (e: MessageEvent): void => {
-      const d = JSON.parse(e.data) as { botId: string };
-      if (d.botId === botId) setStreaming(false);
-    };
-    es.addEventListener("status", onStatus);
-    es.addEventListener("delta", onDelta);
-    es.addEventListener("message", onMessage);
-    es.addEventListener("failure", onTerminal);
-    es.addEventListener("aborted", onTerminal);
-    return () => { es.close(); };
-  }, [botId]);
-  useEffect(() => { scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight); }, [messages]);
+    es.onopen = (): void => setSse("live");
+    es.onerror = (): void => setSse("reconnecting");
 
-  const send = async (): Promise<void> => {
-    if (draft === "" || botId === "") return;
-    const text = draft;
-    setDraft("");
-    setMessages((ms) => [...ms, { role: "user", text }]);
+    on("status", (d) => {
+      const s = d as { botId: string; status: string };
+      setStatuses((prev) => ({ ...prev, [s.botId]: s.status }));
+      if (s.status !== "working") {
+        setStreaming((prev) => {
+          if (prev[s.botId] === undefined) return prev;
+          const next = { ...prev };
+          delete next[s.botId];
+          return next;
+        });
+      }
+      void refreshOverview();
+    });
+    on("delta", (d) => {
+      const s = d as { botId: string; text: string };
+      setStreaming((prev) => ({ ...prev, [s.botId]: (prev[s.botId] ?? "") + s.text }));
+    });
+    on("message", (d) => {
+      // assistant message_end = authoritative final (streaming bubble drops)
+      const s = d as { botId: string; role: string };
+      if (s.role === "assistant") {
+        setStreaming((prev) => {
+          if (prev[s.botId] === undefined) return prev;
+          const next = { ...prev };
+          delete next[s.botId];
+          return next;
+        });
+      }
+    });
+    on("failure", (d) => {
+      const s = d as { botId: string; reason: string };
+      setFailures((prev) => ({ ...prev, [s.botId]: s.reason }));
+    });
+    on("aborted", (d) => {
+      const s = d as { botId: string };
+      setStreaming((prev) => {
+        if (prev[s.botId] === undefined) return prev;
+        const next = { ...prev };
+        delete next[s.botId];
+        return next;
+      });
+    });
+    on("roommessage", (d) => {
+      const m = d as RoomMessage;
+      if (m.room !== roomRef.current) return;
+      setMessages((prev) => (prev.some((x) => x.seq === m.seq) ? prev : [...prev, m]));
+    });
+    on("turn", (d) => {
+      const s = d as TurnEvent;
+      if (s.roomId === roomRef.current) setTurn(s);
+    });
+    on("system", (d) => {
+      const s = d as { roomId: string };
+      if (s.roomId === roomRef.current) void refreshOverview();
+    });
+    on("work", (d) => {
+      const w = d as { workId: string; status: WorkRecord["status"]; parent: string; child: string };
+      setWorks((prev) => {
+        const cur = prev[w.workId];
+        if (cur !== undefined && cur.status === w.status) return prev;
+        return {
+          ...prev,
+          [w.workId]: {
+            ...(cur ?? { id: w.workId, parent: w.parent, child: w.child, requestId: "", roomId: roomRef.current, task: "", firstSeen: Date.now() }),
+            status: w.status,
+            endedAt: w.status === "done" || w.status === "failed" || w.status === "rejected" ? Date.now() : undefined,
+          },
+        };
+      });
+    });
+    on("progress", (d) => {
+      const p = d as { workId: string; oneLiner: string; status: string };
+      setWorks((prev) => {
+        const cur = prev[p.workId];
+        if (cur === undefined) return prev; // out-of-room work — WORKS panel filters by room anyway
+        if (cur.oneLiner === p.oneLiner && cur.status === p.status) return prev;
+        return { ...prev, [p.workId]: { ...cur, oneLiner: p.oneLiner, status: p.status as WorkRecord["status"], firstSeen: cur.firstSeen ?? Date.now() } };
+      });
+    });
+    on("budget", (d) => {
+      const b = d as { level: string };
+      void refreshBudget();
+      if (b.level === "stop") void refreshOverview();
+    });
+    on("approval", (d) => {
+      setApprovals((prev) => [...prev.filter((a) => a.id !== (d as ApprovalEvent).id), d as ApprovalEvent]);
+      void refreshOverview();
+    });
+    on("approvalResolved", (d) => {
+      const r = d as { id: string; confirmed: boolean };
+      setApprovals((prev) => prev.map((a) => (a.id === r.id ? { ...a, resolved: true, outcome: r.confirmed } : a)));
+    });
+    return () => es.close();
+  }, [refreshOverview, refreshBudget]);
+
+  const resolveApproval = async (id: string, confirmed: boolean): Promise<void> => {
     try {
-      const r = await jsonFetch<{ text: string }>(`/api/bots/${botId}/prompt`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: text }),
-      });
-      // The response IS the authoritative final — SSE may have delivered it
-      // already (dedupe), or the event was missed in a reconnect window.
-      setMessages((ms) => {
-        // Dedupe key is the TEXT, not the streaming flag: the normal order
-        // is message_end SSE BEFORE this response, by which time the flag
-        // is already cleared (R2's double-render).
-        const last = ms[ms.length - 1];
-        if (last?.role === "assistant" && last.text === r.text && r.text !== "") {
-          return ms; // already finalized by SSE
-        }
-        if (last?.role === "assistant" && last.streaming === true) {
-          return ms; // message_end imminent with different text; let it land
-        }
-        return [...ms, { role: "assistant", text: r.text }];
-      });
-      setStreaming(false);
-    } catch (e) {
-      setError(String(e));
-      setStreaming(false);
+      await post(`/api/approvals/${id}/resolve`, { confirmed });
+    } catch {
+      /* 404 = already resolved elsewhere; the SSE sync will settle the card */
     }
   };
-  const stop = async (): Promise<void> => {
-    try { await jsonFetch(`/api/bots/${botId}/abort`, { method: "POST" }); }
-    catch (e) { setError(String(e)); }
-  };
 
-  return (
-    <section className="chat">
-      {error !== null && <div className="error">{error}</div>}
-      <div className="row">
-        <select value={botId} onChange={(e) => { setBotId(e.target.value); setMessages([]); setStreaming(false); setStatus("stopped"); }}>
-          {bots.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
-        <span className={`st st-${status}`}>{status}</span>
-        {streaming && <button onClick={() => void stop()}>■ stop</button>}
-      </div>
-      <div className="messages" ref={scrollRef}>
-        {messages.map((m, i) => (
-          <div key={i} className={`msg msg-${m.role}`}>{m.text}{(m as { streaming?: boolean }).streaming ? "▍" : ""}</div>
-        ))}
-      </div>
-      <div className="row">
-        <input
-          placeholder="message…"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") void send(); }}
-        />
-        <button disabled={draft === "" || streaming} onClick={() => void send()}>send</button>
-      </div>
-    </section>
+  const room = overview?.rooms.find((r) => r.id === roomId) ?? null;
+  const roomWorks = useMemo(
+    () => Object.values(works).filter((w) => w.roomId === roomId),
+    [works, roomId]
   );
-}
 
-function Usage(): JSX.Element {
-  const [rows, setRows] = useState<UsageRow[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    void jsonFetch<UsageRow[]>("/api/usage").then(setRows).catch((e) => setError(String(e)));
-  }, []);
-  // Catalog-currency micros — the currency is whatever the provider's
-  // price list uses (CNY for our presets); the display stays neutral.
-  const micros = (m: number): string => (m / 1e6).toFixed(4);
   return (
-    <section>
-      {error !== null && <div className="error">{error}</div>}
-      <table>
-        <thead><tr><th>bot</th><th>model</th><th>kind</th><th>input</th><th>output</th><th>cacheRead</th><th>cost<span className="dim"> (provider ccy)</span></th></tr></thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              <td>{r.botId}</td><td className="dim">{r.model}</td><td>{r.kind}</td>
-              <td>{r.input.toLocaleString()}</td><td>{r.output.toLocaleString()}</td>
-              <td>{r.cacheRead.toLocaleString()}</td><td>{micros(r.costMicros)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </section>
+    <div className={`app ${rosterOpen ? "" : "roster-closed"} ${ctxOpen ? "" : "ctx-closed"}`}>
+      <header className="topbar">
+        <button className="ghost" onClick={() => setRosterOpen((v) => !v)} aria-label="roster">☰</button>
+        <div className="brand">
+          {t.brand} <span className="dim">{t.brandSub}</span>
+        </div>
+        <div className="brand-note dim">not affiliated with earendil-works / pi</div>
+        <div className="live">
+          <span className={`dot dot-${sse === "live" ? "live" : "off"}`} />
+          {sse === "live" ? t.connected : t.reconnecting}
+        </div>
+        <button className="ghost" onClick={() => setCtxOpen((v) => !v)} aria-label="context">▤</button>
+        <button className="lang" onClick={toggleLang}>{t.langToggle}</button>
+      </header>
+      <div className="zones">
+        <Roster
+          t={t}
+          lang={lang}
+          overview={overview}
+          statuses={statuses}
+          failures={failures}
+          approvals={approvals}
+          messages={messages}
+          roomId={roomId}
+          onSelectRoom={setRoomId}
+          onSelectBot={setDetailBotId}
+          onRefresh={refreshOverview}
+        />
+        <Chat
+          t={t}
+          lang={lang}
+          overview={overview}
+          room={room}
+          turn={turn}
+          messages={messages}
+          works={roomWorks}
+          streaming={streaming}
+          approvals={approvals}
+          onResolveApproval={resolveApproval}
+          onRefresh={refreshOverview}
+        />
+        <ContextPanel
+          t={t}
+          lang={lang}
+          overview={overview}
+          room={room}
+          turn={turn}
+          works={roomWorks}
+          budgetRows={budgetRows}
+          detailBotId={detailBotId}
+          onBack={() => setDetailBotId(null)}
+          onRefresh={refreshOverview}
+          onBudgetChanged={refreshBudget}
+        />
+      </div>
+    </div>
   );
 }
