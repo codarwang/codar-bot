@@ -26,6 +26,7 @@ interface Overview {
 interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
+  streaming?: boolean;
 }
 interface UsageRow {
   botId: string;
@@ -72,6 +73,10 @@ function Overview(): JSX.Element {
   const [busy, setBusy] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const [newWorkDir, setNewWorkDir] = useState("");
+  const [newRole, setNewRole] = useState("");
+  const [newProvider, setNewProvider] = useState("zai-coding-cn");
+  const [newModelId, setNewModelId] = useState("glm-5.3");
+  const [newThinking, setNewThinking] = useState("low");
   const refresh = useCallback(async () => {
     try { setData(await jsonFetch<Overview>("/api/overview")); setError(null); }
     catch (e) { setError(String(e)); }
@@ -98,9 +103,12 @@ function Overview(): JSX.Element {
       await jsonFetch("/api/bots", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: newName, workDir: newWorkDir }),
+        body: JSON.stringify({
+          name: newName, workDir: newWorkDir, role: newRole,
+          model: { provider: newProvider, modelId: newModelId, thinkingLevel: newThinking },
+        }),
       });
-      setNewName(""); setNewWorkDir("");
+      setNewName(""); setNewWorkDir(""); setNewRole("");
       await refresh();
     } catch (e) { setError(String(e)); } finally { setBusy(null); }
   };
@@ -119,8 +127,8 @@ function Overview(): JSX.Element {
               <td><span className={`st st-${b.runtime?.status ?? "stopped"}`}>{b.runtime?.status ?? "stopped"}</span>
                 {b.runtime?.lastError != null && <div className="error">{b.runtime.lastError.slice(0, 120)}</div>}</td>
               <td>
-                <button disabled={busy !== null} onClick={() => void act(b.id, b.id && (b.runtime?.status === "stopped" || b.runtime?.status === "crashed") ? "start" : "stop")}>
-                  {(b.runtime?.status ?? "stopped") === "idle" || (b.runtime?.status ?? "") === "working" ? "stop" : "start"}
+                <button disabled={busy !== null} onClick={() => void act(b.id, b.runtime?.status === "stopped" || b.runtime?.status === "crashed" ? "start" : "stop")}>
+                  {b.runtime?.status === "stopped" || b.runtime?.status === "crashed" ? "start" : "stop"}
                 </button>{" "}
                 <button disabled={busy !== null} onClick={() => void act(b.id, "delete")}>delete</button>
               </td>
@@ -129,8 +137,14 @@ function Overview(): JSX.Element {
         </tbody>
       </table>
       <div className="row">
-        <input placeholder="new bot name" value={newName} onChange={(e) => setNewName(e.target.value)} />
+        <input placeholder="name" value={newName} onChange={(e) => setNewName(e.target.value)} />
+        <input placeholder="role (optional)" value={newRole} onChange={(e) => setNewRole(e.target.value)} />
         <input placeholder="workDir (absolute)" value={newWorkDir} onChange={(e) => setNewWorkDir(e.target.value)} />
+      </div>
+      <div className="row">
+        <input placeholder="provider" value={newProvider} onChange={(e) => setNewProvider(e.target.value)} />
+        <input placeholder="modelId" value={newModelId} onChange={(e) => setNewModelId(e.target.value)} />
+        <input placeholder="thinking" value={newThinking} onChange={(e) => setNewThinking(e.target.value)} />
         <button disabled={busy !== null || newName === "" || newWorkDir === ""} onClick={() => void create()}>create bot</button>
       </div>
       <h3>rooms</h3>
@@ -159,6 +173,15 @@ function Chat(): JSX.Element {
       if (bs.length > 0) setBotId((cur) => cur === "" ? bs[0]!.id : cur);
     }).catch((e) => setError(String(e)));
   }, []);
+  // History load (once per selected bot): the session transcript is the
+  // source of truth — a fresh page must not show an empty chat.
+  useEffect(() => {
+    if (botId === "") return;
+    setStreaming(false);
+    void jsonFetch<{ messages: ChatMessage[] }>(`/api/bots/${botId}/messages`)
+      .then((r) => setMessages(r.messages.map((m) => ({ role: m.role as ChatMessage["role"], text: m.text }))))
+      .catch(() => setMessages([])); // stopped bot or empty session
+  }, [botId]);
   useEffect(() => {
     const es = new EventSource("/api/events");
     const onStatus = (e: MessageEvent): void => {
@@ -182,16 +205,24 @@ function Chat(): JSX.Element {
       if (d.botId !== botId || d.role !== "assistant") return;
       setMessages((ms) => {
         const last = ms[ms.length - 1];
-        if (last?.role === "assistant" && last.streaming) {
+        if (last?.role === "assistant" && last.streaming === true) {
           return [...ms.slice(0, -1), { role: "assistant", text: d.text }];
         }
-        return ms;
+        // No streaming bubble (event missed in a reconnect window): the
+        // authoritative final still lands — append instead of dropping.
+        return [...ms, { role: "assistant", text: d.text }];
       });
       setStreaming(false);
+    };
+    const onTerminal = (e: MessageEvent): void => {
+      const d = JSON.parse(e.data) as { botId: string };
+      if (d.botId === botId) setStreaming(false);
     };
     es.addEventListener("status", onStatus);
     es.addEventListener("delta", onDelta);
     es.addEventListener("message", onMessage);
+    es.addEventListener("failure", onTerminal);
+    es.addEventListener("aborted", onTerminal);
     return () => { es.close(); };
   }, [botId]);
   useEffect(() => { scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight); }, [messages]);
@@ -202,13 +233,24 @@ function Chat(): JSX.Element {
     setDraft("");
     setMessages((ms) => [...ms, { role: "user", text }]);
     try {
-      // Optimistic local echo; the authoritative transcript is the ledger
-      // of assistant messages (SSE) — final text arrives via /prompt result.
-      await jsonFetch<{ text: string }>(`/api/bots/${botId}/prompt`, {
+      const r = await jsonFetch<{ text: string }>(`/api/bots/${botId}/prompt`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ message: text }),
       });
+      // The response IS the authoritative final — SSE may have delivered it
+      // already (dedupe), or the event was missed in a reconnect window.
+      setMessages((ms) => {
+        const last = ms[ms.length - 1];
+        if (last?.role === "assistant" && last.streaming === true && last.text === r.text) {
+          return [...ms.slice(0, -1), { role: "assistant", text: r.text }];
+        }
+        if (last?.role === "assistant" && last.streaming === true) {
+          return ms; // a message_end is imminent; let it finalize
+        }
+        return [...ms, { role: "assistant", text: r.text }];
+      });
+      setStreaming(false);
     } catch (e) {
       setError(String(e));
       setStreaming(false);
@@ -223,7 +265,7 @@ function Chat(): JSX.Element {
     <section className="chat">
       {error !== null && <div className="error">{error}</div>}
       <div className="row">
-        <select value={botId} onChange={(e) => { setBotId(e.target.value); setMessages([]); }}>
+        <select value={botId} onChange={(e) => { setBotId(e.target.value); setMessages([]); setStreaming(false); setStatus("stopped"); }}>
           {bots.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
         <span className={`st st-${status}`}>{status}</span>

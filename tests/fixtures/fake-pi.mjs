@@ -188,6 +188,13 @@ process.stdin.on("data", (chunk) => {
         break;
       case "abort":
         respond(id, "abort");
+        // Real pi still emits message_end for the in-flight assistant
+        // message with stopReason "aborted" (agent-session.js), then settles.
+        out({ type: "message_start", message: { role: "assistant" } });
+        out({
+          type: "message_end",
+          message: { role: "assistant", content: [{ type: "text", text: "" }], stopReason: "aborted", usage: usage(0, 0) },
+        });
         out({ type: "agent_settled", aborted: true });
         break;
       case "get_last_assistant_text":
