@@ -38,11 +38,14 @@ test("init creates chief + default room + keys.json; re-init is idempotent", () 
     assert.equal(store2.state.bots.length, 1);
     store2.close();
 
-    // Second provider: adds a key entry, still one chief.
+    // Second provider: adds a key entry, still one chief — and the chief's
+    // model is NOT rewritten (adding a key ≠ switching the chief).
+    const before = Store.open(p.state).state.bots[0]!.model;
     initTeam({ provider: "minimax-cn", apiKey: "k-3", modelId: "abab", dataRoot: root });
     const store3 = Store.open(p.state);
     assert.equal(store3.state.bots.length, 1);
     assert.equal(Object.keys(loadKeys(p.keys).providers).length, 2);
+    assert.deepEqual(store3.state.bots[0]!.model, before);
     store3.close();
   } finally {
     rmSync(root, { recursive: true, force: true });
