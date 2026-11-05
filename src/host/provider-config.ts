@@ -99,7 +99,7 @@ export function buildSpawnConfig(
     return { env, modelsJson: null, piConfDir };
   }
   const hasOverride = entry.baseUrl !== undefined || entry.models !== undefined;
-  const standardEnv = STANDARD_PROVIDER_ENV[provider];
+  const standardEnv = Object.hasOwn(STANDARD_PROVIDER_ENV, provider) ? STANDARD_PROVIDER_ENV[provider] : undefined;
   const keyPresent = typeof entry.apiKey === "string" && entry.apiKey !== "";
   if (!hasOverride && standardEnv !== undefined) {
     if (keyPresent) env[standardEnv] = entry.apiKey!;

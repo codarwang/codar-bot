@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import type { BotManager } from "./bot-manager.js";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
+import { ApiError } from "./http-error.js";
 import type { Store, BotRecord } from "./store.js";
 import { defaultBudget } from "./store.js";
 import type { UsageLedger } from "./usage-ledger.js";
@@ -73,12 +74,11 @@ export class HttpApi {
     const url = new URL(req.url ?? "/", "http://localhost");
     const parts = url.pathname.split("/").filter(Boolean); // ["api", ...]
     void this.route(req, res, url, parts).catch((e) => {
-      const message = String(e);
-      // Input errors deserve precise 4xx, not blanket 500s (R2/R3 P3).
-      if (/^Error: no bot |^Error: no room /.test(message)) return this.send(res, 404, { error: message.slice(0, 400) });
-      if (/already working|already running|wait for idle|is not running/.test(message)) return this.send(res, 409, { error: message.slice(0, 400) });
-      const bad = /not valid JSON|Unexpected (token|end of JSON)|body too large|missing|already in use|must be|requires|rejected/.test(message);
-      this.send(res, bad ? 400 : 500, { error: message.slice(0, 400) });
+      if (e instanceof ApiError) {
+        this.send(res, e.statusCode, { error: String(e.message).slice(0, 400) });
+        return;
+      }
+      this.send(res, 500, { error: String(e).slice(0, 400) });
     });
   }
 
@@ -98,7 +98,7 @@ export class HttpApi {
     }
     const [, resource, id, action] = parts;
 
-    if (resource === "overview" && req.method === "GET") {
+    if (resource === "overview" && req.method === "GET" && parts.length === 2) {
       this.send(res, 200, {
         bots: this.deps.store.state.bots.map((b) => ({
           ...b,
@@ -127,25 +127,25 @@ export class HttpApi {
       if (req.method === "POST" && id === undefined) {
         const body = (await this.readJson(req)) as Partial<BotRecord>;
         const name = String(body.name ?? "").trim();
-        if (name.length === 0) return this.send(res, 400, { error: "name required" });
+        if (name.length === 0) throw new ApiError(400, "name required");
         const workDir = String(body.workDir ?? "");
         if (!workDir.startsWith("/")) {
-          return this.send(res, 400, { error: "workDir must be an absolute path" });
+          throw new ApiError(400, "workDir must be an absolute path");
         }
         if (body.sandbox?.mode === "docker") {
           // No docker runner in the host yet — refuse honestly instead of
           // silently running bare while claiming isolation (§8).
-          return this.send(res, 501, { error: "docker sandbox lands with the M1-D runner; use host-not-isolated" });
+          throw new ApiError(501, "docker sandbox lands with the M1-D runner; use host-not-isolated");
         }
         const model = body.model ?? { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" };
         if (typeof model.provider !== "string" || typeof model.modelId !== "string" ||
             typeof model.thinkingLevel !== "string") {
-          return this.send(res, 400, { error: "model needs string provider/modelId/thinkingLevel" });
+          throw new ApiError(400, "model needs string provider/modelId/thinkingLevel");
         }
         const budget = body.budget ?? { maxTokens: 5_000_000, maxCostMicros: 20_000_000, maxTurns: 2_000, maxWallMs: 3_600_000 };
         for (const k of ["maxTokens", "maxCostMicros", "maxTurns", "maxWallMs"] as const) {
           if (typeof budget[k] !== "number" || !Number.isFinite(budget[k]) || budget[k] < 0) {
-            return this.send(res, 400, { error: `budget.${k} must be a non-negative number` });
+            throw new ApiError(400, `budget.${k} must be a non-negative number`);
           }
         }
         let bot;
@@ -156,7 +156,7 @@ export class HttpApi {
             sandbox: { mode: "host-not-isolated" }, budget,
           });
         } catch (e) {
-          return this.send(res, 409, { error: String(e).slice(0, 200) });
+          throw new ApiError(409, String(e).slice(0, 200));
         }
         this.send(res, 201, bot);
         return;
@@ -174,32 +174,32 @@ export class HttpApi {
               typeof (model as BotRecord["model"]).provider !== "string" ||
               typeof (model as BotRecord["model"]).modelId !== "string" ||
               typeof (model as BotRecord["model"]).thinkingLevel !== "string") {
-            return this.send(res, 400, { error: "model needs string provider/modelId/thinkingLevel" });
+            throw new ApiError(400, "model needs string provider/modelId/thinkingLevel");
           }
           patch.model = model as BotRecord["model"];
         }
         const budget = body["budget"];
         if (budget !== undefined) {
           if (typeof budget !== "object" || budget === null || Array.isArray(budget)) {
-            return this.send(res, 400, { error: "budget must be an object" });
+            throw new ApiError(400, "budget must be an object");
           }
           for (const k of ["maxTokens", "maxCostMicros", "maxTurns", "maxWallMs"] as const) {
             const v = (budget as Record<string, unknown>)[k];
             if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
-              return this.send(res, 400, { error: `budget.${k} must be a non-negative number` });
+              throw new ApiError(400, `budget.${k} must be a non-negative number`);
             }
           }
           patch.budget = budget as BotRecord["budget"];
         }
         if (body["id"] !== undefined || body["sessionPath"] !== undefined || body["chief"] !== undefined) {
-          return this.send(res, 400, { error: "id/sessionPath/chief are immutable over PATCH" });
+          throw new ApiError(400, "id/sessionPath/chief are immutable over PATCH");
         }
-        if (Object.keys(patch).length === 0) return this.send(res, 400, { error: "no patchable fields" });
+        if (Object.keys(patch).length === 0) throw new ApiError(400, "no patchable fields");
         const existing = this.deps.store.bot(id);
         if (existing === undefined) return this.send(res, 404, { error: `no bot ${id}` });
         if (patch.name !== undefined && patch.name !== existing.name &&
             this.deps.store.state.bots.some((b) => b.name === patch.name)) {
-          return this.send(res, 409, { error: `bot name "${patch.name}" already in use` });
+          throw new ApiError(409, `bot name "${patch.name}" already in use`);
         }
         this.send(res, 200, this.deps.store.updateBot(id, patch));
         return;
@@ -217,7 +217,7 @@ export class HttpApi {
       if (req.method === "POST" && id !== undefined && action === "prompt") {
         const body = (await this.readJson(req)) as { message?: string };
         if (typeof body.message !== "string" || body.message.length === 0) {
-          return this.send(res, 400, { error: "message required" });
+          throw new ApiError(400, "message required");
         }
         const text = await this.deps.bots.prompt(id, body.message);
         this.send(res, 200, { text });
@@ -247,7 +247,7 @@ export class HttpApi {
         this.send(res, 200, this.deps.store.state.rooms);
         return;
       }
-      if (req.method === "GET" && id !== undefined) {
+      if (req.method === "GET" && id !== undefined && action === undefined) {
         const room = this.deps.store.room(id);
         if (room === undefined) return this.send(res, 404, { error: `no room ${id}` });
         this.send(res, 200, room);
@@ -259,20 +259,20 @@ export class HttpApi {
         const members = Array.isArray(body["members"]) ? body["members"].filter((m): m is string => typeof m === "string") : [];
         const admin = String(body["admin"] ?? members[0] ?? "");
         if (name.length === 0 || members.length === 0 || admin === "") {
-          return this.send(res, 400, { error: "rooms need name, members[], admin" });
+          throw new ApiError(400, "rooms need name, members[], admin");
         }
         if (this.deps.store.state.rooms.some((r) => r.name === name)) {
-          return this.send(res, 409, { error: `room name "${name}" already in use` });
+          throw new ApiError(409, `room name "${name}" already in use`);
         }
         const sharedDir = String(body["sharedDir"] ?? join(this.deps.store.statePath, "..", "shared"));
         if (!sharedDir.startsWith("/")) {
-          return this.send(res, 400, { error: "sharedDir must be an absolute path" });
+          throw new ApiError(400, "sharedDir must be an absolute path");
         }
         for (const m of members) {
-          if (this.deps.store.bot(m) === undefined) return this.send(res, 400, { error: `unknown member bot ${m}` });
+          if (this.deps.store.bot(m) === undefined) throw new ApiError(400, `unknown member bot ${m}`);
         }
         if (this.deps.store.bot(admin) === undefined) {
-          return this.send(res, 400, { error: `unknown admin bot ${admin}` });
+          throw new ApiError(400, `unknown admin bot ${admin}`);
         }
         mkdirSync(sharedDir, { recursive: true }); // AFTER validation: rejects leave nothing behind
         const room = this.deps.store.addRoom({
@@ -287,7 +287,7 @@ export class HttpApi {
       }
     }
 
-    if (resource === "usage" && req.method === "GET") {
+    if (resource === "usage" && req.method === "GET" && parts.length === 2) {
       this.send(res, 200, this.deps.ledger.totals({
         botId: url.searchParams.get("bot") ?? undefined,
         sinceHour: url.searchParams.get("since") ?? undefined,
