@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.9（M0-S2/S3/S4 已实测落地） |
+| 版本 | v0.10（M1 已落地；provider 机制统一） |
 | 日期 | 2026-11-05 |
 | 上游 | `docs/PRD.md` v1.4（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
@@ -200,14 +200,17 @@ Chief 的特权操作（PRD §5：建/改/停 Bot 与群、指派模型、看全
   用户随意查看/备份，key 隔离），结构：
   `{providers: {<name>: {apiKey, baseUrl?, models?}}}`——`baseUrl`/`models`
   支撑 OpenAI 兼容自定义端点（写入 pi 的 provider 配置，见下）。
-- 注入：**标准 provider**（anthropic/openai/google 等 pi 内置）以环境变量
-  注入（`ANTHROPIC_API_KEY` 等 pi 认可的 env 名，容器模式经 `docker run -e`，
-  不落盘镜像）；**自定义 provider**（自定义 baseUrl）经 pi 公开配置面供给：
-  容器设 `PI_CODING_AGENT_DIR=/state/pi-conf`（重定向 agent 目录），host 从
-  keys.json 在该目录生成 `models.json`（providers 段含 baseUrl/models）；
-  片段内 apiKey 用 `$ENV` 插值引用、不双份落盘（key 唯一实存于 keys.json）。
-  注意该 env 重定向的是整个 agent 目录（settings/auth/extensions 解析位
-  置随之变化），容器内的叠加影响 S3 实测确认。
+- 注入（v0.10 统一机制，Felix 拍板 2026-11-05）：**全部 provider 一律**走
+  pi 公开配置面——host 从 keys.json 为每 Bot 生成 `pi-conf/<botId>/
+  models.json`（`PI_CODING_AGENT_DIR` 重定向，容器/裸进程同路），key 经
+  `$CODAR_BOT_KEY` env 插值、永不落盘（key 原文唯一实存 keys.json）。
+  **不再使用 pi 内置 provider 的 env 注入路**：pi 版本已 pin（A7），内置
+  目录不随升级更新，该分支只剩混淆。常见 provider 的 baseUrl/api 协议由
+  **codar 自己的 presets 表**（provider-config.ts，含 minimax-anthropic
+  等 Anthropic 协议中继）承载，keys.json 条目可覆盖任意字段；pi 原生认识
+  的 provider 名（如 zai-coding-cn）在覆写之下仍合并 pi 自带目录；未知
+  provider 由 host 按 bot.modelId 生成最小 models 条目（**不虚构价格**——
+  未计价模型的费用型预算依 §4 降级为 token 型）。
   key 永不出现在 argv（进程列表可见）、永不入 state.json、永不回显完整值。
 - 录入面：§7 `GET/PUT /api/settings/providers`（GET 脱敏回显 `sk-…abcd`）。
 
@@ -541,6 +544,10 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
   表新增「sessionFile 路径换算」实测来源。M1 待决清单：容器加固水位
   （cap-drop/no-new-privileges/资源限额，§8）、Linux 宿主 uid≠1000 的挂载
   写权限、镜像 base digest pin。
+- 2026-11-05 v0.10：§3.3 provider 机制统一（Felix 拍板）——移除「pi 内置
+  provider env 注入」分支，所有 provider 走 codar 的 keys.json + 生成的
+  models.json + presets 表（含 minimax-anthropic Anthropic 协议中继）；
+  §15-4 第二 provider 以 MiniMax anthropic-messages 端点落地实测。
 - 2026-11-05 v0.9a：S4 review 第 2/3 轮清扫——同文档 5 处 session 路径
   残留对齐 v0.9（顶层树/§2.3-4/§4 树/sessionPath 示例）；sessionFile 措辞
   由「实测来源」修正为「类型已核实（spike 用目录扫描实现，M1 改用该字段）」
