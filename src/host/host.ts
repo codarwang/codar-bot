@@ -11,7 +11,6 @@ import { paths, type HostPaths } from "./paths.js";
 
 export interface HostOptions {
   dataRoot?: string;
-  port?: number;
   /** bare-process spawn (tests: fake-pi; dev: real pi). */
   bin?: string;
   /** argv between bin and the rpc flags (tests: the fake-pi fixture path). */
@@ -68,7 +67,7 @@ export class Host {
     if (this.running) throw new Error("host already running");
     this.running = true;
     const envPort = Number(process.env.CODAR_BOT_PORT);
-    this.port = await this.api.listen(Number.isInteger(envPort) && envPort > 0 ? envPort : 7600);
+    this.port = await this.api.listen(Number.isInteger(envPort) && envPort >= 0 ? envPort : 7600);
     writeFileSync(this.p.hostRuntime, JSON.stringify(
       { pid: process.pid, port: this.port, startedAt: new Date().toISOString() }, null, 2));
     return this.port;

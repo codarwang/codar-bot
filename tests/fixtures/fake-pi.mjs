@@ -37,6 +37,30 @@ function fail(id, command, error) {
 }
 
 async function runPrompt(id, message) {
+  if (message.includes("SLOW")) {
+    // Deterministic long run: started → 1.5s of silence → settle with OK.
+    respond(id, "prompt", { disposition: "started" });
+    out({ type: "agent_start" });
+    out({ type: "turn_start" });
+    out({ type: "message_start", message: { role: "system", content: "" } });
+    out({ type: "message_end", message: { role: "system", content: "" } });
+    setTimeout(() => {
+      lastText = "OK";
+      out({ type: "message_start", message: { role: "assistant" } });
+      out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "OK" } });
+      out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "OK" }], stopReason: "stop", usage: usage(4, 1) } });
+      out({ type: "turn_end" });
+      out({ type: "agent_end" });
+      out({ type: "agent_settled", aborted: false });
+    }, 1_500);
+    return;
+  }
+  if (message.startsWith("/")) {
+    // pi handles slash commands without starting an agent run — respond
+    // disposition "handled" and settle nothing (rpc-mode real behavior).
+    respond(id, "prompt", { disposition: "handled" });
+    return;
+  }
   respond(id, "prompt", { disposition: "started" });
   out({ type: "agent_start" });
   out({ type: "turn_start" });
@@ -50,6 +74,12 @@ async function runPrompt(id, message) {
     out({ type: "tool_execution_start", toolCallId: `call-${seq}`, toolName: "write", args: { path: "x" } });
     out({ type: "extension_ui_request", id: parkId, method: "confirm", title: "codar-gate: approval required", message: "write" });
     return; // parked; resumed by extension_ui_response below
+  }
+
+  if (message.includes("DIE")) {
+    // Simulate a mid-run child crash: hard exit without settling.
+    setTimeout(() => process.exit(1), 30);
+    return;
   }
 
   if (message.includes("FAIL")) {
@@ -119,12 +149,16 @@ process.stdin.on("data", (chunk) => {
     }
     const { id, type } = cmd;
     switch (type) {
-      case "get_state":
-        respond(id, "get_state", {
+      case "get_state": {
+        const delay = Number(process.env.FAKE_PI_READY_DELAY_MS ?? "0");
+        const answer = () => respond(id, "get_state", {
           isStreaming: pendingPark !== null, sessionFile,
           sessionId: "fake-session", messageCount: 0,
         });
+        if (delay > 0) setTimeout(answer, delay);
+        else answer();
         break;
+      }
       case "prompt":
         void runPrompt(id, String(cmd.message ?? ""));
         break;

@@ -11,20 +11,21 @@
  * - schemaVersion + migrations: forward-only, each step a pure function.
  */
 import {
+  chmodSync,
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
   openSync,
-  closeSync,
   readFileSync,
-  writeFileSync,
   renameSync,
   unlinkSync,
+  writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 export const SCHEMA_VERSION = 1;
-const LOCK_STALE_MS = 30_000;
 
 export interface BotModelRef {
   provider: string;
@@ -138,37 +139,39 @@ function acquireLock(lockPath: string): LockHandle {
   mkdirSync(dirname(lockPath), { recursive: true });
   const tryCreate = (): boolean => {
     try {
+      // Payload written through the SAME wx fd — no TOCTOU window between
+      // create and write for a concurrent breaker to observe/clobber.
       const fd = openSync(lockPath, "wx");
-      closeSync(fd);
-      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }), "utf8");
+      try {
+        writeSync(fd, `${JSON.stringify({ pid: process.pid, ts: Date.now() })}\n`);
+      } finally {
+        closeSync(fd);
+      }
       return true;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
       throw error;
     }
   };
-  if (tryCreate()) {
-    return {
-      release(): void {
-        try {
-          unlinkSync(lockPath);
-        } catch {
-          /* already gone */
-        }
-      },
-    };
-  }
-  // Existing lock: break it only when provably stale (dead pid or ancient ts).
+  const release = (): void => {
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      /* already gone */
+    }
+  };
+  if (tryCreate()) return { release };
+  // Existing lock: breakable ONLY when the owning pid is provably dead (or
+  // the lock is unreadable garbage). A LIVE pid holds the lock regardless of
+  // age — hosts are long-lived daemons; wall time proves nothing (R1 fix).
   let info: { pid?: number; ts?: number } = {};
   try {
     info = JSON.parse(readFileSync(lockPath, "utf8")) as { pid?: number; ts?: number };
   } catch {
-    /* unreadable — treat via ts below */
+    /* unreadable — breakable */
   }
-  const pidAlive = typeof info.pid === "number" && isPidAlive(info.pid);
-  const age = typeof info.ts === "number" ? Date.now() - info.ts : Infinity;
-  if (pidAlive && age < LOCK_STALE_MS) {
-    throw new Error(`state.json is locked by pid ${info.pid} (age ${Math.round(age / 1000)}s)`);
+  if (typeof info.pid === "number" && isPidAlive(info.pid)) {
+    throw new Error(`state.json is locked by live pid ${info.pid}`);
   }
   try {
     unlinkSync(lockPath);
@@ -178,15 +181,7 @@ function acquireLock(lockPath: string): LockHandle {
   if (!tryCreate()) {
     throw new Error("state.json lock race lost to another writer");
   }
-  return {
-    release(): void {
-      try {
-        unlinkSync(lockPath);
-      } catch {
-        /* already gone */
-      }
-    },
-  };
+  return { release };
 }
 
 // --- store -------------------------------------------------------------------
@@ -208,7 +203,14 @@ export class Store {
     mkdirSync(dirname(statePath), { recursive: true });
     let raw: Record<string, unknown> | null = null;
     if (existsSync(statePath)) {
-      raw = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+      try {
+        raw = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+      } catch (error) {
+        throw new Error(`state at ${statePath} is not valid JSON (${String(error).slice(0, 120)})`);
+      }
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+        throw new Error(`state at ${statePath} is not a JSON object`);
+      }
     } else if (opts.create !== true) {
       throw new Error(`no state at ${statePath} (call open(..., {create:true}) to initialize)`);
     }
@@ -287,16 +289,18 @@ export class Store {
     return this.doc.rooms[idx]!;
   }
 
-  /** Atomic persistence: tmp file → fsync → rename (§3 store contract). */
+  /** Atomic persistence: tmp file → fsync → chmod 0600 → rename (§3/§8). */
   persist(): void {
     const tmp = `${this.statePath}.tmp-${process.pid}-${randomUUID().slice(0, 6)}`;
     const payload = JSON.stringify(this.doc, null, 2);
     const fd = openSync(tmp, "w");
     try {
-      writeFileSync(fd, payload + "\n", "utf8");
+      writeSync(fd, payload + "\n");
+      fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
+    chmodSync(tmp, 0o600);
     renameSync(tmp, this.statePath);
   }
 

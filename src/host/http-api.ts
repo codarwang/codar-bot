@@ -111,22 +111,50 @@ export class HttpApi {
       }
       if (req.method === "POST" && id === undefined) {
         const body = (await this.readJson(req)) as Partial<BotRecord>;
+        const name = String(body.name ?? "").trim();
+        if (name.length === 0) return this.send(res, 400, { error: "name required" });
+        const workDir = String(body.workDir ?? "");
+        if (!workDir.startsWith("/")) {
+          return this.send(res, 400, { error: "workDir must be an absolute path" });
+        }
+        if (body.sandbox?.mode === "docker") {
+          // No docker runner in the host yet — refuse honestly instead of
+          // silently running bare while claiming isolation (§8).
+          return this.send(res, 501, { error: "docker sandbox lands with the M1-D runner; use host-not-isolated" });
+        }
         const bot = this.deps.store.addBot({
-          name: String(body.name ?? "").trim(),
+          name,
           role: String(body.role ?? ""),
           chief: body.chief === true,
           model: body.model ?? { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" },
-          workDir: String(body.workDir ?? ""),
+          workDir,
           sessionPath: null,
-          sandbox: body.sandbox ?? { mode: "host-not-isolated" },
+          sandbox: { mode: "host-not-isolated" },
           budget: body.budget ?? { maxTokens: 5_000_000, maxCostMicros: 20_000_000, maxTurns: 2_000, maxWallMs: 3_600_000 },
         });
         this.send(res, 201, bot);
         return;
       }
       if (req.method === "PATCH" && id !== undefined) {
-        const body = (await this.readJson(req)) as Partial<BotRecord>;
-        this.send(res, 200, this.deps.store.updateBot(id, body));
+        const body = (await this.readJson(req)) as Record<string, unknown>;
+        // Field whitelist: id is immutable; chief flips go through the same
+        // invariant as creation (single chief); names must stay unique.
+        const patch: Partial<BotRecord> = {};
+        if (typeof body["name"] === "string" && body["name"].trim().length > 0) patch.name = body["name"].trim();
+        if (typeof body["role"] === "string") patch.role = body["role"];
+        if (body["model"] !== undefined && typeof body["model"] === "object") patch.model = body["model"] as BotRecord["model"];
+        if (body["budget"] !== undefined && typeof body["budget"] === "object") patch.budget = body["budget"] as BotRecord["budget"];
+        if (body["id"] !== undefined || body["sessionPath"] !== undefined || body["chief"] !== undefined) {
+          return this.send(res, 400, { error: "id/sessionPath/chief are immutable over PATCH" });
+        }
+        if (Object.keys(patch).length === 0) return this.send(res, 400, { error: "no patchable fields" });
+        const existing = this.deps.store.bot(id);
+        if (existing === undefined) return this.send(res, 404, { error: `no bot ${id}` });
+        if (patch.name !== undefined && patch.name !== existing.name &&
+            this.deps.store.state.bots.some((b) => b.name === patch.name)) {
+          return this.send(res, 409, { error: `bot name "${patch.name}" already in use` });
+        }
+        this.send(res, 200, this.deps.store.updateBot(id, patch));
         return;
       }
       if (req.method === "POST" && id !== undefined && action === "start") {
