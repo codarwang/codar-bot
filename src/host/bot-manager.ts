@@ -186,6 +186,9 @@ export class BotManager extends EventEmitter {
         if (spawn.sandboxArgv !== undefined) {
           throw new Error("sandboxArgv is for the bare-process test shim; docker bots configure sandbox.image");
         }
+        if (spawn.bin !== undefined || spawn.extensionPath !== undefined) {
+          throw new Error("spawn bin/extensionPath are bare-process shims; docker bots run the sandbox image entrypoint");
+        }
         const extraEnv = { ...this.spawnDefaults.env, ...spawnOverride.env };
         if (Object.keys(extraEnv).length > 0) {
           // Same honesty as the sandboxArgv guard: a silently-swallowed env
@@ -258,7 +261,7 @@ export class BotManager extends EventEmitter {
       }
       if (bot.sessionPath !== null) {
         const sw = await client.command(
-          { type: "switch_session", sessionPath: bot.sessionPath } as Record<string, unknown>
+          { type: "switch_session", sessionPath: this.toChildSessionPath(bot, bot.sessionPath) } as Record<string, unknown>
         );
         if (!sw.success) {
           throw new Error(`switch_session rejected: ${sw.error ?? "?"} (stale sessionPath?)`);
@@ -307,6 +310,33 @@ export class BotManager extends EventEmitter {
   /** Drop runtime bookkeeping for a deleted bot (must be stopped first). */
   forget(botId: string): void {
     this.bots.delete(botId);
+  }
+
+  /** §3.4 path rule: the store keeps HOST-absolute paths; the child sees
+   *  its own mount namespace. Both directions live here so persist and
+   *  resume can never drift apart (R2: resume used to ship host paths into
+   *  the container — docker resume was 100% broken). */
+  private toHostSessionPath(bot: BotRecord, childPath: string): string {
+    if (bot.sandbox.mode !== "docker") return childPath;
+    if (childPath.startsWith("/state/pi-conf/")) {
+      return join(botPiConfDir(this.dataRoot, bot.id), childPath.slice("/state/pi-conf/".length));
+    }
+    if (childPath.startsWith("/home/bot/work/")) {
+      return join(bot.workDir, childPath.slice("/home/bot/work/".length));
+    }
+    return childPath;
+  }
+
+  private toChildSessionPath(bot: BotRecord, hostPath: string): string {
+    if (bot.sandbox.mode !== "docker") return hostPath;
+    const confDir = botPiConfDir(this.dataRoot, bot.id);
+    if (hostPath.startsWith(confDir)) {
+      return `/state/pi-conf/${hostPath.slice(confDir.length + 1)}`;
+    }
+    if (hostPath.startsWith(bot.workDir)) {
+      return `/home/bot/work/${hostPath.slice(bot.workDir.length + 1)}`;
+    }
+    return hostPath;
   }
 
   /** Prompt a bot; resolves with the final assistant text when it settles.
@@ -370,12 +400,7 @@ export class BotManager extends EventEmitter {
       const rawSession =
         state.success ? ((state.data as { sessionFile?: unknown } | null)?.sessionFile) : undefined;
       if (typeof rawSession === "string" && rawSession !== "") {
-        // §3.4 path rule: store keeps HOST-absolute paths — translate the
-        // container-side sessionFile back over the pi-conf mount.
-        const sessionFile =
-          bot.sandbox.mode === "docker" && rawSession.startsWith("/state/pi-conf/")
-            ? join(botPiConfDir(this.dataRoot, botId), rawSession.slice("/state/pi-conf/".length))
-            : rawSession;
+        const sessionFile = this.toHostSessionPath(bot, rawSession);
         if (sessionFile !== bot.sessionPath) this.store.updateBot(botId, { sessionPath: sessionFile });
       }
     } catch {

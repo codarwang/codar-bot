@@ -152,7 +152,7 @@ export class HttpApi {
         if (body.sandbox !== undefined && body.sandbox.mode !== "docker" && body.sandbox.mode !== "host-not-isolated") {
           throw new ApiError(400, "sandbox.mode must be docker | host-not-isolated");
         }
-        if (workDir.includes(":")) {
+        if (body.sandbox?.mode === "docker" && workDir.includes(":")) {
           throw new ApiError(400, "workDir must not contain ':' (breaks docker -v mounts)");
         }
         const model = body.model === undefined

@@ -339,3 +339,27 @@ test("docker sandbox: §3.4 runner spawns a containerized bot to ready/idle (gat
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("session path translation is bidirectional: store keeps host paths, the child sees its namespace (R2)", async () => {
+  const r = await rig();
+  try {
+    // bare mode is a no-op translation
+    const b = r.store.state.bots[0]!;
+    const mgr = r.bots as unknown as {
+      toHostSessionPath(bot: { sandbox: { mode: string } }, p: string): string;
+      toChildSessionPath(bot: { sandbox: { mode: string } }, p: string): string;
+    };
+    assert.equal(mgr.toHostSessionPath(b, "/plain/path"), "/plain/path");
+    // docker mode round-trips both mounts
+    const dbot = { ...b, sandbox: { mode: "docker" as const } };
+    const hostConf = join(r.root, "pi-conf", dbot.id, "sessions/x.jsonl");
+    const childConf = "/state/pi-conf/sessions/x.jsonl";
+    assert.equal(mgr.toChildSessionPath(dbot, hostConf), childConf);
+    assert.equal(mgr.toHostSessionPath(dbot, childConf), hostConf);
+    const hostWork = join(dbot.workDir, "s.jsonl");
+    assert.equal(mgr.toChildSessionPath(dbot, hostWork), "/home/bot/work/s.jsonl");
+    assert.equal(mgr.toHostSessionPath(dbot, "/home/bot/work/s.jsonl"), hostWork);
+  } finally {
+    await r.dispose();
+  }
+});
