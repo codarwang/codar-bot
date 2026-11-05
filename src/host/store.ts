@@ -237,11 +237,15 @@ export class Store {
     const { doc, migrated } = raw ? migrate(raw) : { doc: emptyState(), migrated: false };
     // §5.5 restart sweep: pending/working works cannot survive a host
     // restart (their runners died) — mark failed, never guess (M2-B R1 P1-2).
+    // A sweep that changed anything persists immediately (disk never keeps a
+    // zombie "working" — M2-B R2 P3).
+    let swept = false;
     for (const w of doc.works) {
-      if (w.status === "pending" || w.status === "working") w.status = "failed";
+      if (w.status === "pending" || w.status === "working") { w.status = "failed"; swept = true; }
     }
+    void swept;
     const store = new Store(statePath, doc, null);
-    if (!raw || migrated) store.persist();
+    if (!raw || migrated || swept) store.persist();
     return store;
   }
 

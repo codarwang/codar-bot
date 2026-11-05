@@ -428,15 +428,24 @@ export class BotManager extends EventEmitter {
     } catch {
       /* best-effort persistence; next successful prompt retries */
     }
-    const last = await client.command({ type: "get_last_assistant_text" } as Record<string, unknown>);
-    const text =
-      last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
-        ? (last.data as { text: string }).text
-        : "";
-    // Flip idle LAST (M2-B R1 P1-1): harvesting before the status flip means
-    // no concurrent prompt (handoff wake, HTTP, room turn) can start a new
-    // turn in the window and overwrite the lastText we just read.
-    this.setStatus(m, "idle");
+    let text = "";
+    try {
+      // Harvest FIRST, flip idle LAST (M2-B R1 P1-1): no concurrent prompt
+      // can start a turn in this window and overwrite the lastText we read.
+      const last = await client.command({ type: "get_last_assistant_text" } as Record<string, unknown>);
+      text =
+        last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
+          ? (last.data as { text: string }).text
+          : "";
+    } finally {
+      // The harvest await can reject on a LIVE child (command timeout / stdin
+      // failure) — without this guard the bot stays "working" forever and the
+      // idle-driven pending-work retry starves (M2-B R2 P1-a). The client
+      // guard keeps stop/crash paths from resurrecting an idle status.
+      if (m.client === client && (m.status as BotStatus) === "working") {
+        this.setStatus(m, "idle", "harvest failure");
+      }
+    }
     return text;
   }
 
@@ -525,7 +534,8 @@ export class BotManager extends EventEmitter {
     }
     // The model addresses bots by NAME; the work tree keys on id.
     const toName = parsed.to ?? "";
-    const target = this.store.state.bots.find((b) => b.name === toName)?.id ?? toName;
+    const target =
+      this.store.state.bots.find((b) => b.name.toLowerCase() === toName.toLowerCase())?.id ?? toName;
     // Idempotency (M2-B R1 P1-3): explicit request_id wins (namespaced by
     // the SENDER so two bots can't claim each other's key); the default key
     // is the tool CALL id — a retried call = same work, two legitimate
@@ -534,7 +544,9 @@ export class BotManager extends EventEmitter {
       typeof parsed.request_id === "string" && parsed.request_id.trim() !== ""
         ? `req:${botId}:${parsed.request_id.trim()}`
         : typeof parsed.call_id === "string" && parsed.call_id !== ""
-          ? `call:${parsed.call_id}`
+          // Sender-namespaced: deterministic call ids (sequential providers)
+          // must not collide across bots (M2-B R2 P3).
+          ? `call:${botId}:${parsed.call_id}`
           : `rand:${randomUUID()}`;
     try {
       const { workId } = await this.handoff.dispatch({
