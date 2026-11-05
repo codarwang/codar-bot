@@ -205,3 +205,63 @@ test("epoch guard: a superseded recovery chain cannot mark a live bot stopped (R
     await r.dispose();
   }
 });
+
+test("R3 regression: auto-recovery survives MULTIPLE crashes (no single-flight latch)", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.botId);
+    // First crash → chain recovers.
+    await assert.rejects(() => r.bots.prompt(r.botId, "please DIE now"), /exited mid-prompt/);
+    let deadline = Date.now() + 15_000;
+    while (r.bots.status(r.botId) !== "idle" && Date.now() < deadline) {
+      await new Promise((s) => setTimeout(s, 200));
+    }
+    assert.equal(r.bots.status(r.botId), "idle");
+    // Second crash → the chain must STILL be able to run (R3 P1: the flag
+    // used to latch after the first recovery).
+    await assert.rejects(() => r.bots.prompt(r.botId, "please DIE again"), /exited mid-prompt/);
+    deadline = Date.now() + 15_000;
+    while (r.bots.status(r.botId) !== "idle" && Date.now() < deadline) {
+      await new Promise((s) => setTimeout(s, 200));
+    }
+    assert.equal(r.bots.status(r.botId), "idle", "second crash must also auto-recover");
+    const text = await r.bots.prompt(r.botId, "Reply with the single word ALPHA.");
+    assert.equal(text, "ALPHA");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("R3 regression: exhausted retry ladder lands on stopped (not starting)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-ladder-"));
+  mkdirSync(join(root, "work"), { recursive: true });
+  const store = Store.open(join(root, "state.json"), { create: true });
+  const ledger = new UsageLedger(join(root, "usage.sqlite"));
+  // A spawn that can never become ready: node with a nonexistent script.
+  const bots = new BotManager(store, ledger, root, {
+    bin: process.execPath, sandboxArgv: ["/nonexistent/fake-pi.mjs"],
+  });
+  const bot = store.addBot({
+    name: "Ladder", role: "", chief: true,
+    model: { provider: "fake", modelId: "f", thinkingLevel: "low" },
+    workDir: join(root, "work"), sessionPath: null,
+    sandbox: { mode: "host-not-isolated" }, budget: defaultBudget(),
+  });
+  try {
+    await assert.rejects(() => bots.start(bot.id), /exited early|switch_session|get_state/);
+    // Ladder: 1s + 2s + 4s backoffs + spawn/ready failures ≈ 8–10s.
+    const deadline = Date.now() + 30_000;
+    while (bots.status(bot.id) !== "stopped" && Date.now() < deadline) {
+      await new Promise((s) => setTimeout(s, 300));
+    }
+    assert.equal(bots.status(bot.id), "stopped", "budget exhausted must land on stopped");
+    assert.ok(store === store); // keep refs
+  } finally {
+    await bots.stopAll();
+    ledger.close();
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

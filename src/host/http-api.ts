@@ -69,8 +69,10 @@ export class HttpApi {
     const parts = url.pathname.split("/").filter(Boolean); // ["api", ...]
     void this.route(req, res, url, parts).catch((e) => {
       const message = String(e);
-      // Input errors deserve 4xx, not 500s (R2 P3-9).
-      const bad = /not valid JSON|body too large|missing|already in use|no bot|no room|not running/.test(message);
+      // Input errors deserve precise 4xx, not blanket 500s (R2/R3 P3).
+      if (/^Error: no bot |^Error: no room /.test(message)) return this.send(res, 404, { error: message.slice(0, 400) });
+      if (/already working|already running|wait for idle/.test(message)) return this.send(res, 409, { error: message.slice(0, 400) });
+      const bad = /not valid JSON|Unexpected token|body too large|missing|already in use|must be|requires|rejected/.test(message);
       this.send(res, bad ? 400 : 500, { error: message.slice(0, 400) });
     });
   }
@@ -157,8 +159,29 @@ export class HttpApi {
         const patch: Partial<BotRecord> = {};
         if (typeof body["name"] === "string" && body["name"].trim().length > 0) patch.name = body["name"].trim();
         if (typeof body["role"] === "string") patch.role = body["role"];
-        if (body["model"] !== undefined && typeof body["model"] === "object") patch.model = body["model"] as BotRecord["model"];
-        if (body["budget"] !== undefined && typeof body["budget"] === "object") patch.budget = body["budget"] as BotRecord["budget"];
+        const model = body["model"];
+        if (model !== undefined) {
+          if (typeof model !== "object" || model === null || Array.isArray(model) ||
+              typeof (model as BotRecord["model"]).provider !== "string" ||
+              typeof (model as BotRecord["model"]).modelId !== "string" ||
+              typeof (model as BotRecord["model"]).thinkingLevel !== "string") {
+            return this.send(res, 400, { error: "model needs string provider/modelId/thinkingLevel" });
+          }
+          patch.model = model as BotRecord["model"];
+        }
+        const budget = body["budget"];
+        if (budget !== undefined) {
+          if (typeof budget !== "object" || budget === null || Array.isArray(budget)) {
+            return this.send(res, 400, { error: "budget must be an object" });
+          }
+          for (const k of ["maxTokens", "maxCostMicros", "maxTurns", "maxWallMs"] as const) {
+            const v = (budget as Record<string, unknown>)[k];
+            if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+              return this.send(res, 400, { error: `budget.${k} must be a non-negative number` });
+            }
+          }
+          patch.budget = budget as BotRecord["budget"];
+        }
         if (body["id"] !== undefined || body["sessionPath"] !== undefined || body["chief"] !== undefined) {
           return this.send(res, 400, { error: "id/sessionPath/chief are immutable over PATCH" });
         }

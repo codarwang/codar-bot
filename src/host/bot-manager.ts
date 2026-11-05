@@ -49,10 +49,12 @@ interface ManagedBot {
   stopRequested: boolean;
   /** single-flight restart guard (review R1: dual-chain race). */
   restarting: boolean;
-  /** lifecycle generation: bumped by every start(); a recovery chain only
-   *  acts while its snapshot equals the current epoch — a superseded chain
-   *  (manual stop→start, or a newer chain) exits without status writes
-   *  (review R2: stale chain used to mark a live bot "stopped"). */
+  /** lifecycle generation: bumped by EXTERNAL start() calls only (the
+   *  recovery chain re-enters via {internal:true} and keeps its epoch). A
+   *  chain only acts while its snapshot equals the current epoch — a
+   *  superseded chain exits without status writes (R2: stale chains used to
+   *  mark live bots "stopped"; R3: chain-internal starts must not self-
+   *  supersede or the single-flight flag latches forever). */
   epoch: number;
 }
 
@@ -119,12 +121,16 @@ export class BotManager extends EventEmitter {
     this.emit("status", { botId: m.botId, status, detail });
   }
 
-  async start(botId: string, spawnOverride: SpawnOptions = {}): Promise<void> {
+  async start(
+    botId: string,
+    spawnOverride: SpawnOptions = {},
+    opts: { internal?: boolean } = {}
+  ): Promise<void> {
     const bot = this.store.bot(botId);
     if (bot === undefined) throw new Error(`no bot ${botId}`);
     const m = this.managed(botId);
     if (m.client !== null) throw new Error(`bot ${botId} already running`);
-    m.epoch += 1; // supersedes any in-flight recovery chain for this bot
+    if (opts.internal !== true) m.epoch += 1; // external start supersedes chains
     m.stopRequested = false;
     this.setStatus(m, "starting");
 
@@ -133,12 +139,12 @@ export class BotManager extends EventEmitter {
     mkdirSync(botPiConfDir(this.dataRoot, botId), { recursive: true });
     mkdirSync(bot.workDir, { recursive: true });
 
-    const opts = { ...this.spawnDefaults, ...spawnOverride };
+    const spawn = { ...this.spawnDefaults, ...spawnOverride };
     const client = new RpcClient({
-      bin: opts.bin,
-      argvPrefix: opts.sandboxArgv,
+      bin: spawn.bin,
+      argvPrefix: spawn.sandboxArgv,
       cwd: bot.workDir,
-      env: { ...opts.env, CODAR_GATE_AUDIT: join(botPiConfDir(this.dataRoot, botId), "gate-audit.jsonl") },
+      env: { ...spawn.env, CODAR_GATE_AUDIT: join(botPiConfDir(this.dataRoot, botId), "gate-audit.jsonl") },
       idleTimeoutMs: 5 * 60_000,
       wallTimeoutMs: 24 * 60 * 60_000,
       onUiRequest: (req) => this.handleUi(client, req),
@@ -156,7 +162,7 @@ export class BotManager extends EventEmitter {
 
     try {
       const ready = await client.start({
-        extensionPath: opts.extensionPath,
+        extensionPath: spawn.extensionPath,
         model: `${bot.model.provider}/${bot.model.modelId}`,
         thinking: bot.model.thinkingLevel,
         noSession: false,
@@ -370,7 +376,9 @@ export class BotManager extends EventEmitter {
         await new Promise((r) => setTimeout(r, backoff));
         if (m.stopRequested || m.epoch !== myEpoch) break;
         try {
-          await this.start(bot.id); // bumps epoch on success path; owns status
+          // internal: does NOT bump the epoch — the chain keeps ownership
+          // across its own retry ladder (R3 P1 fix).
+          await this.start(bot.id, {}, { internal: true });
           return;
         } catch {
           /* retry loop continues while this chain still owns the lifecycle */
@@ -380,7 +388,9 @@ export class BotManager extends EventEmitter {
         this.setStatus(m, "stopped", `restart budget exhausted (${reason})`);
       }
     } finally {
-      if (m.epoch === myEpoch) m.restarting = false;
+      // Unconditional: while this chain held the flag no other chain could
+      // enter (atomic check-and-set above), so clearing is always ours.
+      m.restarting = false;
     }
   }
 }
