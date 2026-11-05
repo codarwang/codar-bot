@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -87,6 +87,24 @@ test("explicit entry fields beat presets (api/baseUrl); unknown providers defaul
     const doc = JSON.parse(cfg.modelsJson!) as { providers: { myrelay: { api: string; models: Array<{ id: string }> } } };
     assert.equal(doc.providers.myrelay.api, "anthropic-messages");
     assert.equal(doc.providers.myrelay.models[0]!.id, "m-1"); // generated entry
+  } finally {
+    rmSync(r, { recursive: true, force: true });
+  }
+});
+
+test("materialization invalidates pi's stale catalog cache (models-store.json)", () => {
+  const r = root();
+  try {
+    const cfg = buildSpawnConfig(
+      { providers: { "minimax-anthropic": { apiKey: "k" } } },
+      r, "bot_c", "minimax-anthropic", "MiniMax-M3.1-Flash"
+    );
+    mkdirSync(cfg.piConfDir, { recursive: true });
+    // A stale store from the bot's previous provider era.
+    writeFileSync(join(cfg.piConfDir, "models-store.json"), '{"zai-coding-cn":{}}');
+    materializePiConf(cfg);
+    assert.ok(!existsSync(join(cfg.piConfDir, "models-store.json")), "stale store must be dropped");
+    assert.ok(existsSync(join(cfg.piConfDir, "models.json")));
   } finally {
     rmSync(r, { recursive: true, force: true });
   }
