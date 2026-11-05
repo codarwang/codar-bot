@@ -132,7 +132,7 @@
     <div class="composer" id="composer">
       <input id="input" />
       <button class="send" onclick="fakeSend()">➤</button>
-      <button onclick="showErr()">■</button>
+      <button onclick="stopStream(); showErr()" title="stop">■</button>
     </div>
   </main>
   <aside class="context" id="context"></aside>
@@ -184,6 +184,8 @@ const I = {
     hover_hint: "hover: token breakdown · turns left · wall-clock",
     empty_works: "empty state: no active works in this room",
     host_note: "host: loopback · pi 1.5.0",
+    r_research_done: "idle · draft verified", mode_chip: "default · admin-reply",
+    mem_note: "entry / main / topics · snapshot frozen",
   },
   zh: {
     appname: "· Bot 团队", roomname: "default",
@@ -229,9 +231,11 @@ const I = {
     hover_hint: "悬停：token 明细 · 剩余回合 · 墙钟",
     empty_works: "空态示意：本群暂无进行中的工作",
     host_note: "host: loopback · pi 1.5.0",
+    r_research_done: "空闲 · 草稿已核对", mode_chip: "default · admin 应答",
+    mem_note: "entry / main / topics · 快照冻结",
   },
 };
-let lang = "en", pausedDemo = false, detailView = null, streamTimer = null, elapsedTimers = [];
+let lang = "en", pausedDemo = false, detailView = null, streamTimer = null, elapsedTimers = [], approvalResolved = false;
 const t = (k) => I[lang][k];
 
 function applyI18n() {
@@ -260,10 +264,12 @@ function renderRoster() {
     row.className = "row" + (b.id === "room" ? " sel" : "");
     row.onclick = () => { detailView = b.id === "room" ? null : b.id; renderContext(); };
     row.oncontextmenu = (e) => { e.preventDefault(); detailView = b.id; renderContext(); };
+    const dotNow = b.id === "research" && approvalResolved ? null : b.dot;
     const av = b.stacked
-      ? `<span class="stacked">${b.stacked.map((e) => `<span class="avatar">${e}</span>`).join("")}</span>`
-      : `<span class="avatar">${b.emoji}${b.dot ? `<span class="dot ${b.dot}"></span>` : ""}</span>`;
-    row.innerHTML = `${av}<div class="body"><div class="top"><span class="name">${b.name ?? t("roomname") + " 👥"}</span><span class="time">${b.time}</span></div><div class="preview">${t(b.preview)}</div></div>`;
+      ? `<span class="stacked">${b.stacked.map((e) => `<span class="avatar">${e}</span>`).join("")}${b.dot && b.id !== "research" ? `<span class="dot ${b.dot}" style="position:static;margin-left:4px"></span>` : ""}</span>`
+      : `<span class="avatar">${b.emoji}${dotNow ? `<span class="dot ${dotNow}"></span>` : ""}</span>`;
+    const prevKey = b.id === "research" && approvalResolved ? "r_research_done" : b.preview;
+    row.innerHTML = `${av}<div class="body"><div class="top"><span class="name">${b.name ?? t("roomname") + " 👥"}</span><span class="time">${b.time}</span></div><div class="preview">${t(prevKey)}</div></div>`;
     el.appendChild(row);
   }
   const nb = document.createElement("button");
@@ -316,7 +322,7 @@ function renderStream() {
   card(`${t("handoff_done")} <span class="spacer"></span><span class="badge done">✓ 3:02</span>`,
     `${t("handoff_done_body")} <span class="filechip">📄 weekly-draft.md · 2.1KB</span><div class="tree">${t("consumed")} · ${t("result_back")}</div>`)
     .querySelector(".filechip").onclick = () => { detailView = "file"; renderContext(); };
-  card(`${t("handoff_pend")} <span class="spacer"></span><span class="badge">queued</span>`, t("pend_body"));
+  card(`${t("handoff_pend")} <span class="spacer"></span><span class="badge">${t("w_pend")}</span>`, t("pend_body"));
   card(`${t("handoff_fail")}`, t("fail_body"), [[t("b_retry"), "primary"], [t("b_drop"), "danger"]], "failedcard");
   card(`${t("handoff_fail2")}`, t("fail2_body"), null, "failedcard");
   card(`${t("handoff_rej")}`, t("rej_body"));
@@ -324,13 +330,23 @@ function renderStream() {
     [[t("b_adjust"), "primary"], [t("b_once")], [t("b_keep"), "danger"]], "budgetcard");
   card(`<span>${t("roombudget_head")}</span>`, t("roombudget_body"),
     [[t("rb_resume"), "primary"], [t("rb_keep")]], "roombudget");
-  card(`${t("approve_head")}`, t("approve_body"),
+  const ac = card(`${t("approve_head")}`, t("approve_body"),
     [[t("a_once"), "primary"], [t("a_always"), "", true, t("m3tag")], [t("a_deny"), "danger"]], "approvecard");
+  const [allowBtn, , denyBtn] = ac.querySelectorAll(".actions button");
+  const resolveApproval = (ok) => {
+    ac.querySelector(".chead").textContent = ok ? `✓ ${t("a_once")}` : `⛔ ${t("a_deny")}`;
+    ac.querySelector(".actions").remove();
+    approvalResolved = true;
+    renderRoster(); renderTurnbar(); renderContext();
+  };
+  allowBtn.onclick = () => resolveApproval(true);
+  denyBtn.onclick = () => resolveApproval(false);
   // streaming bubble with live typing (distinct text from chief1)
   const full = t("chief_stream");
   const sd = msg({ ...BOTS[0], modelKey: "chief_model" }, "");
   const bubble = sd.querySelector(".bubble");
   bubble.classList.add("cursor");
+  window.__stream = { bubble, full };
   let i = 0;
   streamTimer = setInterval(() => {
     i = Math.min(full.length, i + 2);
@@ -370,8 +386,8 @@ function renderTurnbar() {
   tb.innerHTML =
     slot("👑", "Chief", "speaking", t("t_speaking")) +
     slot("✍", "Writer", "working", t("t_working")) +
-    slot("🔬", "Research", "lock", t("t_locked")) +
-    `<span class="mode">${t("roomname")} · admin-reply</span>` +
+    (approvalResolved ? slot("🔬", "Research", "waiting", t("t_waiting")) : slot("🔬", "Research", "lock", t("t_locked"))) +
+    `<span class="mode">${t("mode_chip")}</span>` +
     `<span class="demo" onclick="togglePause()">${t("paused_demo")}</span>`;
 }
 function togglePause() { pausedDemo = !pausedDemo; render(); }
@@ -403,9 +419,9 @@ function renderContext() {
       <div class="kv"><span>${t("d_sandbox")}</span><span class="sandbox ${docker ? "docker" : "host"}">${t(docker ? "sandbox_docker" : "sandbox_host")}</span></div>
       <div class="kv"><span>${t("d_session")}</span><span style="color:var(--dim);font-size:10px">pi-conf/${b.id}/…</span></div>
       <h3>${t("d_memory")} <span style="font-size:9px;color:var(--dim)">${t("d_m2")}</span></h3>
-      <div class="note">entry / main / topics · snapshot frozen</div>
+      <div class="note">${t("mem_note")}</div>
       <h3>${t("d_budget")}</h3>
-      <div class="meter ${b.id === "writer" ? "warn" : ""}"><div class="mrow"><b>${b.name}</b><span>${cny("14.2 / 20.0")}</span></div><div class="bar"><div class="fill" style="width:${b.id === "writer" ? 84 : 16}%"></div></div><div class="sub">${t("hover_hint")}</div></div>`;
+      <div class="meter ${b.id === "writer" ? "warn" : ""}"><div class="mrow"><b>${b.name}</b><span>${cny(b.id === "writer" ? "16.8 / 20.0" : "3.1 / 20.0")}</span></div><div class="bar"><div class="fill" style="width:${b.id === "writer" ? 84 : 16}%"></div></div><div class="sub">${t("hover_hint")}</div></div>`;
     return;
   }
   const slot = (emoji, name, st, stLabel) =>
@@ -420,6 +436,7 @@ function renderContext() {
     <div class="work">⌛ <b>#w2</b> ${t("w_pend")}</div>
     <div class="work">✓ <b>#w0</b> ${t("w_done")}</div>
     <div class="work fail">✗ <b>#w3</b> ${t("w_fail")}</div>
+    <div class="work">⛔ <b>#w5</b> cycle guard</div>
     <div class="note">${t("empty_works")}</div>
     <h3>${t("c_budget")}</h3>
     <div class="meter warn"><div class="mrow"><b>Writer</b><span>${cny("16.8 / 20.0")}</span></div><div class="bar"><div class="fill" style="width:84%"></div></div><div class="sub">84% · ${t("sandbox_docker")}</div></div>
@@ -433,6 +450,11 @@ function fakeSend() {
   const v = inp.value.trim() || "@Writer ";
   msg("you", v);
   inp.value = "";
+}
+function stopStream() {
+  if (streamTimer) clearInterval(streamTimer);
+  const st = window.__stream;
+  if (st && document.body.contains(st.bubble)) { st.bubble.textContent = st.full; st.bubble.classList.remove("cursor"); }
 }
 function showErr() {
   const e = document.getElementById("errbar");

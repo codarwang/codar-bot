@@ -119,7 +119,21 @@ M1 的 Overview/Chat/Usage 三 Tab 废弃，改为常驻三区（Grok Bot 同构
 
 - 进度实时更新（`tool_execution_update` 事件注入群上下文的同一句话）。
 - 卡片可点展开工作树全貌（parent/child/request_id/防环拒绝记录）。
-- 防环拒绝也是卡：`⛔ #w3 rejected — Writer 正在等 Research 的结果，不能反过来
+- 排队卡（pending）：`⌛ #w2 → Research (queued) — 等 Research 完成 #w1 的核对`
+  （无计时）。
+- 失败终态卡 ×2（works 五态全覆盖，评审 R2 补入契约）：
+
+```
+┌─ task #w3 ✗ failed → Writer (1m40s) ────┐
+│ 原因: provider 500 ×3（auto-retry 耗尽） │
+│ [重派] [放弃]                            │
+└─────────────────────────────────────────┘
+┌─ task #w4 ✗ failed → Research ──────────┐
+│ 原因: host-restart（主机重启，不猜状态）  │
+└─────────────────────────────────────────┘
+```
+
+- 防环拒绝也是卡：`⛔ #w5 rejected — Writer 正在等 Research 的结果，不能反过来
   派活（环）`。
 
 ### 3.4 预算事件卡
@@ -194,7 +208,7 @@ M1 的 Overview/Chat/Usage 三 Tab 废弃，改为常驻三区（Grok Bot 同构
 | `message`(assistant) | botId,role,text | 泡固化（文本 dedupe：以 message_end 为准，响应文本仅补洞）|
 | `message`(failure) *M1 impl* | botId,reason | composer 错误条 + roster 🔴 + turn 条 failed |
 | `message`(aborted) *M1 impl* | botId | 流式泡冻结 + 系统行 `⏹ stopped by you` |
-| `progress` *M2* | workId,botId,oneLiner | 派活卡进度行 + roster 预览 |
+| `progress` *M2* | workId,botId,oneLiner,**status**(queued/working/done/failed/rejected) | 派活卡进度行与终态迁移 + roster 预览 + WORKS 面板行 |
 | `message`(handoff 系统行) *M2* | from[],workId | `── messages from @A ──` 交接行（可点跳）|
 | `budget` *M2* | scope,spent,limit / stopped | meter 更新 / 预警细行 / 停机广播卡 / 群 paused |
 | `approval` *M2 简版* | id,bot,tool,input | 审批卡（Allow/Deny）+ roster 🔴 + 🔐 |
@@ -230,16 +244,15 @@ M1 的 Overview/Chat/Usage 三 Tab 废弃，改为常驻三区（Grok Bot 同构
 
 ## 10. 原型验收清单（mockups/group-chat.html 必须演示）
 
-1. 三区布局 + roster 三态行（含 needs-attention 实例）+ 群聊堆叠头像
-5a. works 失败终态卡（host-restart / retry 耗尽）+ pending 排队卡
-9. 右栏 Bot 详情视图切换（含沙箱诚实徽章）与群级停机卡
-2. 流式消息（模拟 delta）
-3. Turn 状态条：speaking/working/waiting + 乒乓暂停态
-4. 派活卡全生命周期：进行中(计时)→完成(消耗/回流)→防环拒绝
-5. 预算停机广播卡 + 右栏 meter
-6. 审批卡三按钮（静态预览，M3 形态定形）
-7. 双语切换 en↔zh 全量生效
-8. 交接系统行可点跳转
+1. 三区布局 + roster 三态行（attention 置顶、unread 实例）+ 群聊堆叠头像
+2. 流式消息（逐字打出 + ■ 停止流式）
+3. Turn 状态条：常态（speaking/working/🔐approval）与乒乓暂停态（按钮切换、暂停禁用 composer）
+4. 派活卡全生命周期：queued → 进行中(计时) → done(消耗/回流) → failed×2(重试耗尽/host-restart) → rejected(防环)
+5. 预算停机广播卡（Bot 级 + 群级两形）+ 右栏 meter
+6. 审批卡 M2 简版：Allow/Deny 可点（原型内假 resolve：卡原地变 ✓/⛔、Research 的 attention/🔐 解除），Always allow 置灰 M3 预告
+7. 双语切换 en↔zh 全量生效（金额随 locale）
+8. 交接系统行可点跳转（跳到对应 Bot 消息）
+9. 右栏 Bot 详情视图（沙箱诚实徽章/预算四维度 hover）与文件预览
 
 ## 11. 差异化定位声明（写给未来 README 的用户）
 
@@ -250,3 +263,6 @@ transcript**——每一样都对着它的最强吐槽点。
 ## 修订记录
 
 - 2026-11-05 v1.0：初稿（Grok Bot 调研输入 + M1 系统事实 + Felix 四项拍板）。
+- 2026-11-05 v1.1：评审 R1/R2 修订——works 五态全覆盖（failed×2/pending 入
+  §3.3 契约）、M2 简版审批卡、SSE 表三列对齐架构 §7 且 progress 带 status、
+  右栏 BOT DETAIL 第二视图、群级停机卡独立形、i18n 全量与币种随 locale。
