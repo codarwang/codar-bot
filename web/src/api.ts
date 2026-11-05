@@ -78,7 +78,11 @@ export interface MemoryFile {
 export const jsonFetch = async <T,>(path: string, init?: RequestInit): Promise<T> => {
   const res = await fetch(path, init);
   const body = (await res.json().catch(() => ({}))) as T & { error?: string };
-  if (!res.ok) throw new Error(body.error ?? `${res.status}`);
+  if (!res.ok) {
+    // The status rides on the Error so callers can distinguish "gone"
+    // (404) from transient transport failures (M2-E R4 P2).
+    throw Object.assign(new Error(body.error ?? `${res.status}`), { status: res.status });
+  }
   return body;
 };
 

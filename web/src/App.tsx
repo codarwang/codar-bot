@@ -101,6 +101,13 @@ export function App(): JSX.Element {
     if (roomId === "") return;
     setTurn(null);
     setUnread((prev) => ({ ...prev, [roomId]: 0 }));
+    // seq is PER-ROOM (each room counts from 1): the previous room's list
+    // and watermark must not survive the switch — the R3 merge used to keep
+    // them and leak old-room messages into the new timeline while the seq
+    // collisions swallowed the new room's real messages (R4 P1). Clearing
+    // here makes the merge's `prev` contain ONLY current-room SSE arrivals.
+    setMessages([]);
+    lastSeqRef.current = 0;
     const cur = roomId;
     void jsonFetch<{ messages: RoomMessage[] }>(`/api/rooms/${cur}/messages`)
       .then((r) => {
@@ -116,7 +123,10 @@ export function App(): JSX.Element {
           const liveOnly = prev.filter((m) => !fetched.has(m.seq) && m.seq > tail);
           return [...r.messages, ...liveOnly];
         });
-        lastSeqRef.current = Math.max(lastSeqRef.current, tail);
+        // Plain assign: per-room seq space — Math.max would carry the old
+        // room's watermark and permanently skip early-seq messages after a
+        // reconnect diff-fetch (R4 P1 secondary).
+        lastSeqRef.current = tail;
       })
       .catch(() => {
         if (roomRef.current === cur) setMessages([]);
@@ -300,17 +310,29 @@ export function App(): JSX.Element {
     return () => es.close();
   }, [refreshOverview, refreshBudget]);
 
+  const [approvalErrors, setApprovalErrors] = useState<Record<string, string>>({});
   const resolveApproval = async (id: string, confirmed: boolean): Promise<void> => {
+    setApprovalErrors((prev) => {
+      if (prev[id] === undefined) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     try {
       await post(`/api/approvals/${id}/resolve`, { confirmed });
-    } catch {
-      // 404 = the approval no longer exists host-side — resolved elsewhere,
-      // or the host restarted and its parked map evaporated (R3 P2-2). No
-      // SSE event will ever settle THIS card: settle it locally as stale —
-      // never clickable forever.
-      setApprovals((prev) =>
-        prev.map((a) => (a.id === id ? { ...a, resolved: true, outcome: false, stale: true } : a))
-      );
+    } catch (e) {
+      // ONLY a 404 settles the card stale: the approval no longer exists
+      // host-side (resolved elsewhere, or the host restarted and its parked
+      // map evaporated) and no SSE event will ever come for it. Any other
+      // failure (transport blip, dev-proxy reload) leaves the card live —
+      // staling it would lie about a still-parked approval (R4 P2).
+      if ((e as { status?: number }).status === 404) {
+        setApprovals((prev) =>
+          prev.map((a) => (a.id === id ? { ...a, resolved: true, outcome: false, stale: true } : a))
+        );
+        return;
+      }
+      setApprovalErrors((prev) => ({ ...prev, [id]: String(e).slice(0, 120) }));
     }
   };
 
@@ -365,6 +387,7 @@ export function App(): JSX.Element {
           statuses={statuses}
           failures={failures}
           approvals={approvals}
+          approvalErrors={approvalErrors}
           draft={drafts[roomId] ?? ""}
           onDraft={setDraft}
           onResolveApproval={resolveApproval}
