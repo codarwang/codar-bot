@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -295,5 +295,47 @@ test("R4 regression: a failure arriving while a zombie chain holds the flag is h
   } finally {
     delete process.env.CODAR_M1_AUTOAPPROVE;
     await r.dispose();
+  }
+});
+
+test("docker sandbox: §3.4 runner spawns a containerized bot to ready/idle (gated on docker)", async () => {
+  const daemon = await new Promise<boolean>((resolve) => {
+    import("node:child_process").then(({ execFile }) =>
+      execFile("docker", ["version", "--format", "{{.Server.Version}}"], { timeout: 5_000 }, (err) => resolve(err === null))
+    );
+  });
+  const image = await new Promise<boolean>((resolve) => {
+    import("node:child_process").then(({ execFile }) =>
+      execFile("docker", ["image", "inspect", "codar-bot-sandbox:0.1"], { timeout: 5_000 }, (err) => resolve(err === null))
+    );
+  });
+  if (!daemon || !image) {
+    console.log(`      (skipped: docker daemon=${daemon} image=${image})`);
+    return;
+  }
+  const root = mkdtempSync(join(tmpdir(), "codar-docker-"));
+  mkdirSync(join(root, "work"), { recursive: true });
+  writeFileSync(join(root, "keys.json"), JSON.stringify({
+    providers: { "zai-coding-cn": { apiKey: "sk-docker-test", baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4" } },
+  }));
+  const store = Store.open(join(root, "state.json"), { create: true });
+  const ledger = new UsageLedger(join(root, "usage.sqlite"));
+  const bots = new BotManager(store, ledger, root, {}, join(root, "keys.json"), resolve(HERE, "..", "extensions"));
+  const bot = store.addBot({
+    name: "Sandboxed", role: "", chief: true,
+    model: { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" },
+    workDir: join(root, "work"), sessionPath: null,
+    sandbox: { mode: "docker" as const }, budget: defaultBudget(),
+  });
+  try {
+    await bots.start(bot.id); // docker run → ready contract (get_state) → idle
+    assert.equal(bots.status(bot.id), "idle");
+    const conf = join(root, "pi-conf", bot.id, "models.json");
+    assert.ok(existsSync(conf), "models.json materialized for the mount");
+  } finally {
+    await bots.stopAll();
+    ledger.close();
+    store.close();
+    rmSync(root, { recursive: true, force: true });
   }
 });
