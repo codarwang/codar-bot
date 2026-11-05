@@ -85,6 +85,8 @@ const hourNow = (): string => new Date().toISOString().slice(0, 13);
 
 export class BotManager extends EventEmitter {
   private readonly bots = new Map<string, ManagedBot>();
+  /** Parked confirm requests awaiting a Web approval card (M2-E §3.5). */
+  private readonly parkedApprovals = new Map<string, RpcClient>();
   private readonly spawnDefaults: SpawnOptions;
 
   constructor(
@@ -495,14 +497,35 @@ export class BotManager extends EventEmitter {
       void this.dispatchMessageBot(client, req, botId);
       return;
     }
-    // M1-A slice: no approval surface yet. CODAR_M1_AUTOAPPROVE=1 (tests and
-    // spikes only) auto-approves confirms; otherwise requests park until an
-    // approval surface exists (Web UI approval cards — M3 per §5.4; the M1
-    // UI surfaces parked state honestly). Never silently deny — a parked
-    // call is honest, a silent deny loses work.
-    if (process.env.CODAR_M1_AUTOAPPROVE === "1" && req.method === "confirm") {
-      client.replyUi({ type: "extension_ui_response", id: req.id, confirmed: true });
+    // M2-E approval bridge (§5.4 M1/M2 档): a confirm request parks and is
+    // surfaced as an SSE approval event; the Web card resolves it via
+    // resolveApproval(). CODAR_M1_AUTOAPPROVE=1 (tests/spikes only) still
+    // short-circuits. Never silently deny — a parked call is honest, a
+    // silent deny loses work.
+    if (req.method === "confirm") {
+      if (process.env.CODAR_M1_AUTOAPPROVE === "1") {
+        client.replyUi({ type: "extension_ui_response", id: req.id, confirmed: true });
+        return;
+      }
+      const botId = this.botIdOf(client);
+      this.parkedApprovals.set(req.id, client);
+      this.emit("approval", {
+        id: req.id,
+        botId,
+        title: req.title,
+        message: (req as { message?: unknown }).message ?? "",
+      });
     }
+  }
+
+  /** Resolve a parked approval from the Web approval card (§3.5 M2 简版). */
+  resolveApproval(id: string, confirmed: boolean): boolean {
+    const client = this.parkedApprovals.get(id);
+    if (client === undefined) return false;
+    this.parkedApprovals.delete(id);
+    client.replyUi({ type: "extension_ui_response", id, confirmed });
+    this.emit("approvalResolved", { id, confirmed });
+    return true;
   }
 
   private botIdOf(client: RpcClient): string | null {

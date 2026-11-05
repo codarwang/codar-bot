@@ -80,6 +80,8 @@ export class HttpApi {
     handoff.on("progress", (e) => this.broadcast("progress", e));
     handoff.on("work", (e) => this.broadcast("work", e));
     budget.on("budget", (e) => this.broadcast("budget", e));
+    bots.on("approval", (e) => this.broadcast("approval", e));
+    bots.on("approvalResolved", (e) => this.broadcast("approvalResolved", e));
   }
 
   /** Static serving of the built SPA (non-/api GET). Traversal-safe. */
@@ -415,6 +417,19 @@ export class HttpApi {
       }
     }
 
+    if (resource === "approvals") {
+      // M2-E §3.5 简版: Allow once / Deny. The third button (Always allow →
+      // rule persistence) is an M3 placeholder in the UI.
+      if (req.method === "POST" && id !== undefined && action === "resolve") {
+        const body = (await this.readJson(req)) as { confirmed?: unknown };
+        if (typeof body.confirmed !== "boolean") throw new ApiError(400, "need {confirmed: boolean}");
+        if (!this.deps.bots.resolveApproval(id, body.confirmed)) {
+          throw new ApiError(404, `no parked approval ${id}`);
+        }
+        this.send(res, 200, { ok: true });
+        return;
+      }
+    }
     if (resource === "memory") {
       // /api/memory/bots/<id> | /api/memory/rooms/<id> | /api/memory/team
       // (PRD 2.3 记忆可管理): GET lists files + pending; PUT edits one file.
