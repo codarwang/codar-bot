@@ -314,6 +314,12 @@ export class Store {
     this.persist();
   }
 
+  /** Set the global review-model slot (D3; PRD/M2-2.3). */
+  setReviewModel(model: BotModelRef | null): void {
+    this.state.reviewModel = model;
+    this.persist();
+  }
+
   addRoom(room: Omit<RoomRecord, "id" | "guards" | "status"> & Partial<Pick<RoomRecord, "guards" | "status">>): RoomRecord {
     const record: RoomRecord = {
       guards: { pingPongN: 4, replyTimeoutMs: 180_000 }, // D4 factory defaults

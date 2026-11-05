@@ -10,6 +10,7 @@ import { BotManager } from "./bot-manager.js";
 import { RoomEngine } from "./room-engine.js";
 import { Handoff } from "./handoff.js";
 import { Budget } from "./budget.js";
+import { MemoryEngine } from "./memory.js";
 import { HttpApi } from "./http-api.js";
 import { paths, type HostPaths } from "./paths.js";
 import { loadKeys } from "./provider-config.js";
@@ -72,11 +73,43 @@ export class Host {
     const handoff = new Handoff(store, bots, rooms);
     bots.handoff = handoff; // late bind (M2-B D1 bridge)
     const budget = new Budget(store, ledger, bots, rooms, p.root);
+    const memory = new MemoryEngine(store, ledger, p.root, {
+      bin: opts.bin, sandboxArgv: opts.argv, env: opts.env ?? {},
+    });
     rooms.deadlineMs = (botId: string) => budget.wallDeadlineMs(botId); // §6.1a
     handoff.deadlineMs = (botId: string) => budget.wallDeadlineMs(botId); // §6.1a
     handoff.stalePauseCheck = (roomId) => budget.rolloverIfStale(roomId); // §5.3 entry-point rollover test
+    // Memory wiring (§3 memory module, §5.1a tail injection): every REAL
+    // settle feeds the bot/room/team scopes; reviews run single-flight per
+    // scope (team batches at TEAM_REVIEW_THRESHOLD); the frozen snapshot
+    // rides the prompt tail.
+    const memoryTurn = (speakerRoomId: string | null, botId: string, text: string): void => {
+      const botName = store.bot(botId)?.name ?? botId;
+      const roomName = speakerRoomId !== null ? (store.room(speakerRoomId)?.name ?? speakerRoomId) : null;
+      const turn = { ts: new Date().toISOString(), speaker: botName, text: text.slice(0, 4_000) };
+      memory.ingestTurn("bot", botId, turn);
+      if (speakerRoomId !== null) memory.ingestTurn("room", speakerRoomId, turn);
+      memory.ingestTurn("team", "team", { ...turn, speaker: roomName !== null ? `${roomName}/${botName}` : botName });
+      memory.schedule("bot", botId);
+      if (speakerRoomId !== null) memory.schedule("room", speakerRoomId);
+      memory.schedule("team", "team");
+    };
+    rooms.onTurnSettled = (roomId, botId, reply) => memoryTurn(roomId, botId, reply);
+    rooms.memoryTail = (botId, roomId) => {
+      const parts = [
+        memory.snapshot("bot", botId),
+        memory.snapshot("room", roomId),
+        memory.snapshot("team", "team"),
+      ].filter((t) => t.length > 0);
+      return parts.length > 0 ? parts.join("\n\n") : null;
+    };
+    handoff.onWorkDone = (work, result) => {
+      const taskText = handoff.work(work.id)?.task ?? "";
+      memoryTurn(work.roomId, work.child, `task: ${taskText.slice(0, 500)}\nresult: ${result.slice(0, 1_000)}`);
+    };
+    handoff.memoryTail = (botId) => memory.snapshot("bot", botId) || null;
     const api = new HttpApi({
-      store, bots, ledger, rooms, handoff, budget,
+      store, bots, ledger, rooms, handoff, budget, memory,
       webDir: opts.webDir ?? (existsSync(join(p.root, "web-dist")) ? join(p.root, "web-dist") : undefined),
     });
     return new Host(opts, store, ledger, bots, api);
