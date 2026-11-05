@@ -264,6 +264,7 @@ export class BotManager extends EventEmitter {
    *  Rejections carry honest reasons (handled/queued disposition, child
    *  death, stop) — never hangs (R1 P1-1: settled/error/exit race). */
   async prompt(botId: string, message: string, kind: UsageKind = "chat"): Promise<string> {
+    if (this.store.bot(botId) === undefined) throw new ApiError(404, `no bot ${botId}`);
     const m = this.bots.get(botId);
     if (m === undefined || m.client === null) throw new ApiError(409, `bot ${botId} is not running`);
     if (m.status === "working") throw new ApiError(409, `bot ${botId} is already working on a prompt`);
@@ -333,6 +334,7 @@ export class BotManager extends EventEmitter {
 
   /** Chat transcript for the UI: the live child's message history. */
   async messages(botId: string): Promise<Array<{ role: string; text: string }>> {
+    if (this.store.bot(botId) === undefined) throw new ApiError(404, `no bot ${botId}`);
     const m = this.bots.get(botId);
     if (m?.client == null) throw new ApiError(409, `bot ${botId} is not running`);
     const res = await m.client.command({ type: "get_messages" } as Record<string, unknown>);
@@ -354,6 +356,7 @@ export class BotManager extends EventEmitter {
   }
 
   async interrupt(botId: string): Promise<void> {
+    if (this.store.bot(botId) === undefined) throw new ApiError(404, `no bot ${botId}`);
     const m = this.bots.get(botId);
     if (m?.client == null) throw new ApiError(409, `bot ${botId} is not running`);
     await m.client.abort();

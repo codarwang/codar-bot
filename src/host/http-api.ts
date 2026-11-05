@@ -12,6 +12,22 @@ import type { BotManager } from "./bot-manager.js";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { ApiError } from "./http-error.js";
+
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** Shared POST/PATCH model validation (R5: the PATCH copy had drifted out
+ *  of existence — one validator, both routes). */
+function validateModel(model: unknown): BotRecord["model"] {
+  if (typeof model !== "object" || model === null || Array.isArray(model)) {
+    throw new ApiError(400, "model must be an object");
+  }
+  const m = model as Record<string, unknown>;
+  if (typeof m["provider"] !== "string" || !SAFE_ID.test(m["provider"]) ||
+      typeof m["modelId"] !== "string" || !SAFE_ID.test(m["modelId"]) ||
+      typeof m["thinkingLevel"] !== "string" || m["thinkingLevel"] === "") {
+    throw new ApiError(400, "model needs string provider/modelId (charset [A-Za-z0-9._-]) /thinkingLevel");
+  }
+  return m as unknown as BotRecord["model"];
+}
 import type { Store, BotRecord } from "./store.js";
 import { defaultBudget } from "./store.js";
 import type { UsageLedger } from "./usage-ledger.js";
@@ -138,13 +154,9 @@ export class HttpApi {
           // silently running bare while claiming isolation (§8).
           throw new ApiError(501, "docker sandbox lands with the M1-D runner; use host-not-isolated");
         }
-        const model = body.model ?? { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" };
-        if (typeof model.provider !== "string" || typeof model.modelId !== "string" ||
-            typeof model.thinkingLevel !== "string" ||
-            !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(model.provider) ||
-            !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(model.modelId)) {
-          throw new ApiError(400, "model needs string provider/modelId (safe charset: [A-Za-z0-9._-]) /thinkingLevel");
-        }
+        const model = body.model === undefined
+          ? { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" }
+          : validateModel(body.model);
         const budget = body.budget ?? { maxTokens: 5_000_000, maxCostMicros: 20_000_000, maxTurns: 2_000, maxWallMs: 3_600_000 };
         for (const k of ["maxTokens", "maxCostMicros", "maxTurns", "maxWallMs"] as const) {
           if (typeof budget[k] !== "number" || !Number.isFinite(budget[k]) || budget[k] < 0) {
@@ -171,16 +183,7 @@ export class HttpApi {
         const patch: Partial<BotRecord> = {};
         if (typeof body["name"] === "string" && body["name"].trim().length > 0) patch.name = body["name"].trim();
         if (typeof body["role"] === "string") patch.role = body["role"];
-        const model = body["model"];
-        if (model !== undefined) {
-          if (typeof model !== "object" || model === null || Array.isArray(model) ||
-              typeof (model as BotRecord["model"]).provider !== "string" ||
-              typeof (model as BotRecord["model"]).modelId !== "string" ||
-              typeof (model as BotRecord["model"]).thinkingLevel !== "string") {
-            throw new ApiError(400, "model needs string provider/modelId/thinkingLevel");
-          }
-          patch.model = model as BotRecord["model"];
-        }
+        if (body["model"] !== undefined) patch.model = validateModel(body["model"]);
         const budget = body["budget"];
         if (budget !== undefined) {
           if (typeof budget !== "object" || budget === null || Array.isArray(budget)) {
@@ -326,7 +329,8 @@ export class HttpApi {
   private readJson(req: IncomingMessage): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
-    let size = 0;
+      let size = 0;
+      req.on("error", () => reject(new ApiError(400, "request aborted")));
       req.on("data", (c: Buffer) => {
         size += c.length;
         if (size > 1_048_576) {
@@ -338,7 +342,12 @@ export class HttpApi {
       });
       req.on("end", () => {
         try {
-          resolve(chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString("utf8")));
+          const parsed = chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+            reject(new ApiError(400, "body must be a JSON object"));
+            return;
+          }
+          resolve(parsed);
         } catch {
           reject(new ApiError(400, "body is not valid JSON"));
         }
