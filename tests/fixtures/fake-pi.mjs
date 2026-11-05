@@ -16,7 +16,28 @@
  * Commands: get_state / prompt / abort / get_last_assistant_text /
  *           switch_session / set_auto_retry / get_session_stats
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+
+// Integration marker: when FAKE_PI_MARKER is set, record what the child
+// actually SAW in its environment (§3.3 chain assertions).
+if (process.env.FAKE_PI_MARKER) {
+  try {
+    writeFileSync(process.env.FAKE_PI_MARKER, JSON.stringify({
+      hasBotKey: typeof process.env.CODAR_BOT_KEY === "string" && process.env.CODAR_BOT_KEY !== "",
+      hasAnthropicKey: typeof process.env.ANTHROPIC_API_KEY === "string" && process.env.ANTHROPIC_API_KEY !== "",
+      agentDir: process.env.PI_CODING_AGENT_DIR ?? null,
+      modelsJson: (() => {
+        try {
+          return readFileSync(`${process.env.PI_CODING_AGENT_DIR}/models.json`, "utf8");
+        } catch {
+          return null;
+        }
+      })(),
+    }));
+  } catch {
+    /* marker is best-effort diagnostics */
+  }
+}
 
 const out = (record) => process.stdout.write(JSON.stringify(record) + "\n");
 let seq = 0;

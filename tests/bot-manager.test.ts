@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -192,5 +192,44 @@ test("chat history endpoint returns the transcript, not the bot record", async (
   } finally {
     delete process.env.CODAR_M1_AUTOAPPROVE;
     await r.dispose();
+  }
+});
+
+test("§3.3 spawn integration: custom provider key reaches the child via env, models.json holds only the $ENV ref", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-pchain-"));
+  mkdirSync(join(root, "work"), { recursive: true });
+  const keysPath = join(root, "keys.json");
+  writeFileSync(keysPath, JSON.stringify({
+    providers: { myproxy: { apiKey: "sk-integration", baseUrl: "https://proxy.example/v1" } },
+  }));
+  const store = Store.open(join(root, "state.json"), { create: true });
+  const ledger = new UsageLedger(join(root, "usage.sqlite"));
+  const bots = new BotManager(store, ledger, root, {
+    bin: process.execPath, sandboxArgv: [FAKE_PI],
+    env: { FAKE_PI_MARKER: join(root, "marker.json"), FAKE_PI_SESSION_FILE: "/tmp/fs" },
+  }, keysPath);
+  const bot = store.addBot({
+    name: "Chain", role: "", chief: true,
+    model: { provider: "myproxy", modelId: "gpt-x", thinkingLevel: "low" },
+    workDir: join(root, "work"), sessionPath: null,
+    sandbox: { mode: "host-not-isolated" }, budget: defaultBudget(),
+  });
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await bots.start(bot.id);
+    const marker = JSON.parse(readFileSync(join(root, "marker.json"), "utf8")) as {
+      hasBotKey: boolean; agentDir: string | null; modelsJson: string | null;
+    };
+    assert.equal(marker.hasBotKey, true, "CODAR_BOT_KEY must reach the child env");
+    assert.ok(marker.agentDir!.endsWith(join("pi-conf", bot.id)));
+    assert.ok(marker.modelsJson !== null);
+    assert.ok(!marker.modelsJson.includes("sk-integration"), "secret never in models.json");
+    assert.ok(marker.modelsJson.includes("$CODAR_BOT_KEY"));
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await bots.stopAll();
+    ledger.close();
+    store.close();
+    rmSync(root, { recursive: true, force: true });
   }
 });

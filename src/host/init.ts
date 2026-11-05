@@ -43,7 +43,7 @@ export function initTeam(input: InitInput): InitResult {
 
   // 2. Chief bot + default room (single-chief invariant: idempotent re-init
   //    keeps the existing chief, only updates the model if given).
-  const store = Store.open(p.state, { create: true });
+  const store = Store.openExclusive(p.state, { create: true }); // single-writer vs a live host
   try {
     const model: BotModelRef = {
       provider: input.provider,
@@ -62,8 +62,12 @@ export function initTeam(input: InitInput): InitResult {
         sandbox: { mode: "host-not-isolated" },
         budget: defaultBudget(),
       });
-    } else if (chief.model.provider !== input.provider || chief.model.modelId !== input.modelId) {
-      chief = store.updateBot(chief.id, { model });
+    } else if (
+      chief.model.provider !== input.provider ||
+      chief.model.modelId !== input.modelId ||
+      chief.model.thinkingLevel !== model.thinkingLevel
+    ) {
+      chief = store.updateBot(chief.id, { model }); // full triple compare
     }
     const room =
       store.state.rooms.find((r) => r.name === "default") ??
