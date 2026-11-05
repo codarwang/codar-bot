@@ -375,8 +375,7 @@ test("M2-C R5: cross-room run-side gate notifies the REQUESTER's room, not just 
     process.env.CODAR_M1_AUTOAPPROVE = "1";
     // A second room holding ONLY the writer; the default room keeps only
     // the chief — a true cross-room dispatch (chief@A → writer@B).
-    const def = r.store.room(r.roomId)!;
-    r.store.updateRoom(r.roomId, { members: [r.chiefId, ...def.members.filter((m) => m === r.chiefId)] });
+    r.store.updateRoom(r.roomId, { members: [r.chiefId] });
     const roomB = r.store.addRoom({
       name: "b", members: [r.writerId], admin: r.writerId,
       mode: "admin-reply", sharedDir: join(r.root, "s2"), budget: defaultBudget(), goal: null,
@@ -401,6 +400,94 @@ test("M2-C R5: cross-room run-side gate notifies the REQUESTER's room, not just 
       r.rooms.history(r.roomId).some((m) => m.from.kind === "system" && m.text.includes("not started")),
       "requester room notified"
     );
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("M2-C R6: run-side gate lifts a STALE pause and lets the queued work run", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    const budget = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+    r.handoff.stalePauseCheck = (roomId) => budget.rolloverIfStale(roomId);
+    await r.bots.start(r.writerId);
+    // Queue the work behind a busy child…
+    const slowTurn = r.rooms.userSay(r.roomId, "@Writer take it SLOW");
+    await new Promise((s2) => setTimeout(s2, 150));
+    const { workId } = await r.handoff.dispatch({
+      fromBot: r.chiefId, toBot: r.writerId, task: "Reply with the single word ALPHA.", requestId: "lift-1", roomId: null,
+    });
+    assert.equal(r.handoff.work(workId)!.status, "pending", "queued while busy");
+    // …then pause the room with a LAST-month stamp: on the child'"'"'s next
+    // idle the run-side gate must LIFT the stale pause, not fail the work.
+    r.rooms.pause(r.roomId, "budget", "stale pause");
+    const old = new Date(Date.now() - 32 * 24 * 3600 * 1000).toISOString();
+    r.store.updateRoom(r.roomId, { pausedAt: old });
+    await slowTurn;
+    const d = Date.now() + 15_000;
+    while (r.handoff.work(workId)!.status !== "done" && Date.now() < d) {
+      await new Promise((s2) => setTimeout(s2, 100));
+    }
+    assert.equal(r.handoff.work(workId)!.status, "done", "stale pause lifted — queued work ran");
+    assert.equal(r.store.room(r.roomId)!.status, "active");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("M2-C R6: multi-room member — any budget-paused member room refuses dispatch", async () => {
+  const r = await rig();
+  try {
+    // Writer stays in the default room AND joins a second, paused room.
+    const roomB = r.store.addRoom({
+      name: "b", members: [r.writerId], admin: r.writerId,
+      mode: "admin-reply", sharedDir: join(r.root, "s2"), budget: defaultBudget(), goal: null,
+    });
+    r.rooms.pause(roomB.id, "budget", "second room paused");
+    await assert.rejects(
+      () => r.handoff.dispatch({
+        fromBot: r.chiefId, toBot: r.writerId, task: "t", requestId: "multi-1", roomId: r.roomId,
+      }),
+      /budget-paused/
+    );
+    assert.equal(r.store.state.works.length, 0, "no work record leaked");
+  } finally {
+    await r.dispose();
+  }
+});
+
+test("M2-C R6: room-less refused work wakes the parent with the notice", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId);
+    await r.bots.start(r.writerId);
+    // Queue a room-less work behind a busy child, then pause before idle.
+    const slowTurn = r.rooms.userSay(r.roomId, "@Writer take it SLOW");
+    await new Promise((s2) => setTimeout(s2, 150));
+    const { workId } = await r.handoff.dispatch({
+      fromBot: r.chiefId, toBot: r.writerId, task: "t", requestId: "wake-1", roomId: null,
+    });
+    r.rooms.pause(r.roomId, "budget", "paused");
+    await slowTurn;
+    const d = Date.now() + 15_000;
+    while (r.handoff.work(workId)!.status !== "failed" && Date.now() < d) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    assert.equal(r.handoff.work(workId)!.status, "failed");
+    // The parent receives the refusal as a wake prompt (observable in its
+    // transcript) — no silent dead-end for room-less works.
+    const wDeadline = Date.now() + 15_000;
+    let saw = false;
+    while (!saw && Date.now() < wDeadline) {
+      const msgs = await r.bots.messages(r.chiefId);
+      saw = msgs.some((m) => m.role === "user" && m.text.includes("not started"));
+      if (!saw) await new Promise((s2) => setTimeout(s2, 100));
+    }
+    assert.ok(saw, "parent woken with the budget-paused notice");
   } finally {
     delete process.env.CODAR_M1_AUTOAPPROVE;
     await r.dispose();
