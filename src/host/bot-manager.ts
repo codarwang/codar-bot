@@ -441,12 +441,15 @@ export class BotManager extends EventEmitter {
       // The harvest await can reject on a LIVE child (command timeout / stdin
       // failure) — without this guard the bot stays "working" forever and the
       // idle-driven pending-work retry starves (M2-B R2 P1-a). The client
-      // guard keeps stop/crash paths from resurrecting an idle status.
+      // guard keeps stop/crash paths from resurrecting an idle status. The
+      // detail is only honest on the failure path (R3 P3: success flips
+      // plain, not "harvest failure").
       if (m.client === client && (m.status as BotStatus) === "working") {
-        this.setStatus(m, "idle", "harvest failure");
+        const failedHarvest = text === null;
+        this.setStatus(m, "idle", failedHarvest ? "harvest failure" : undefined);
       }
     }
-    return text;
+    return text ?? "";
   }
 
   /** Chat transcript for the UI: the live child's message history. */
