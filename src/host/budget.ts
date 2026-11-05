@@ -66,7 +66,12 @@ export class Budget extends EventEmitter {
     // Hook: after every usage write, check the writing bot's windows. A
     // failed check is AUDITED, never swallowed (M2-C R1 P2-6).
     ledger.onRecord = (botId: string) => {
-      this.checkBot(botId).catch((error: unknown) => {
+      // Scope-id rows (room memory reviews bill as botId=room_xxx) have no
+      // bot to check — route them straight to the room window so review
+      // spend re-evaluates IMMEDIATELY, not at the next member write
+      // (M2-D R2 P3-2).
+      const check = botId.startsWith("room_") ? this.checkRoom(botId) : this.checkBot(botId);
+      check.catch((error: unknown) => {
         this.audit({ kind: "budget-check-error", botId, error: String(error).slice(0, 200) });
       });
     };

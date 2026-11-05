@@ -174,15 +174,24 @@ export function materializePiConf(cfg: BotSpawnConfig): void {
       closeSync(fd);
     }
     renameSync(tmp, target);
-    // pi caches fetched catalogs in models-store.json INSIDE the agent dir;
-    // a stale store (e.g. from an earlier provider on this bot) shadows the
-    // regenerated models.json — "model not found" on the new provider. Our
-    // models.json is the per-spawn source of truth: drop the cache and let
-    // pi rebuild it (found in real dual-provider use, 2026-11-05).
+  } else {
+    // A bare spawn (provider has no keys.json entry) must not inherit the
+    // PREVIOUS provider's conf from this dir — stale files fail confusingly
+    // instead of honestly (M2-D R2 P3-4).
     try {
-      unlinkSync(join(cfg.piConfDir, "models-store.json"));
+      unlinkSync(join(cfg.piConfDir, "models.json"));
     } catch {
-      /* absent — nothing to invalidate */
+      /* absent */
     }
+  }
+  // pi caches fetched catalogs in models-store.json INSIDE the agent dir; a
+  // stale store (e.g. from an earlier provider on this bot) shadows the
+  // regenerated models.json — "model not found" on the new provider. Our
+  // models.json is the per-spawn source of truth: drop the cache and let pi
+  // rebuild it (found in real dual-provider use, 2026-11-05).
+  try {
+    unlinkSync(join(cfg.piConfDir, "models-store.json"));
+  } catch {
+    /* absent — nothing to invalidate */
   }
 }

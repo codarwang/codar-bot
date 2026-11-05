@@ -48,6 +48,10 @@ const usage = (input, output) => ({
 let lastText = null;
 const transcript = [];
 let sessionFile = process.env.FAKE_PI_SESSION_FILE ?? null;
+// M2-D R2: die before ANY rpc output — start()/ready path failure ordering.
+if (process.env.FAKE_PI_MEM_REVIEW === "startdie") {
+  process.exit(1);
+}
 let autoRetry = true;
 let pendingPark = null;
 let pendingMessageBot = null;
@@ -148,6 +152,11 @@ async function runPrompt(id, message) {
     //   ok (default) — valid FILE blocks | broken — unparseable prose |
     //   huge — entry.md at 2.5x the hard cap
     const mode = process.env.FAKE_PI_MEM_REVIEW ?? "ok";
+    if (mode === "promptfail") {
+      // Reject the prompt command itself: early-return ordering in the host.
+      fail(id, "prompt", "injected prompt failure");
+      return;
+    }
     transcript.push({ role: "user", content: message });
     respond(id, "prompt", { disposition: "started" });
     out({ type: "agent_start" });

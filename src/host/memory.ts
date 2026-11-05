@@ -30,12 +30,16 @@
  *
  * Fail-safe: a malformed/oversized review output keeps the old files AND the
  * pending turns (the next review retries), audited as memory-review-rejected
- * — memory never regresses on a bad model day.
+ * — memory never regresses on a bad model day. "All-or-nothing" is
+ * PER-FILE atomicity (tmp→rename each): a host crash mid-apply can leave a
+ * partial generation on disk; the claimed turns then re-review next pass
+ * and converge (R2 P3-1).
  */
 
 import {
   appendFileSync,
   closeSync,
+  fsyncSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -119,6 +123,7 @@ function atomicWrite(path: string, content: string): void {
   const fd = openSync(tmp, "w");
   try {
     writeSync(fd, content);
+    fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
@@ -313,9 +318,16 @@ export class MemoryEngine {
   }
 
   /**
-   * Run one review pass for a scope. All-or-nothing: files are written only
-   * when the parsed output fully validates; pending is cleared only on
-   * success. Failure paths audit and keep everything for the next pass.
+   * Run one review pass for a scope. All-or-nothing (per file): files are
+   *  written only when the parsed output fully validates; pending is
+   *  cleared only on success. Failure paths audit and keep everything for
+   *  the next pass.
+   *
+   *  INVARIANT: callers serialize per scope — schedule() does (single-flight
+   *  via `reviewing`). Two CONCURRENT review() calls on one scope would
+   *  treat each other's inflight file as an orphan and the earlier apply
+   *  would unlink the later claim (unreachable from the host today; kept
+   *  honest for future callers, R2 P3-3).
    */
   async review(scope: MemoryScope, id: string): Promise<"reviewed" | "skipped" | "rejected" | "failed"> {
     const key = this.scopeKey(scope, id);
@@ -368,7 +380,19 @@ export class MemoryEngine {
       unlinkSync(inflightPath);
       return "skipped";
     }
-    const pending = consumed.split("\n").map((l) => JSON.parse(l) as TurnRecord);
+    // A torn/corrupt line (crash mid-append, ENOSPC) must not wedge the
+    // scope forever: drop it, audit it, review the rest (R2 P2-1). The
+    // claim/restore machinery already isolates it from fresh ingests.
+    const pending: TurnRecord[] = [];
+    let torn = 0;
+    for (const l of consumed.split("\n")) {
+      try {
+        pending.push(JSON.parse(l) as TurnRecord);
+      } catch {
+        torn += 1;
+      }
+    }
+    if (torn > 0) this.audit({ kind: "memory-review-torn", scope, id, dropped: torn });
     const leftover = all.slice(REVIEW_TURNS_MAX).join("\n");
 
     const model = this.resolveReviewModel(scope, id);
@@ -436,6 +460,7 @@ export class MemoryEngine {
       "utf8"
     );
     this.cooldownFails.delete(key);
+    this.cooldownUntil.delete(key); // clear any stale cooldown (R2 P3-9)
     this.audit({ kind: "memory-review", scope, id, turns: pending.length, files: update.files.length });
     return "reviewed";
   }
@@ -486,13 +511,6 @@ export class MemoryEngine {
     model: BotModelRef,
     prompt: string
   ): Promise<{ text: string | null; error?: string }> {
-    const keys = loadKeys(this.keysPath);
-    // Per-SCOPE conf dir (R1 P2-1): concurrent bot+room reviews used to
-    // share one models.json — the later materialize overwrote the earlier
-    // child's catalog mid-boot ("model not found" churn). Single-flight
-    // makes a per-scope dir race-free.
-    const cfg = buildSpawnConfig(keys, dirname(this.root), `review-${scope}-${id}`, model.provider, model.modelId);
-    materializePiConf(cfg);
     const usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number; costTotal: number } = {
       input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costTotal: 0,
     };
@@ -501,10 +519,22 @@ export class MemoryEngine {
       void client?.abort().catch(() => undefined);
     }, REVIEW_WALL_MS);
     try {
+      // Key/conf resolution INSIDE the try (R2 P2-1 note): a throwing
+      // loadKeys/materialize must flow into notReviewed (restore + cooldown),
+      // not strand the claimed lines in the inflight file.
+      const keys = loadKeys(this.keysPath);
+      // Per-SCOPE conf dir (R1 P2-1): concurrent bot+room reviews used to
+      // share one models.json — the later materialize overwrote the earlier
+      // child's catalog mid-boot ("model not found" churn). Single-flight
+      // makes a per-scope dir race-free.
+      const cfg = buildSpawnConfig(keys, dirname(this.root), `review-${scope}-${id}`, model.provider, model.modelId);
+      materializePiConf(cfg);
       client = new RpcClient({
         bin: this.spawn.bin,
         argvPrefix: this.spawn.sandboxArgv,
-        cwd: this.root,
+        // The reviewer may run tools: scope it to its OWN directory — the
+        // whole memory root would expose sibling scopes (R2 P3-6).
+        cwd: this.scopeDir(scope, id),
         env: { ...this.spawn.env, ...cfg.env, PI_CODING_AGENT_DIR: cfg.piConfDir },
         idleTimeoutMs: REVIEW_WALL_MS,
         wallTimeoutMs: REVIEW_WALL_MS,
@@ -525,6 +555,12 @@ export class MemoryEngine {
         c.on("exit", (e: { error?: string | null }) =>
           rejectSettle(new Error(`review child exited: ${e?.error ?? "no output"}`)));
       });
+      // Handle the rejection from BIRTH: every failure ordering BEFORE the
+      // `await settled` below (exit during the prompt command, prompt
+      // success:false + finally-kill, start() throwing) never attaches a
+      // handler there — an unhandled rejection kills the host under
+      // --unhandled-rejections=throw (R2 P1-1, the very class P1-2 closed).
+      void settled.catch(() => undefined);
       client.on("event", (e) => {
         if ((e as { type?: string }).type !== "message_end") return;
         const message = (e as { message?: { role?: string; usage?: Record<string, unknown>; stopReason?: string } }).message;
@@ -551,25 +587,30 @@ export class MemoryEngine {
         last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
           ? (last.data as { text: string }).text
           : null;
-      // Bill whatever the child actually burned — even a failed/aborted
-      // pass consumed its input tokens (R1 P3-3); all-zero stays a no-op.
-      if (usage.input > 0 || usage.output > 0) {
-        this.ledger.record({
-          hour: HOUR_NOW(),
-          botId: id, // scope id — bot_xxx / room_xxx / team (§4 台账 id 风格)
-          model: `${model.provider}/${model.modelId}`,
-          kind: "memory-review",
-          input: usage.input, output: usage.output,
-          cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, cacheWrite1h: usage.cacheWrite1h,
-          costMicros: Math.round(usage.costTotal * 1e6),
-        });
-      }
       return text !== null && text.trim().length > 0 ? { text } : { text: null, error: "empty review output" };
     } catch (error) {
       return { text: null, error: String(error).slice(0, 200) };
     } finally {
       clearTimeout(timer);
       client?.kill();
+      // Bill in the FINALLY: usage rows arrive via events, and a mid-run
+      // exit path skips the code above — burned input must still land in
+      // the ledger (R1 P3-3 + R2 P3-5); all-zero stays a no-op.
+      if (usage.input > 0 || usage.output > 0) {
+        try {
+          this.ledger.record({
+            hour: HOUR_NOW(),
+            botId: id, // scope id — bot_xxx / room_xxx / team (§4 台账 id 风格)
+            model: `${model.provider}/${model.modelId}`,
+            kind: "memory-review",
+            input: usage.input, output: usage.output,
+            cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, cacheWrite1h: usage.cacheWrite1h,
+            costMicros: Math.round(usage.costTotal * 1e6),
+          });
+        } catch {
+          /* ledger closed during shutdown — audit already carries the pass */
+        }
+      }
     }
   }
 
