@@ -170,3 +170,57 @@ test("bridge e2e: a DISPATCH turn from chief drives Handoff through the ui bridg
     await r.dispose();
   }
 });
+
+test("M2-B R1: busy-child dispatch retries on idle (no starvation); different calls = different works", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId);
+    await r.bots.start(r.writerId);
+    // Occupy the writer with a slow room turn…
+    const slowTurn = r.rooms.userSay(r.roomId, "@Writer take it SLOW");
+    await new Promise((s) => setTimeout(s, 150)); // writer now "working"
+    // …then dispatch to it — the work queues as pending.
+    const { workId } = await r.handoff.dispatch({
+      fromBot: r.chiefId, toBot: r.writerId,
+      task: "Reply with the single word ALPHA.", requestId: "retry-1", roomId: null,
+    });
+    await new Promise((s) => setTimeout(s, 100));
+    assert.equal(r.handoff.work(workId)!.status, "pending", "queued while busy");
+    await slowTurn; // writer settles → goes idle → the pending work auto-retries
+    const deadline = Date.now() + 15_000;
+    while (r.handoff.work(workId)!.status !== "done" && Date.now() < deadline) {
+      await new Promise((s) => setTimeout(s, 150));
+    }
+    assert.equal(r.handoff.work(workId)!.status, "done", "retried on idle — no starvation");
+
+    // Two identical tasks under DIFFERENT keys = two distinct works.
+    const a = await r.handoff.dispatch({ fromBot: r.chiefId, toBot: r.writerId, task: "same text", requestId: "k1", roomId: null });
+    const b = await r.handoff.dispatch({ fromBot: r.chiefId, toBot: r.writerId, task: "same text", requestId: "k2", roomId: null });
+    assert.notEqual(a.workId, b.workId);
+    // Drain: out-of-band children must finish before dispose (a closed ledger
+    // under a running work = suite-level unhandled rejection).
+    const drain = Date.now() + 20_000;
+    const pendingWorks = () => r.store.state.works.filter((w) => w.status === "pending" || w.status === "working");
+    while (pendingWorks().length > 0 && Date.now() < drain) {
+      await new Promise((s2) => setTimeout(s2, 150));
+    }
+    assert.equal(pendingWorks().length, 0, "all out-of-band works drained");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("M2-B R1: §5.5 restart sweep — pending/working works fail on store reopen", async () => {
+  const r = await rig();
+  try {
+    await r.handoff.dispatch({ fromBot: r.chiefId, toBot: r.writerId, task: "t", requestId: "s1", roomId: null });
+    r.store.updateWork(r.store.state.works[0]!.id, { status: "working" });
+    const reopened = Store.open(r.store.statePath);
+    assert.equal(reopened.state.works[0]!.status, "failed", "host-restart sweep (§5.5)");
+    reopened.close();
+  } finally {
+    await r.dispose();
+  }
+});

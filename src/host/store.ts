@@ -74,7 +74,11 @@ export interface WorkRecord {
   child: string;
   requestId: string;
   status: "pending" | "working" | "done" | "failed" | "rejected";
-  roomId: string;
+  /** null = not room-scoped; "" is never used (M2-B R1 P3 sentinel cleanup). */
+  roomId: string | null;
+  /** The task text — persisted so pending works are retryable across
+   *  restarts and idle-transitions (M2-B R1 P1-2). */
+  task: string;
 }
 
 export interface StateDoc {
@@ -231,6 +235,11 @@ export class Store {
       throw new Error(`no state at ${statePath} (call open(..., {create:true}) to initialize)`);
     }
     const { doc, migrated } = raw ? migrate(raw) : { doc: emptyState(), migrated: false };
+    // §5.5 restart sweep: pending/working works cannot survive a host
+    // restart (their runners died) — mark failed, never guess (M2-B R1 P1-2).
+    for (const w of doc.works) {
+      if (w.status === "pending" || w.status === "working") w.status = "failed";
+    }
     const store = new Store(statePath, doc, null);
     if (!raw || migrated) store.persist();
     return store;

@@ -37,12 +37,32 @@ export interface HandoffEvents {
 }
 
 export class Handoff extends EventEmitter {
+  /** Results for busy callers, delivered when the caller goes idle. */
+  private readonly wakeQueue = new Map<string, string>();
+
   constructor(
     private readonly store: Store,
     private readonly bots: BotManager,
     private readonly rooms: RoomEngine
   ) {
     super();
+    // Idle transitions retry pending works and drain the wake queue —
+    // "queued" is never a black hole (M2-B R1 P1-2).
+    bots.on("status", (e: { botId: string; status: string }) => {
+      if (e.status !== "idle") return;
+      const wake = this.wakeQueue.get(e.botId);
+      if (wake !== undefined) {
+        this.wakeQueue.delete(e.botId);
+        void this.bots.prompt(e.botId, wake, "chat").catch(() => undefined);
+        return;
+      }
+      const pendingFor = this.store.state.works.find(
+        (w) => w.child === e.botId && w.status === "pending"
+      );
+      if (pendingFor !== undefined) {
+        void this.runChild(pendingFor, pendingFor.task).catch(() => undefined);
+      }
+    });
   }
 
   /**
@@ -74,7 +94,8 @@ export class Handoff extends EventEmitter {
       child: req.toBot,
       requestId: req.requestId,
       status: "pending",
-      roomId: req.roomId ?? "",
+      roomId: req.roomId,
+      task: req.task,
     };
     this.store.addWork(work);
     this.emit("work", { workId: work.id, status: "pending", parent: work.parent, child: work.child });
@@ -138,7 +159,7 @@ export class Handoff extends EventEmitter {
       // unhandled rejection (suite-level test failure), so guard each step.
       try { this.store.updateWork(work.id, { status: "failed" }); } catch { /* shutdown */ }
       this.emit("work", { workId: work.id, status: "failed", parent: work.parent, child: work.child });
-      if (work.roomId !== "") {
+      if (work.roomId !== null) {
         try {
           this.rooms.appendSystem(work.roomId, `task ${work.id} → ${this.botName(work.child)} failed: ${String(error).slice(0, 160)}`);
         } catch { /* shutdown */ }
@@ -149,7 +170,7 @@ export class Handoff extends EventEmitter {
   }
 
   private async returnResult(work: WorkRecord, result: string, progressLiner: string): Promise<void> {
-    if (work.roomId !== "" && result.trim().length > 0) {
+    if (work.roomId !== null && result.trim().length > 0) {
       try {
         this.rooms.appendBot(work.roomId, work.child, result);
       } catch { /* shutdown race */ }
@@ -160,30 +181,52 @@ export class Handoff extends EventEmitter {
       status: "done",
     });
     // Caller wake (§5.2 step 4): the parent gets the result as a new prompt
-    // when idle — "Chief 接着回应我" lands here. Busy parents skip the wake
-    // (their next room turn carries the result in injected context).
-    if (this.bots.status(work.parent) === "idle" && result.trim().length > 0) {
+    // when idle; a BUSY parent queues (never dropped — M2-B R1 P2). Results
+    // for room-scoped works also arrive via room injection next turn.
+    if (result.trim().length > 0) {
       const wake = `[${this.botName(work.child)} → you, task ${work.id} result]\n${result}`;
-      void this.bots.prompt(work.parent, wake, "chat").catch(() => undefined);
+      if (this.bots.status(work.parent) === "idle") {
+        void this.bots.prompt(work.parent, wake, "chat").catch(() => undefined);
+      } else {
+        this.wakeQueue.set(work.parent, wake);
+      }
     }
   }
 
-  /** DFS: is `target` a pending ancestor of `from` (would create a wait-cycle)? */
+  /** BFS over pending parent SETS: is `target` reachable as an ancestor of
+   *  `from` through pending/working works? (M2-B R1 P2: one child may have
+   *  SEVERAL pending parents — a single-parent chain misses real cycles.) */
   private assertNoCycle(from: string, target: string): void {
     const pending = this.store.state.works.filter((w) => w.status === "pending" || w.status === "working");
-    const byChild = new Map<string, WorkRecord>();
-    for (const w of pending) byChild.set(w.child, w);
-    let cursor: string | undefined = from;
-    const seen = new Set<string>();
-    while (cursor !== undefined && !seen.has(cursor)) {
-      seen.add(cursor);
-      if (cursor === target) {
-        throw new Error(
-          `message_bot: cycle — ${this.botName(target)} is waiting on your result (pending chain ${[...seen].map((s) => this.botName(s)).join(" → ")})`
-        );
+    const parentsOf = new Map<string, Set<string>>();
+    for (const w of pending) {
+      const set = parentsOf.get(w.child) ?? new Set<string>();
+      set.add(w.parent);
+      parentsOf.set(w.child, set);
+    }
+    const queue = [from];
+    const seen = new Set<string>([from]);
+    const chain = new Map<string, string>();
+    while (queue.length > 0) {
+      const cursor = queue.shift()!;
+      const parents = parentsOf.get(cursor);
+      if (parents === undefined) continue;
+      for (const p of parents) {
+        if (seen.has(p)) continue;
+        seen.add(p);
+        chain.set(p, cursor);
+        if (p === target) {
+          // Reconstruct the chain target → … → from for the error message.
+          const path: string[] = [p];
+          let step = cursor;
+          while (step !== from) { path.push(step); step = chain.get(step) ?? from; }
+          path.push(from);
+          throw new Error(
+            `message_bot: cycle — ${this.botName(target)} is waiting on your result (pending chain ${path.map((x) => this.botName(x)).join(" → ")})`
+          );
+        }
+        queue.push(p);
       }
-      const parentWork = byChild.get(cursor);
-      cursor = parentWork?.parent;
     }
   }
 

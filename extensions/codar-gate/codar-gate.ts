@@ -106,6 +106,10 @@ export default function codarGate(pi: ExtensionAPI): void {
   const audit: AuditSink = createAuditSink(auditPath);
   console.error(`[codar-gate] active source=${policy.source} rules=${policy.rules.length} audit=${auditPath}`);
 
+  // message_bot acceptances: toolCallId → the host's workId (the execute
+  // body reports it so the model can correlate wake lines — bridge_echo pattern).
+  const messageBotWorks = new Map<string, string>();
+
   pi.on("tool_call", async (event, ctx) => {
     try {
       // message_bot branch — BEFORE the rule engine (§3.1/§6.2 D1): the
@@ -135,6 +139,10 @@ export default function codarGate(pi: ExtensionAPI): void {
           to: typeof args.to === "string" ? args.to : "",
           task: typeof args.task === "string" ? args.task : "",
           request_id: typeof args.request_id === "string" ? args.request_id : "",
+          // The tool CALL id rides along: it is the honest idempotency key —
+          // a retried same call = same work, two legitimate identical tasks
+          // (different calls) = different works (M2-B R1 P1-3).
+          call_id: event.toolCallId,
         });
         const answer = await ctx.ui.input("codar:message_bot", outbound);
         if (answer === undefined) {
@@ -162,6 +170,11 @@ export default function codarGate(pi: ExtensionAPI): void {
         if (!ok) {
           return { block: true, reason: boundedReason(`codar-gate: message_bot ${body}`) };
         }
+        // Record the workId for the execute body (model-visible result).
+        try {
+          const parsed = JSON.parse(answer) as { workId?: string };
+          if (typeof parsed.workId === "string") messageBotWorks.set(event.toolCallId, parsed.workId);
+        } catch { /* non-JSON already handled above */ }
         return undefined;
       }
 
@@ -314,14 +327,15 @@ export default function codarGate(pi: ExtensionAPI): void {
       request_id: Type.Optional(Type.String({ description: "Idempotency key: same id = same work, never re-run" })),
     }) as ToolDefinition["parameters"],
     async execute(toolCallId, _params) {
-      void toolCallId;
-      // The tool_call branch ran BEFORE this body and recorded the outcome in
-      // its audit line; the model-facing result text is produced there. This
-      // body mirrors the accepted-shape so pi's transcript stays consistent.
+      // The tool_call branch parked the dispatch; its Map memo carries the
+      // host's workId here (bridge_echo pattern) — the model sees WHICH work
+      // it created, and wake lines reference the same id.
+      const workId = messageBotWorks.get(toolCallId);
+      messageBotWorks.delete(toolCallId);
       return {
         isError: false,
         details: undefined,
-        content: [{ type: "text", text: JSON.stringify({ status: "dispatched" }) }],
+        content: [{ type: "text", text: JSON.stringify(workId !== undefined ? { status: "ok", workId } : { status: "dispatched" }) }],
       };
     },
   });

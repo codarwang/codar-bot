@@ -11,6 +11,7 @@
  * memory-review kinds arrive with M2).
  */
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { RpcClient, type AgentEvent, type UiRequest } from "../driver/rpc-client.js";
@@ -413,7 +414,6 @@ export class BotManager extends EventEmitter {
       throw error;
     }
 
-    this.setStatus(m, "idle");
     // Persist the session path the child now reports (crash-safe resume).
     try {
       const state = await client.command({ type: "get_state" } as Record<string, unknown>);
@@ -429,9 +429,15 @@ export class BotManager extends EventEmitter {
       /* best-effort persistence; next successful prompt retries */
     }
     const last = await client.command({ type: "get_last_assistant_text" } as Record<string, unknown>);
-    return last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
-      ? (last.data as { text: string }).text
-      : "";
+    const text =
+      last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
+        ? (last.data as { text: string }).text
+        : "";
+    // Flip idle LAST (M2-B R1 P1-1): harvesting before the status flip means
+    // no concurrent prompt (handoff wake, HTTP, room turn) can start a new
+    // turn in the window and overwrite the lastText we just read.
+    this.setStatus(m, "idle");
+    return text;
   }
 
   /** Chat transcript for the UI: the live child's message history. */
@@ -501,14 +507,18 @@ export class BotManager extends EventEmitter {
       reply("error", { error: "host dispatch unavailable" });
       return;
     }
-    let parsed: { to?: string; task?: string; request_id?: string };
+    let parsed: { to?: string; task?: string; request_id?: string; call_id?: string };
     try {
       parsed = JSON.parse(req.placeholder ?? "{}") as typeof parsed;
     } catch {
       reply("error", { error: "malformed message_bot payload" });
       return;
     }
-    const task = (parsed.task ?? "").trim();
+    if (typeof parsed.to !== "string" || typeof parsed.task !== "string") {
+      reply("error", { error: "to/task must be strings" });
+      return;
+    }
+    const task = parsed.task.trim();
     if (task.length === 0 || task.length > 4096) {
       reply("error", { error: "task must be 1..4096 bytes" });
       return;
@@ -516,10 +526,16 @@ export class BotManager extends EventEmitter {
     // The model addresses bots by NAME; the work tree keys on id.
     const toName = parsed.to ?? "";
     const target = this.store.state.bots.find((b) => b.name === toName)?.id ?? toName;
-    // Default idempotency key: (from,to,task-prefix) — a model retry of the
-    // same dispatch gets the SAME work, never a re-run (§6.2).
+    // Idempotency (M2-B R1 P1-3): explicit request_id wins (namespaced by
+    // the SENDER so two bots can't claim each other's key); the default key
+    // is the tool CALL id — a retried call = same work, two legitimate
+    // identical tasks (different calls) = different works.
     const requestId =
-      parsed.request_id?.trim() || `mb:${botId}:${target}:${task.slice(0, 64)}`;
+      typeof parsed.request_id === "string" && parsed.request_id.trim() !== ""
+        ? `req:${botId}:${parsed.request_id.trim()}`
+        : typeof parsed.call_id === "string" && parsed.call_id !== ""
+          ? `call:${parsed.call_id}`
+          : `rand:${randomUUID()}`;
     try {
       const { workId } = await this.handoff.dispatch({
         fromBot: botId,
