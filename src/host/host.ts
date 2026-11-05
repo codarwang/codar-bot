@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { Store } from "./store.js";
 import { UsageLedger } from "./usage-ledger.js";
 import { BotManager } from "./bot-manager.js";
+import { RoomEngine } from "./room-engine.js";
 import { HttpApi } from "./http-api.js";
 import { paths, type HostPaths } from "./paths.js";
 import { loadKeys } from "./provider-config.js";
@@ -65,8 +66,9 @@ export class Host {
       extensionPath: opts.extensionPath,
       env: opts.env,
     }, p.keys, opts.extensionsDir);
+    const rooms = new RoomEngine(store, bots, p.roomsRoot);
     const api = new HttpApi({
-      store, bots, ledger,
+      store, bots, ledger, rooms,
       webDir: opts.webDir ?? (existsSync(join(p.root, "web-dist")) ? join(p.root, "web-dist") : undefined),
     });
     return new Host(opts, store, ledger, bots, api);

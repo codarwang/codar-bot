@@ -31,6 +31,8 @@ export interface BotManagerEvents {
   message: { botId: string; role: string; text: string };
   failure: { botId: string; reason: string };
   aborted: { botId: string };
+  /** A tool started executing on a bot (ping-pong guard input, §6.1). */
+  tool: { botId: string; toolName: string };
 }
 
 export type UsageKind = "chat" | "tool" | "memory-review";
@@ -466,6 +468,11 @@ export class BotManager extends EventEmitter {
   }
 
   private onEvent(bot: BotRecord, client: RpcClient, e: AgentEvent): void {
+    if (e.type === "tool_execution_start") {
+      const toolName = String((e as { toolName?: unknown }).toolName ?? "?");
+      this.emit("tool", { botId: bot.id, toolName });
+      return;
+    }
     if (e.type === "message_update") {
       const delta = (e as { assistantMessageEvent?: { type?: string; delta?: string } }).assistantMessageEvent;
       if (delta?.type === "text_delta" && typeof delta.delta === "string") {
