@@ -18,7 +18,8 @@ import type { BotRecord } from "./store.js";
 import type { Store } from "./store.js";
 import type { UsageLedger } from "./usage-ledger.js";
 import { botPiConfDir } from "./paths.js";
-import { buildSpawnConfig, materializePiConf, type BotSpawnConfig, type KeysDoc } from "./provider-config.js";
+import { buildSpawnConfig, materializePiConf, loadKeys, type BotSpawnConfig } from "./provider-config.js";
+import { paths } from "./paths.js";
 
 export type BotStatus = "stopped" | "starting" | "idle" | "working" | "crashed";
 
@@ -27,6 +28,7 @@ export interface BotManagerEvents {
   delta: { botId: string; text: string };
   message: { botId: string; role: string; text: string };
   failure: { botId: string; reason: string };
+  aborted: { botId: string };
 }
 
 export type UsageKind = "chat" | "tool" | "memory-review";
@@ -83,8 +85,9 @@ export class BotManager extends EventEmitter {
     private readonly ledger: UsageLedger,
     private readonly dataRoot: string,
     spawnDefaults: SpawnOptions = {},
-    /** §3.3 provider chain: keys.json → per-bot env + pi-conf/models.json. */
-    private readonly keys: KeysDoc = { providers: {} }
+    /** keys.json path — re-read on EVERY start so `codar init`-added
+     *  providers apply without a host restart (R1 P2-3). */
+    private readonly keysPath: string | null = null
   ) {
     super();
     this.spawnDefaults = spawnDefaults;
@@ -147,10 +150,19 @@ export class BotManager extends EventEmitter {
     m.pendingFailure = null;
     this.setStatus(m, "starting");
 
-    const spawn = { ...this.spawnDefaults, ...spawnOverride };
+    // env merges DEEPLY (defaults < override < provider chain), unlike the
+    // rest of spawn options which the override replaces wholesale.
+    const spawn = {
+      ...this.spawnDefaults,
+      ...spawnOverride,
+      env: { ...this.spawnDefaults.env, ...spawnOverride.env },
+    };
     // §3.3: standard providers inject their env var; custom providers get a
     // models.json with $CODAR_BOT_KEY interpolation (secret never on disk).
-    const cfg: BotSpawnConfig = buildSpawnConfig(this.keys, this.dataRoot, botId, bot.model.provider);
+    // Keys are re-read per start; materialization lives INSIDE the try so an
+    // IO failure re-enters the recovery funnel (R1 P2-1).
+    const keys = this.keysPath !== null ? loadKeys(this.keysPath) : { providers: {} };
+    const cfg: BotSpawnConfig = buildSpawnConfig(keys, this.dataRoot, botId, bot.model.provider);
     materializePiConf(cfg);
     spawn.env = { ...cfg.env, ...spawn.env, PI_CODING_AGENT_DIR: cfg.piConfDir };
     // Everything that can fail — including BEFORE the client exists (mkdir

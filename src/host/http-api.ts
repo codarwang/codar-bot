@@ -2,13 +2,15 @@
  * HTTP API — REST + SSE (architecture §7), zero-dependency node:http.
  *
  * v1 contract is explicitly unstable (README: early development). The API
- * surface for M1-A: overview, bots CRUD, per-bot prompt/abort, events SSE.
- * SSE events: status | delta | message | failure | system.
+ * surface for M1: overview, bots CRUD + prompt/abort/messages, rooms CRUD,
+ * usage totals, events SSE. SSE events: status | delta | message | failure |
+ * aborted | hello.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { BotManager } from "./bot-manager.js";
 import { join } from "node:path";
+import { mkdirSync } from "node:fs";
 import type { Store, BotRecord } from "./store.js";
 import { defaultBudget } from "./store.js";
 import type { UsageLedger } from "./usage-ledger.js";
@@ -255,6 +257,14 @@ export class HttpApi {
         if (name.length === 0 || members.length === 0 || admin === "") {
           return this.send(res, 400, { error: "rooms need name, members[], admin" });
         }
+        if (this.deps.store.state.rooms.some((r) => r.name === name)) {
+          return this.send(res, 409, { error: `room name "${name}" already in use` });
+        }
+        const sharedDir = String(body["sharedDir"] ?? join(this.deps.store.statePath, "..", "shared"));
+        if (!sharedDir.startsWith("/")) {
+          return this.send(res, 400, { error: "sharedDir must be an absolute path" });
+        }
+        mkdirSync(sharedDir, { recursive: true });
         for (const m of members) {
           if (this.deps.store.bot(m) === undefined) return this.send(res, 400, { error: `unknown member bot ${m}` });
         }
@@ -264,7 +274,7 @@ export class HttpApi {
         const room = this.deps.store.addRoom({
           name, members, admin,
           mode: body["mode"] === "round-robin" ? "round-robin" : "admin-reply",
-          sharedDir: String(body["sharedDir"] ?? join(this.deps.store.statePath, "..", "shared")),
+          sharedDir,
           budget: defaultBudget(),
           goal: null,
         });

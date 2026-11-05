@@ -55,7 +55,7 @@ async function main(): Promise<void> {
     }
     const provider = args.get("provider");
     const modelId = args.get("model");
-    if (provider === undefined || modelId === undefined) {
+    if (provider === undefined || provider === "" || modelId === undefined || modelId === "") {
       console.error("usage: codar init --provider <name> --model <modelId> [--base-url <url>] [--thinking <level>]");
       console.error("       (api key on stdin, or CODAR_INIT_KEY env)");
       process.exitCode = 1;
@@ -65,8 +65,8 @@ async function main(): Promise<void> {
     if (apiKey === "" && !process.stdin.isTTY) {
       apiKey = (await new Promise<string>((resolve) => {
         let buf = "";
-        process.stdin.once("data", (c) => { buf += c.toString(); resolve(buf.trim()); });
-        setTimeout(() => resolve(buf.trim()), 2_000).unref();
+        process.stdin.once("data", (c) => { buf += c.toString(); resolve(buf.split("\n")[0]!.trim()); });
+        setTimeout(() => resolve(buf.split("\n")[0]!.trim()), 2_000).unref();
       })) ?? "";
     }
     if (apiKey === "") {

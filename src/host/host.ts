@@ -50,13 +50,13 @@ export class Host {
     }
     const store = Store.openExclusive(p.state, { create: true });
     const ledger = new UsageLedger(p.ledger);
-    const keys = loadKeys(p.keys);
+    loadKeys(p.keys); // fail fast on malformed keys.json at boot
     const bots = new BotManager(store, ledger, p.root, {
       bin: opts.bin,
       sandboxArgv: opts.argv,
       extensionPath: opts.extensionPath,
       env: opts.env,
-    }, keys);
+    }, p.keys);
     const api = new HttpApi({ store, bots, ledger });
     return new Host(opts, store, ledger, bots, api);
   }
