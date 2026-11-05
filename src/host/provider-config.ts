@@ -43,6 +43,7 @@ export interface PresetModelPrice {
   input: number;
   output: number;
   cacheRead: number;
+  cacheWrite: number;
 }
 
 /** Well-known provider presets — the only "built-ins" codar has, and they
@@ -61,7 +62,7 @@ export const PROVIDER_PRESETS: Record<
     baseUrl: "https://api.minimax.cn/anthropic",
     // Official pricing page (platform.minimax.cn/docs/pricing/overview),
     // CNY per 1M tokens, fetched 2026-11-05.
-    modelPrices: { "MiniMax-M3.1-Flash": { input: 1, output: 4, cacheRead: 0.1 } },
+    modelPrices: { "MiniMax-M3.1-Flash": { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 0 } },
   },
   "minimax-cn": { api: "openai-completions", baseUrl: "https://api.minimaxi.com/v1" },
   "groq": { api: "openai-completions", baseUrl: "https://api.groq.com/openai/v1" },
@@ -151,7 +152,7 @@ export function buildSpawnConfig(
               // otherwise NO cost is invented: unpriced models report cost 0
               // and the budget layer degrades to token-budget (§4).
               ...(preset?.modelPrices !== undefined && Object.hasOwn(preset.modelPrices, modelId)
-                ? { cost: preset.modelPrices[modelId] }
+                ? { cost: preset.modelPrices[modelId] } // FULL 4-field shape: pi's schema rejects partial cost objects
                 : {}),
             }] }),
       },

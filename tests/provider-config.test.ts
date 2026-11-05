@@ -63,7 +63,7 @@ test("custom anthropic-protocol endpoint: minimax-anthropic preset + entry overr
     // Official CNY prices from the preset land in the generated entry.
     assert.deepEqual(
       (doc.providers["minimax-anthropic"].models[0] as unknown as { cost?: PresetModelPrice }).cost,
-      { input: 1, output: 4, cacheRead: 0.1 },
+      { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 0 },
     );
     // entry baseUrl overrides the preset
     const over = buildSpawnConfig(
