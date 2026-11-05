@@ -101,12 +101,18 @@ export function App(): JSX.Element {
     if (roomId === "") return;
     setTurn(null);
     setUnread((prev) => ({ ...prev, [roomId]: 0 }));
-    void jsonFetch<{ messages: RoomMessage[] }>(`/api/rooms/${roomId}/messages`)
+    const cur = roomId;
+    void jsonFetch<{ messages: RoomMessage[] }>(`/api/rooms/${cur}/messages`)
       .then((r) => {
+        // Race guard: a slow response for room A must not paint over room B
+        // after a quick switch (R2 F4 — the M1 stale-closure class).
+        if (roomRef.current !== cur) return;
         setMessages(r.messages);
         lastSeqRef.current = r.messages.length > 0 ? r.messages[r.messages.length - 1]!.seq : 0;
       })
-      .catch(() => setMessages([]));
+      .catch(() => {
+        if (roomRef.current === cur) setMessages([]);
+      });
     void jsonFetch<WorkRecord[]>(`/api/works?room=${roomId}`)
       .then((ws) => {
         const now = Date.now();
@@ -142,6 +148,16 @@ export function App(): JSX.Element {
       void refreshBudget();
       const cur = roomRef.current;
       if (cur !== "") {
+        void jsonFetch<WorkRecord[]>(`/api/works?room=${cur}`)
+          .then((ws) => {
+            const now = Date.now();
+            setWorks((prev) => {
+              const next = { ...prev };
+              for (const w of ws) next[w.id] = { ...w, oneLiner: next[w.id]?.oneLiner, firstSeen: next[w.id]?.firstSeen ?? now };
+              return next;
+            });
+          })
+          .catch(() => undefined);
         void jsonFetch<{ messages: RoomMessage[] }>(`/api/rooms/${cur}/messages?since=${lastSeqRef.current}`)
           .then((r) => {
             if (r.messages.length === 0) return;
@@ -233,7 +249,9 @@ export function App(): JSX.Element {
     });
     on("work", (d) => {
       const w = d as { workId: string; status: WorkRecord["status"]; parent: string; child: string; roomId?: string | null; task?: string };
-      const belongs = w.roomId !== undefined && w.roomId !== null ? w.roomId : roomRef.current;
+      // Room-less works stay room-less: faking them into whatever room was
+      // on screen put cross-bot cards in the wrong timeline (R2 P3).
+      const belongs = w.roomId ?? null;
       setWorks((prev) => {
         const cur = prev[w.workId];
         if (cur !== undefined && cur.status === w.status) return prev;

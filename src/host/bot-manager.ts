@@ -313,6 +313,14 @@ export class BotManager extends EventEmitter {
     client.kill();
   }
 
+  /** dropClient covers stop/start-failure; CRASHES land here — the parked
+   *  cards must go stale too or a later Allow would no-op the reply on a
+   *  dead child and still claim "allowed ✓" (M2-E R2 P1). */
+  private crashDropClient(client: RpcClient): void {
+    this.purgeApprovalsOf(client);
+    client.kill();
+  }
+
   async stop(botId: string): Promise<void> {
     const m = this.bots.get(botId);
     if (m === undefined) return;
@@ -529,7 +537,15 @@ export class BotManager extends EventEmitter {
   resolveApproval(id: string, confirmed: boolean): boolean {
     const parked = this.parkedApprovals.get(id);
     if (parked === undefined) return false;
+    // Liveness belt: if the parking client is no longer ANY bot's live
+    // client (crashed and purged late, superseded), the reply can never
+    // land — resolve STALE instead of lying "allowed" (M2-E R2 P1).
+    const stillLive = [...this.bots.values()].some((m) => m.client === parked.client);
     this.parkedApprovals.delete(id);
+    if (!stillLive) {
+      this.emit("approvalResolved", { id, confirmed: false, stale: true });
+      return false;
+    }
     parked.client.replyUi({ type: "extension_ui_response", id: parked.reqId, confirmed });
     this.emit("approvalResolved", { id, confirmed });
     return true;
@@ -669,7 +685,7 @@ export class BotManager extends EventEmitter {
     m.lastError = reason;
     this.setStatus(m, "crashed", reason);
     this.emit("failure", { botId: bot.id, reason });
-    client.kill();
+    this.crashDropClient(client); // also purges this client's parked approvals (R2 P1)
     await this.recoverFromFailure(bot, client, reason);
   }
 
