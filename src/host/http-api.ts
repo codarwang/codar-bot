@@ -149,10 +149,8 @@ export class HttpApi {
         if (!workDir.startsWith("/")) {
           throw new ApiError(400, "workDir must be an absolute path");
         }
-        if (body.sandbox?.mode === "docker") {
-          // No docker runner in the host yet — refuse honestly instead of
-          // silently running bare while claiming isolation (§8).
-          throw new ApiError(501, "docker sandbox lands with the M1-D runner; use host-not-isolated");
+        if (body.sandbox !== undefined && body.sandbox.mode !== "docker" && body.sandbox.mode !== "host-not-isolated") {
+          throw new ApiError(400, "sandbox.mode must be docker | host-not-isolated");
         }
         const model = body.model === undefined
           ? { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" }

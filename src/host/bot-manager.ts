@@ -20,6 +20,7 @@ import type { UsageLedger } from "./usage-ledger.js";
 import { botPiConfDir } from "./paths.js";
 import { buildSpawnConfig, materializePiConf, loadKeys, type BotSpawnConfig } from "./provider-config.js";
 import { ApiError } from "./http-error.js";
+import { buildDockerArgv, DEFAULT_SANDBOX_IMAGE } from "./sandbox.js";
 import { paths } from "./paths.js";
 
 export type BotStatus = "stopped" | "starting" | "idle" | "working" | "crashed";
@@ -41,6 +42,8 @@ export interface SpawnOptions {
   sandboxArgv?: string[];
   env?: Record<string, string>;
   extensionPath?: string;
+  /** docker sandbox image override (§3.4; default codar-bot-sandbox:0.1). */
+  sandboxImage?: string;
 }
 
 interface ManagedBot {
@@ -88,7 +91,9 @@ export class BotManager extends EventEmitter {
     spawnDefaults: SpawnOptions = {},
     /** keys.json path — re-read on EVERY start so `codar init`-added
      *  providers apply without a host restart (R1 P2-3). */
-    private readonly keysPath: string | null = null
+    private readonly keysPath: string | null = null,
+    /** Host dir containing the codar extension tree (docker mount source). */
+    private readonly extensionsDir: string = join(dataRoot, "extensions")
   ) {
     super();
     this.spawnDefaults = spawnDefaults;
@@ -172,12 +177,38 @@ export class BotManager extends EventEmitter {
       const cfg: BotSpawnConfig = buildSpawnConfig(keys, this.dataRoot, botId, bot.model.provider);
       materializePiConf(cfg);
       mkdirSync(bot.workDir, { recursive: true });
-      spawn.env = { ...spawn.env, ...cfg.env, PI_CODING_AGENT_DIR: cfg.piConfDir };
+      let bin = spawn.bin;
+      let argvPrefix = spawn.sandboxArgv;
+      let childEnv: Record<string, string> = { ...spawn.env, ...cfg.env, PI_CODING_AGENT_DIR: cfg.piConfDir };
+      if (bot.sandbox.mode === "docker") {
+        // §3.4 sandboxed spawn: env rides explicit -e flags (containers do
+        // not inherit spawn env), the entrypoint is pi itself.
+        if (spawn.sandboxArgv !== undefined) {
+          throw new Error("sandboxArgv is for the bare-process test shim; docker bots configure sandbox.image");
+        }
+        const image = spawn.sandboxImage ?? process.env.CODAR_SANDBOX_IMAGE ?? DEFAULT_SANDBOX_IMAGE;
+        bin = "docker";
+        argvPrefix = buildDockerArgv({
+          image,
+          workDir: bot.workDir,
+          piConfDir: cfg.piConfDir,
+          extensionsDir: this.extensionsDir,
+          extensionEntry: "codar-gate/codar-gate.ts",
+          env: { ...cfg.env, PI_CODING_AGENT_DIR: "/state/pi-conf" },
+        });
+        childEnv = {}; // nothing leaks to the docker CLI process env
+      }
       client = new RpcClient({
-        bin: spawn.bin,
-        argvPrefix: spawn.sandboxArgv,
+        bin,
+        argvPrefix,
         cwd: bot.workDir,
-        env: { ...spawn.env, CODAR_GATE_AUDIT: join(botPiConfDir(this.dataRoot, botId), "gate-audit.jsonl") },
+        env: {
+          ...childEnv,
+          CODAR_GATE_AUDIT:
+            bot.sandbox.mode === "docker"
+              ? "/state/pi-conf/gate-audit.jsonl"
+              : join(botPiConfDir(this.dataRoot, botId), "gate-audit.jsonl"),
+        },
         idleTimeoutMs: 5 * 60_000,
         wallTimeoutMs: 24 * 60 * 60_000,
         onUiRequest: (req) => this.handleUi(client, req),
@@ -195,7 +226,10 @@ export class BotManager extends EventEmitter {
       client.on("aborted", () => this.emit("aborted", { botId }));
 
       const ready = await client.start({
-        extensionPath: spawn.extensionPath,
+        extensionPath:
+          bot.sandbox.mode === "docker"
+            ? "/opt/codar-ext/codar-gate/codar-gate.ts"
+            : spawn.extensionPath,
         model: `${bot.model.provider}/${bot.model.modelId}`,
         thinking: bot.model.thinkingLevel,
         noSession: false,

@@ -104,7 +104,12 @@ test("bot CRUD guards: duplicate name 409, docker mode 501, patch immutables 400
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "Sandboxed", workDir: "/tmp/x", sandbox: { mode: "docker" } }),
     });
-    assert.equal(docker.status, 501);
+    assert.equal(docker.status, 201); // M1-D: the runner landed, docker mode is valid
+    const badMode = await json(t.port, "/api/bots", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "BadMode", workDir: "/tmp/x", sandbox: { mode: "vm" } }),
+    });
+    assert.equal(badMode.status, 400);
     const patch = await json(t.port, `/api/bots/${t.botId}`, {
       method: "PATCH", headers: { "content-type": "application/json" },
       body: JSON.stringify({ chief: true }),

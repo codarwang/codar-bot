@@ -18,6 +18,8 @@ export interface HostOptions {
   argv?: string[];
   extensionPath?: string;
   env?: Record<string, string>;
+  /** Host dir containing the extension tree (docker mount source, §3.4). */
+  extensionsDir?: string;
 }
 
 export class Host {
@@ -56,7 +58,7 @@ export class Host {
       sandboxArgv: opts.argv,
       extensionPath: opts.extensionPath,
       env: opts.env,
-    }, p.keys);
+    }, p.keys, opts.extensionsDir);
     const api = new HttpApi({ store, bots, ledger });
     return new Host(opts, store, ledger, bots, api);
   }

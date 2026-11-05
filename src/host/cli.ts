@@ -30,6 +30,7 @@ async function main(): Promise<void> {
       bin: process.env.CODAR_PI_BIN,
       argv: argvTail !== undefined && argvTail !== "" ? [argvTail] : undefined,
       extensionPath: process.env.CODAR_EXT_PATH,
+      extensionsDir: process.env.CODAR_EXTENSIONS_DIR,
     });
     const port = await host.start();
     console.log(`codar host listening on http://127.0.0.1:${port} (pid ${process.pid})`);
