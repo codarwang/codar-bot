@@ -144,6 +144,23 @@ test("lower-layer error mapping: bad JSON 400, unknown bot 404, busy/stopped 409
     assert.equal(badProvider.status, 400);
     const junkDelete = await json(t.port, `/api/bots/${t.botId}/junk`, { method: "DELETE" });
     assert.equal(junkDelete.status, 404);
+    // R5: unknown bot on action routes is 404, stopped-but-known stays 409.
+    const unknownPrompt = await json(t.port, "/api/bots/bot_missing/prompt", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "x" }),
+    });
+    assert.equal(unknownPrompt.status, 404);
+    // PATCH model charset guard REALLY present this time (shared validator).
+    const evilPatch = await json(t.port, `/api/bots/${t.botId}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: { provider: "a;b$(rm)", modelId: "../../etc", thinkingLevel: "low" } }),
+    });
+    assert.equal(evilPatch.status, 400);
+    // JSON null body is a 400, not a TypeError 500.
+    const nullBody = await json(t.port, "/api/bots", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "null",
+    });
+    assert.equal(nullBody.status, 400);
   } finally {
     await teardown(t.host, t.root);
   }
