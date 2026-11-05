@@ -16,6 +16,18 @@
   header h1 { font-size: 14px; font-weight: normal; }
   header h1 b { color: var(--accent); font-weight: normal; }
   .lang button { background: none; border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 2px 8px; cursor: pointer; margin-left: 4px; }
+  .rev { font-size: 9px; color: var(--ok); border: 1px solid var(--line); border-radius: 8px; padding: 0 6px; vertical-align: middle; }
+  .ctx-toggle { display: none; }
+  @media (max-width: 1180px) {
+    .context { display: none; position: fixed; top: 37px; right: 0; bottom: 0; width: 248px; background: var(--panel); border-left: 1px solid var(--line); z-index: 60; box-shadow: -8px 0 24px rgba(0,0,0,.45); overflow-y: auto; }
+    body.showctx .context { display: block; }
+    .ctx-toggle { display: inline-block; }
+  }
+  @media (max-width: 920px) {
+    .roster { width: 60px; }
+    .roster .row .body, .roster .newbtn { display: none; }
+    .roster .row { justify-content: center; }
+  }
   .lang button.on { background: var(--line); }
   .frame { flex: 1; display: flex; min-height: 0; }
 
@@ -116,8 +128,8 @@
 </head>
 <body>
 <header>
-  <h1><b>codar</b> <span data-i="appname">· bot team</span></h1>
-  <div class="lang"><button id="lang-en" class="on" onclick="setLang('en')">EN</button><button id="lang-zh" onclick="setLang('zh')">中文</button></div>
+  <h1><b>codar</b> <span data-i="appname">· bot team</span> <span class="rev" title="prototype revision">r3</span></h1>
+  <div class="lang"><button class="ctx-toggle" onclick="document.body.classList.toggle('showctx')" title="context panel">▤</button><button id="lang-en" class="on" onclick="setLang('en')">EN</button><button id="lang-zh" onclick="setLang('zh')">中文</button></div>
 </header>
 <div class="frame">
   <nav class="roster" id="roster"></nav>
