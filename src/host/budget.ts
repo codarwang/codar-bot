@@ -156,12 +156,36 @@ export class Budget extends EventEmitter {
    *  activity performs the rollover test first. */
   rolloverIfStale(roomId: string): void {
     const room = this.store.room(roomId);
-    if (room?.status !== "paused" || room.pauseReason !== "budget") return;
-    // Only a RECORDED old-month state proves a rollover; a missing state
-    // after restart keeps the pause (M2-C R3 P2).
+    if (room?.status !== "paused" || (room.pauseReason ?? "budget") !== "budget") return;
+    // Durable month stamp (M2-C R4 P3): the pause records WHEN it happened,
+    // so a host restart cannot deafen the next-month auto-resume (§5.3 次月
+    // 自动恢复). In-memory scope state alone used to be the only proof — a
+    // restart wiped it and the pause stuck until a manual budget PUT. A
+    // same-month pause (restart or not) still holds: no stamp from THIS
+    // month ≠ rollover (M2-C R3 P2).
+    if (room.pausedAt !== undefined && room.pausedAt !== null) {
+      if (monthKey(new Date(room.pausedAt)) !== monthKey()) {
+        // Perform the window reset EXPLICITLY: after a restart there is no
+        // in-memory state, and scope()'s no-state branch must NOT resume
+        // (that is the M2-C R3 semantics — only a PROVEN old-month pause
+        // lifts, and the durable stamp IS the proof).
+        const key = `room:${roomId}`;
+        const st = this.scopes.get(key);
+        if (st === undefined || st.month !== monthKey()) {
+          this.scopes.set(key, { turns: 0, stopped: false, month: monthKey() });
+          for (const w of [...this.warned]) {
+            const parts = w.split(":");
+            if (parts[1] === "room" && parts[2] === roomId) this.warned.delete(w);
+          }
+          try { this.rooms.resume(roomId, "new month — budget window reset"); } catch { /* shutting down */ }
+        }
+      }
+      return;
+    }
+    // Legacy pause with no stamp: fall back to in-memory proof.
     const st = this.scopes.get(`room:${roomId}`);
     if (st !== undefined && st.month !== monthKey()) {
-      this.scope(`room:${roomId}`); // performs the rollover (reset + resume)
+      this.scope(`room:${roomId}`);
     }
   }
 

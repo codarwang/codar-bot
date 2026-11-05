@@ -396,3 +396,35 @@ test("M2-C R3: room budget PUT — insufficient raise keeps the stop sticky; a r
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("M2-C R4: pausedAt month stamp makes next-month auto-resume durable across restarts", async () => {
+  const r = await rig();
+  try {
+    const room = r.store.room(r.roomId)!;
+    r.store.updateRoom(r.roomId, { budget: { ...room.budget, maxCostMicros: 100 } });
+    r.ledger.record({
+      hour: monthHour(), botId: r.chiefId, model: "fake/f", kind: "chat",
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150,
+    });
+    const pDeadline = Date.now() + 5_000;
+    while (r.store.room(r.roomId)!.status !== "paused" && Date.now() < pDeadline) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    const paused = r.store.room(r.roomId)!;
+    assert.equal(paused.status, "paused");
+    assert.ok(typeof paused.pausedAt === "string", "pause records a durable timestamp");
+    // SAME month, fresh Budget (restart): the pause holds.
+    const sameMonth = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+    sameMonth.rolloverIfStale(r.roomId);
+    assert.equal(r.store.room(r.roomId)!.status, "paused", "same-month stamp does not resume");
+    // The pause lands in a PREVIOUS month: rollover resumes — no manual PUT.
+    const old = new Date(Date.now() - 32 * 24 * 3600 * 1000).toISOString();
+    r.store.updateRoom(r.roomId, { pausedAt: old });
+    const nextMonth = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+    nextMonth.rolloverIfStale(r.roomId);
+    assert.equal(r.store.room(r.roomId)!.status, "active", "old-month stamp auto-resumes (§5.3)");
+    assert.equal(r.store.room(r.roomId)!.pauseReason, null);
+  } finally {
+    await r.dispose();
+  }
+});

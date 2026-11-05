@@ -112,6 +112,15 @@ export class Handoff extends EventEmitter {
     // find above skipped them, so a retry proceeds to a NEW work (honest
     // restart semantics — M2-B R2 P2-b).
 
+    // Budget gate (M2-C R4): dispatch INTO a budget-paused room's member is
+    // rejected up front — the caller bot SEES the refusal instead of getting
+    // a work that never runs. §5.3 group-stop semantics: the pause already
+    // aborted the members' in-flight work; new runs must not sidestep it.
+    const childRoom = this.store.state.rooms.find((r) => r.members.includes(req.toBot));
+    if (childRoom?.status === "paused" && (childRoom.pauseReason ?? "budget") === "budget") {
+      throw new Error(`message_bot: ${this.botName(req.toBot)}'s room is budget-paused (§5.3) — adjust the budget to resume`);
+    }
+
     // Anti-cycle: the target must not be a pending ancestor of the sender.
     this.assertNoCycle(req.fromBot, req.toBot);
 
@@ -156,6 +165,19 @@ export class Handoff extends EventEmitter {
       });
       return;
     }
+    // Budget gate, run-side twin of the dispatch gate (M2-C R4): a work that
+    // queued as pending may reach an idle child AFTER its room got
+    // budget-paused. Honest failure with a room line, key released for a
+    // post-resume retry.
+    const childRoom = this.store.state.rooms.find((r) => r.members.includes(work.child));
+    if (childRoom?.status === "paused" && (childRoom.pauseReason ?? "budget") === "budget") {
+      this.store.updateWork(work.id, { status: "failed" });
+      this.emit("work", { workId: work.id, status: "failed", parent: work.parent, child: work.child });
+      try {
+        this.rooms.appendSystem(childRoom.id, `task ${work.id} → ${this.botName(work.child)} not started — room budget paused (§5.3)`);
+      } catch { /* shutdown */ }
+      return;
+    }
     this.store.updateWork(work.id, { status: "working" });
     this.emit("work", { workId: work.id, status: "working", parent: work.parent, child: work.child });
     this.emit("progress", {
@@ -174,24 +196,50 @@ export class Handoff extends EventEmitter {
       this.emit("progress", { workId: work.id, botId: work.child, oneLiner: lastProgress.oneLiner, status: "working" });
     };
     this.bots.on("tool", onTool);
-    // Per-task wall clock (§6.1a maxWallMs — M2-C R3 P2-4, actually wired
-    // this time: handoff runs are the most task-like surface there is).
-    const wallMs = this.deadlineMs?.(work.child) ?? null;
+    // Turn-outcome correlation (M2-C R4 P1 — the same guard room-engine
+    // runTurn has had since M2-A R3): a SETTLED prompt is not a SUCCESSFUL
+    // one. After an interrupt (per-task wall clock / API abort / room
+    // budget stop) the harvest's get_last_assistant_text points at the
+    // child's PREVIOUS turn's text — pi 1.5.0 only skips aborted messages
+    // with EMPTY content. Without this guard an interrupted task delivers
+    // the child's stale old answer to the room and the caller (proven in
+    // R4), or dies silently marked "done".
+    let turnInterrupted = false;
+    const onAborted = (e: { botId: string }): void => { if (e.botId === work.child) turnInterrupted = true; };
+    const onFailure = (e: { botId: string; reason: string }): void => { if (e.botId === work.child) turnInterrupted = true; };
+    this.bots.on("aborted", onAborted);
+    this.bots.on("failure", onFailure);
     let wallClock: NodeJS.Timeout | null = null;
-    if (wallMs !== null && wallMs > 0) {
-      wallClock = setTimeout(() => {
-        void this.bots.interrupt(work.child).catch(() => undefined);
-      }, wallMs);
-    }
     try {
+      // Per-task wall clock (§6.1a maxWallMs — M2-C R3 P2-4). Armed inside
+      // the try so a throwing deadline provider cannot strand the work in
+      // "working" or leak the listeners (R4 P3); cleared once, in finally.
+      const wallMs = this.deadlineMs?.(work.child) ?? null;
+      if (wallMs !== null && wallMs > 0) {
+        wallClock = setTimeout(() => {
+          void this.bots.interrupt(work.child).catch(() => undefined);
+        }, wallMs);
+      }
       const result = await this.bots.prompt(work.child, injected, "tool");
-      if (wallClock !== null) clearTimeout(wallClock);
+      if (turnInterrupted) {
+        // Interrupted ⇒ failed, NEVER a silent "done": the cut lands where
+        // it is observable (§5.3), and NO stale result is delivered.
+        try { this.store.updateWork(work.id, { status: "failed" }); } catch { /* shutdown */ }
+        this.emit("work", { workId: work.id, status: "failed", parent: work.parent, child: work.child });
+        if (work.roomId !== null) {
+          try {
+            this.rooms.appendSystem(work.roomId, `task ${work.id} → ${this.botName(work.child)} interrupted — no result delivered`);
+          } catch { /* shutdown */ }
+        } else {
+          this.deliverWake(work.parent, `[task ${work.id} result: INTERRUPTED — no result delivered]`);
+        }
+        return;
+      }
       this.store.updateWork(work.id, { status: "done" });
       this.emit("work", { workId: work.id, status: "done", parent: work.parent, child: work.child });
       // Result flows back: room line (if room-scoped) + caller wake prompt.
       await this.returnResult(work, result, lastProgress.oneLiner);
     } catch (error) {
-      if (wallClock !== null) clearTimeout(wallClock);
       // Best-effort failure bookkeeping: the host may be shutting down (store
       // closed, dirs removed) — a throwing catch-path would surface as an
       // unhandled rejection (suite-level test failure), so guard each step.
@@ -203,7 +251,10 @@ export class Handoff extends EventEmitter {
         } catch { /* shutdown */ }
       }
     } finally {
+      if (wallClock !== null) clearTimeout(wallClock);
       this.bots.off("tool", onTool);
+      this.bots.off("aborted", onAborted);
+      this.bots.off("failure", onFailure);
     }
   }
 
@@ -222,14 +273,19 @@ export class Handoff extends EventEmitter {
     // when idle; a BUSY parent queues (never dropped — M2-B R1 P2). Results
     // for room-scoped works also arrive via room injection next turn.
     if (result.trim().length > 0) {
-      const wake = `[${this.botName(work.child)} → you, task ${work.id} result]\n${result}`;
-      if (this.bots.status(work.parent) === "idle") {
-        void this.bots.prompt(work.parent, wake, "chat").catch(() => undefined);
-      } else {
-        const q = this.wakeQueue.get(work.parent) ?? [];
-        q.push(wake);
-        this.wakeQueue.set(work.parent, q);
-      }
+      this.deliverWake(work.parent, `[${this.botName(work.child)} → you, task ${work.id} result]\n${result}`);
+    }
+  }
+
+  /** Deliver a wake prompt to a bot: now when idle, queued when busy
+   *  (never dropped — M2-B R1 P2). */
+  private deliverWake(botId: string, text: string): void {
+    if (this.bots.status(botId) === "idle") {
+      void this.bots.prompt(botId, text, "chat").catch(() => undefined);
+    } else {
+      const q = this.wakeQueue.get(botId) ?? [];
+      q.push(text);
+      this.wakeQueue.set(botId, q);
     }
   }
 
