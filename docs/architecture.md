@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.10（M1 已落地；provider 机制统一） |
+| 版本 | v0.11（M2-A/B/C 已落地；预算停机与 handoff 语义按 M2-C 实现固化） |
 | 日期 | 2026-11-05 |
 | 上游 | `docs/PRD.md` v1.4（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
@@ -270,6 +270,9 @@ v0.9 撤销 v0.5 的独立 sessions 挂载行（`/state/sessions` 实测未用�
                                     // paused 不入 mode 枚举：群暂停是运行态
                                     // （rooms.status: active|paused，重启保持，
                                     //  次月窗口重置或用户手动恢复），见 §5.3
+    "pauseReason": "budget" | "ping-pong" | "manual" | null,
+    "pausedAt": "2026-11-05T…Z",  // 本次暂停起始（ISO）；budget 停机的 durable
+                                   //  月戳——次月自动恢复的跨重启证据（v0.11）
     "sharedDir": "/abs/path",       // Room 共享卷（成员容器内 ~/shared，可写；
                                     //  D2 决议 2026-11-05：双卷拓扑。并发写冲突
                                     //  M2 靠约定（文件名带 Bot 前缀），检测排 P2）
@@ -281,7 +284,8 @@ v0.9 撤销 v0.5 的独立 sessions 挂载行（`/state/sessions` 实测未用�
     "id": "work_xxx", "parent": "bot_a", "child": "bot_b",
     "requestId": "req_xxx",    // 幂等键
     "status": "pending" | "working" | "done" | "failed" | "rejected",
-    "roomId": "room_xxx"
+    "roomId": "room_xxx" | null,   // null = 房间外派活（结果只走父唤醒）
+    "task": "…"                    // 派活原文（§5.5 重启 sweep 与重试依据，v0.11）
   }],
   "reviewModel": {              // D3 决议 2026-11-05：全局 review 专用模型槽位，
     "provider": "…", "modelId": "…", "thinkingLevel": "…"
@@ -402,8 +406,30 @@ budget.record 后 check(botId) 超限
 ```
 
 **群级超限**（P3 补）：`check(roomId)` 超限 → 群内所有 working 成员
-`driver.abort` + 该群暂停收活（群 mode 置 paused，Bot 不销毁、私聊不受
-影响）→ 群广播 + audit；用户调整限额或次月自动恢复。
+`driver.abort` + 该群暂停收活（`rooms.status=paused` + `pauseReason="budget"`
++ `pausedAt` 月戳，Bot 不销毁）→ 群广播 + audit；用户调整限额或次月自动恢复。
+
+**M2-C 实现固化语义**（v0.11，6 轮 review 收敛）：
+
+- **sticky stop**：bot 停机/群暂停在一个窗口内只广播一次；后续超限写不再
+  重复停机仪式。限额变更（budget PUT 或 `PATCH /api/bots/:id` 的 budget
+  编辑）重新武装（rearm）；群级 rearm 只在「非 budget 停机态」或「新限额
+  真实 clears 本月用量（含 turns）」时发生——不充分提额不解除同一次违约。
+- **恢复路径**：用户消息**不能**解除 budget 暂停（ping-pong/manual 可以）；
+  解除只有三条路——PUT 且新限额 clears（rearm+resume）、次月自动恢复、
+  群级 sticky 依赖的窗口重置。
+- **次月自动恢复（durable）**：`pausedAt` 月戳是跨重启证据——「严格过去月
+  的戳 ∧ 群仍暂停」⇒ 窗口重置 + resume；同月戳（含重启后无内存态）保持
+  暂停（no-state ≠ rollover）；戳损坏（非 ISO）或未来月**不构成证据**，
+  落回内存态检查/保持暂停（fail-closed）。任何「即将拒绝活动」的入口
+  （rooms POST、handoff 两个 gate）先跑 rollover 测试再判定。
+- **四维检查时机**：tokens/cost 每次 ledger 写后；turns 在 working→idle
+  真实 settle 时（start/restart 与收割失败不计）；wallMs 为单任务墙钟，
+  room 回合与 handoff 子任务同受约束。80% 预警每窗口每 scope 每维一次。
+- **handoff × budget 门**（§5.3 群停语义一致性）：dispatch 进 budget
+  暂停群成员 → 调用方可见拒绝（不建 work）；排队 work 到达空闲 child 时
+  群已暂停 → failed + 通知（有房间的 work 写请求方房间系统行；无房间则
+  唤醒父 bot），requestId 释放供恢复后重试。多房间成员任一群暂停即拒绝。
 
 ### 5.4 审批（M0-S2 验证机制，M3 产品化）
 
@@ -444,14 +470,29 @@ codar start → store.load（schema 迁移）→ 逐 Bot spawn + switch_session
 ### 6.1a 预算窗口语义（P3 修复，M2-2.5 前可再调）
 
 - `maxTokens/maxCostMicros/maxTurns` 按**自然月**窗口累计（UTC 月初重置）；
-- `maxTurns` 计数 = `agent_settled` 事件次数；
-- `maxWallMs` = **单任务墙钟**（一次派活/一个回合的墙钟上限），非周期累计。
+- `maxTurns` 计数 = **真实回合 settle**（working→idle 状态迁移；start/restart
+  的 starting→idle 不计，harvest 失败不计——M2-C R2 固化）；
+- `maxWallMs` = **单任务墙钟**（一次派活/一个回合的墙钟上限），非周期累计；
+  room 回合（room-engine deadline）与 handoff 子任务（runChild 计时器 →
+  interrupt）同受约束（M2-C R3 固化）。
 
 ### 6.2 handoff 防环（M2 实现 + 单测）
 
-规则：**不允许给「正在等你结果」的 Bot 发消息**。实现=工作树 DFS 检查
-`pending parent 链`；命中 → `works.status=rejected` + 群内提示。request_id
-幂等：同 requestId 重复 dispatch → 返回既有 work，不重复执行。
+规则：**不允许给「正在等你结果」的 Bot 发消息**。实现=工作树 BFS 检查
+`pending parent 集合链`（一个 child 可有多个 pending parent）；命中 → 拒绝
++ 群内提示。request_id 幂等：同 requestId 且目标 work 处于
+pending/working/done → 返回既有 work 不重复执行；failed/rejected 终态
+释放幂等键，重试 = 新 work（诚实重启语义）。
+
+**结果交付纪律**（M2-C R4/R5 固化）：
+
+- **turn-outcome 关联**：child 的 prompt settle ≠ 成功——`aborted`/`failure`
+  事件（墙钟打断 / API abort / 群 budget 停机）⇒ work 标 **failed** + 房间
+  系统行（或无房间 work 唤醒父 bot 告知 INTERRUPTED），**绝不**把 pi 收割的
+  上一轮旧文本当本任务结果投递（pi 1.5.0 对空内容 aborted 消息才跳过，
+  否则 `get_last_assistant_text` 回退旧轮文本——实测踩过的幻影交付）。
+- **budget 门**（§5.3）：dispatch 时与排队重试时都先跑 stale 测试再拒绝。
+- 父 busy 时结果入多槽唤醒队列（一次空闲交付一条，失败上群日志）。
 
 ## 7. HTTP API 面（v1 不承诺稳定）
 
@@ -492,6 +533,20 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
 
 ## 修订记录
 
+- 2026-11-05 v0.11：M2-C（预算停机）6 轮 review 收敛后按实现落文——§5.3
+  固化：sticky stop + rearm 时机（不充分提额不 rearm 同一违约）、恢复三
+  路径（用户消息不可解除 budget 暂停）、`pausedAt` durable 月戳语义（严格
+  过去月为唯一跨重启证据；损坏/未来戳 fail-closed；入口先跑 rollover
+  测试）、四维检查时机（turns 只计真实 settle）、handoff budget 门（dispatch
+  拒绝 + 排队拒绝 + 多房间 any-match）。§6.1a：turns 计数口径与墙钟双
+  覆盖面（room 回合 + handoff 子任务）。§6.2：防环 BFS 化（多 pending
+  parent 集合）、终态释放幂等键、结果交付纪律（turn-outcome 关联——
+  interrupted ⇒ failed + 可观察通知，绝不投递收割到的旧文本；pi 1.5.0
+  `get_last_assistant_text` 对非空 aborted 消息回退旧轮的实测边界）、
+  多槽唤醒队列。§4：rooms 增 `pauseReason`/`pausedAt`、works 增 `task`
+  并显式 `roomId|null`。评审中deferred 两项挂 backlog：API `/prompt` abort
+  后返回陈旧收割文本（待 partial-text 语义决策）；runTurn 墙钟触发时系统
+  行沿用 first-token 超时文案（cosmetic）。
 - 2026-11-05 v0.1：初稿（S1 结论落文 §2；M0-S2/S3/S4 判据固化 §9）。
 - 2026-11-05 v0.2：gstack-spec 审讯四决议落文——D1 `message_bot` 走
   extension_ui 桥（新增 §3.1）；D2 workDir 双卷拓扑（Bot 私有 + Room 共享，
