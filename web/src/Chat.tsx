@@ -56,9 +56,10 @@ export function Chat(p: Props): JSX.Element {
     return () => clearInterval(timer);
   }, []);
   const streamCount = Object.keys(p.streaming).length;
+  const streamLen = useMemo(() => Object.values(p.streaming).join("").length, [p.streaming]);
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [p.messages.length, p.works.length, p.approvals.length, streamCount]);
+  }, [p.messages.length, p.works.length, p.approvals.length, streamCount, streamLen]);
 
   // Budget pauses block sending; ping-pong/manual pauses are LIFTED by a
   // user message (§5.3) — the composer stays open there (R1 P1-2).
@@ -116,13 +117,16 @@ export function Chat(p: Props): JSX.Element {
   // (§6: failure → composer error bar + roster 🔴), auto-dismissing.
   const [failureFlash, setFailureFlash] = useState<{ botId: string; reason: string } | null>(null);
   useEffect(() => {
+    // Keyed per room: switching rooms drops a stale flash immediately
+    // instead of letting it ride out its 8s (R2 P3).
+    setFailureFlash(null);
     const inRoom = Object.entries(p.failures).filter(([id]) => roomMembers.includes(id));
     if (inRoom.length > 0) {
       setFailureFlash({ botId: inRoom[inRoom.length - 1]![0], reason: inRoom[inRoom.length - 1]![1] });
       const timer = setTimeout(() => setFailureFlash(null), 8000);
       return () => clearTimeout(timer);
     }
-  }, [p.failures, roomMembers.length]);
+  }, [p.failures, room?.id, roomMembers.length]);
 
   return (
     <section className="chat">
@@ -130,6 +134,16 @@ export function Chat(p: Props): JSX.Element {
         <div className="empty">{t.emptyRoom}</div>
       ) : (
         <>
+          {room.members
+            .filter((m) => p.statuses[m] === "stopped" || p.statuses[m] === "crashed")
+            .map((m) => (
+              <div key={m} className="stoppedBanner">
+                {t.botStoppedBanner(botName(m))}
+                <button className="mini" onClick={() => { void post(`/api/bots/${m}/start`).then(() => p.onRefresh()).catch((e: unknown) => setError(String(e))); }}>
+                  {t.start}
+                </button>
+              </div>
+            ))}
           <header className="chat-head">
             <span className="chat-title">◎ {room.name}</span>
             <span className="dim">{room.members.map((m) => botName(m)).join(", ")}</span>
@@ -157,13 +171,14 @@ export function Chat(p: Props): JSX.Element {
                   </div>
                 </div>
               ))}
-            {p.messages.length === 0 && p.works.length === 0 && <div className="empty">{t.emptyRoom}</div>}
+            {p.messages.length === 0 && p.works.length === 0 && streamCount === 0 && <div className="empty">{t.emptyRoom}</div>}
           </div>
 
           <TurnStrip t={t} turn={p.turn} room={room} botName={botName} />
 
           {room.status === "paused" && (
             <PauseCard
+              key={room.id}
               t={t}
               lang={lang}
               room={room}

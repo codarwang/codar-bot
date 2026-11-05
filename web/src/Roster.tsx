@@ -48,10 +48,17 @@ export function Roster(p: Props): JSX.Element {
 
   const act = async (botId: string, action: "start" | "stop" | "delete"): Promise<void> => {
     setBusy(botId + action);
+    setFormError(null);
     try {
-      if (action === "delete") await fetch(`/api/bots/${botId}`, { method: "DELETE" });
-      else await post(`/api/bots/${botId}/${action}`);
+      if (action === "delete") {
+        const res = await fetch(`/api/bots/${botId}`, { method: "DELETE" });
+        if (!res.ok) throw new Error(String((await res.json().catch(() => ({})) as { error?: string }).error ?? res.status));
+      } else {
+        await post(`/api/bots/${botId}/${action}`);
+      }
       await p.onRefresh();
+    } catch (e) {
+      setFormError(`${action}: ${String(e).slice(0, 120)}`);
     } finally {
       setBusy(null);
     }

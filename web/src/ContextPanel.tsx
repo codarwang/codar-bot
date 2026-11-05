@@ -150,7 +150,7 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
     if (memEdit === null) return;
     try {
       await put(`/api/memory/bots/${bot.id}`, memEdit);
-      setMemFiles((fs) => fs.map((f) => (f.path === memEdit.path ? { path: f.path, content: `${memEdit.content}\n` } : f)));
+      setMemFiles((fs) => fs.map((f) => (f.path === memEdit.path ? { path: f.path, content: memEdit.content } : f)));
       setMemEdit(null);
     } catch (e) {
       setSaveMsg(String(e));
