@@ -299,6 +299,10 @@ export class MemoryEngine {
     // DELETE /api/bots/:id on an admin/chief).
     if (this.resolveReviewModel(scope, id) === null) return true;
     if (scope === "room") {
+      // NOTE (R5 P3, latent): no room-existence check — a DELETED room with
+      // a resolvable global reviewModel would get ghost reviews. Unreachable
+      // today (no DELETE /rooms, no store.removeRoom); add the check
+      // whenever room deletion lands.
       const room = this.store.room(id);
       return room?.status === "paused" && (room.pauseReason ?? "budget") === "budget";
     }
