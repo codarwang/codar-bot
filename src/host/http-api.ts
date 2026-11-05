@@ -8,7 +8,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { BotManager } from "./bot-manager.js";
+import { join } from "node:path";
 import type { Store, BotRecord } from "./store.js";
+import { defaultBudget } from "./store.js";
 import type { UsageLedger } from "./usage-ledger.js";
 
 export interface ApiDeps {
@@ -230,6 +232,43 @@ export class HttpApi {
         this.deps.store.removeBot(id);
         this.deps.bots.forget(id); // drop the runtime bookkeeping entry too
         this.send(res, 200, { ok: true });
+        return;
+      }
+    }
+
+    if (resource === "rooms") {
+      if (req.method === "GET" && id === undefined) {
+        this.send(res, 200, this.deps.store.state.rooms);
+        return;
+      }
+      if (req.method === "GET" && id !== undefined) {
+        const room = this.deps.store.room(id);
+        if (room === undefined) return this.send(res, 404, { error: `no room ${id}` });
+        this.send(res, 200, room);
+        return;
+      }
+      if (req.method === "POST" && id === undefined) {
+        const body = (await this.readJson(req)) as Record<string, unknown>;
+        const name = String(body["name"] ?? "").trim();
+        const members = Array.isArray(body["members"]) ? body["members"].filter((m): m is string => typeof m === "string") : [];
+        const admin = String(body["admin"] ?? members[0] ?? "");
+        if (name.length === 0 || members.length === 0 || admin === "") {
+          return this.send(res, 400, { error: "rooms need name, members[], admin" });
+        }
+        for (const m of members) {
+          if (this.deps.store.bot(m) === undefined) return this.send(res, 400, { error: `unknown member bot ${m}` });
+        }
+        if (this.deps.store.bot(admin) === undefined) {
+          return this.send(res, 400, { error: `unknown admin bot ${admin}` });
+        }
+        const room = this.deps.store.addRoom({
+          name, members, admin,
+          mode: body["mode"] === "round-robin" ? "round-robin" : "admin-reply",
+          sharedDir: String(body["sharedDir"] ?? join(this.deps.store.statePath, "..", "shared")),
+          budget: defaultBudget(),
+          goal: null,
+        });
+        this.send(res, 201, room);
         return;
       }
     }
