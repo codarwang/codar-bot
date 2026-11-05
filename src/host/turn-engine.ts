@@ -71,27 +71,46 @@ export interface TurnDecision {
   reason: "mention" | "all" | "admin-default" | "round-robin" | "paused";
 }
 
-/** Choose who answers this message. Mentions > @all > mode default. */
+/** Who is sending into the room (the @all permission check needs it). */
+export interface SenderRef {
+  kind: "user" | "bot";
+  id?: string;
+}
+
+/** Choose who answers this message. Mentions > @all > mode default.
+ *  @all is user/admin-only (§5): a NON-admin bot sender's @all is ignored
+ *  (falls through to the mode default) — the M2-B bot-message entry relies
+ *  on this enforcement point. */
 export function pickResponder(
   policy: RoomPolicy,
   mentions: MentionParse,
   rrPointer: number,
-  paused: boolean
+  paused: boolean,
+  sender: SenderRef = { kind: "user" }
 ): TurnDecision {
   if (paused) return { responders: [], reason: "paused" };
-  if (mentions.botIds.length > 0) {
-    // Explicit mentions keep roster order for determinism.
-    const ordered = policy.members.filter((m) => mentions.botIds.includes(m));
+  const senderMayAll =
+    sender.kind === "user" || sender.id === policy.admin;
+  let mentionsIn = mentions;
+  if (mentions.all && !senderMayAll) {
+    mentionsIn = { botIds: mentions.botIds, all: false };
+  }
+  if (mentionsIn.botIds.length > 0) {
+    // Explicit mentions keep roster order for determinism; responders are
+    // always roster-filtered (an admin not in members answers nobody).
+    const ordered = policy.members.filter((m) => mentionsIn.botIds.includes(m));
     return { responders: ordered, reason: "mention" };
   }
-  if (mentions.all) {
+  if (mentionsIn.all) {
     return { responders: [...policy.members], reason: "all" };
   }
   if (policy.mode === "round-robin" && policy.members.length > 0) {
     const idx = ((rrPointer % policy.members.length) + policy.members.length) % policy.members.length;
     return { responders: [policy.members[idx]!], reason: "round-robin" };
   }
-  return { responders: [policy.admin], reason: "admin-default" };
+  return policy.members.includes(policy.admin)
+    ? { responders: [policy.admin], reason: "admin-default" }
+    : { responders: [], reason: "paused" };
 }
 
 /** Next round-robin pointer after a completed turn. */

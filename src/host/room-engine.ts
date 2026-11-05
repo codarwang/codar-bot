@@ -16,7 +16,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { Store, RoomRecord } from "./store.js";
 import type { BotManager } from "./bot-manager.js";
@@ -58,6 +58,8 @@ function messagesPath(roomsRoot: string, roomId: string): string {
 
 export class RoomEngine extends EventEmitter {
   private readonly runtimes = new Map<string, RoomRuntime>();
+  /** Per-room FIFO turn batches (R1 P1-1: concurrent userSays serialize). */
+  private readonly queues = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly store: Store,
@@ -96,11 +98,34 @@ export class RoomEngine extends EventEmitter {
   }
 
   /**
-   * A human message entered the room. Appends, lifts a ping-pong pause,
-   * picks responder(s) per policy, and drives the turn to completion.
-   * Resolves when every responder has settled (or been timed out).
+   * A human message entered the room. Serializes per room (concurrent HTTP
+   * POSTs queue instead of stomping watermarks/slots — review R1 P1-1),
+   * appends, lifts a liftable pause, picks responder(s), drives the turn(s).
    */
   async userSay(roomId: string, text: string): Promise<{ responders: string[] }> {
+    return this.enqueue(roomId, () => this.userSayInner(roomId, text));
+  }
+
+  /** Explicit pause/resume (budget stop lands here with reason "budget"). */
+  pause(roomId: string, reason: RoomRuntime["pausedReason"], note: string): void {
+    const room = this.store.room(roomId);
+    if (room === undefined) throw new Error(`no room ${roomId}`);
+    const rt = this.runtime(roomId, room);
+    rt.pausedReason = reason;
+    this.store.updateRoom(roomId, { status: "paused", pauseReason: reason });
+    this.systemLine(roomId, rt, note);
+  }
+
+  resume(roomId: string, note: string): void {
+    const room = this.store.room(roomId);
+    if (room === undefined) throw new Error(`no room ${roomId}`);
+    const rt = this.runtime(roomId, room);
+    rt.pausedReason = null;
+    this.store.updateRoom(roomId, { status: "active", pauseReason: null });
+    this.systemLine(roomId, rt, note);
+  }
+
+  private async userSayInner(roomId: string, text: string): Promise<{ responders: string[] }> {
     const room = this.store.room(roomId);
     if (room === undefined) throw new Error(`no room ${roomId}`);
     const rt = this.runtime(roomId, room);
@@ -111,7 +136,7 @@ export class RoomEngine extends EventEmitter {
     if (rt.pausedReason !== null) {
       // ping-pong / manual pause: a user message is the awaited signal.
       rt.pausedReason = null;
-      this.store.updateRoom(roomId, { status: "active" });
+      this.store.updateRoom(roomId, { status: "active", pauseReason: null });
       this.systemLine(roomId, rt, "pause lifted by user message");
     }
 
@@ -127,11 +152,14 @@ export class RoomEngine extends EventEmitter {
       { admin: room.admin, mode: room.mode, members: room.members },
       mentions,
       rt.rrPointer,
-      rt.pausedReason !== null
+      rt.pausedReason !== null,
+      { kind: "user" } // @all is user/admin-only (§5); bot senders arrive M2-B
     );
 
     for (const botId of decision.responders) {
       if (this.store.bot(botId) === undefined) continue;
+      // A pause triggered mid-fan-out (ping-pong) stops the rest (§3.3-1).
+      if (rt.pausedReason !== null) break;
       await this.runTurn(roomId, room, rt, botId);
     }
     if (room.mode === "round-robin" && decision.responders.length > 0) {
@@ -143,23 +171,12 @@ export class RoomEngine extends EventEmitter {
     return { responders: decision.responders };
   }
 
-  /** Explicit pause/resume (budget stop lands here with reason "budget"). */
-  pause(roomId: string, reason: RoomRuntime["pausedReason"], note: string): void {
-    const room = this.store.room(roomId);
-    if (room === undefined) throw new Error(`no room ${roomId}`);
-    const rt = this.runtime(roomId, room);
-    rt.pausedReason = reason;
-    this.store.updateRoom(roomId, { status: "paused" });
-    this.systemLine(roomId, rt, note);
-  }
-
-  resume(roomId: string, note: string): void {
-    const room = this.store.room(roomId);
-    if (room === undefined) throw new Error(`no room ${roomId}`);
-    const rt = this.runtime(roomId, room);
-    rt.pausedReason = null;
-    this.store.updateRoom(roomId, { status: "active" });
-    this.systemLine(roomId, rt, note);
+  /** Per-room FIFO: one turn batch at a time. */
+  private enqueue<T>(roomId: string, op: () => Promise<T>): Promise<T> {
+    const prev = this.queues.get(roomId) ?? Promise.resolve();
+    const next = prev.then(op, op);
+    this.queues.set(roomId, next.catch(() => undefined));
+    return next;
   }
 
   // --- turn loop ----------------------------------------------------------------
@@ -172,20 +189,26 @@ export class RoomEngine extends EventEmitter {
   ): Promise<void> {
     const guards = room.guards;
     rt.turnTools.set(botId, 0);
+    // New turn: everyone who is not about to speak resets to waiting —
+    // "posted" is a per-turn verdict, not a sticky identity.
+    for (const m of room.members) if (m !== botId && rt.slots[m] !== "timed-out") rt.slots[m] = "waiting";
     rt.slots[botId] = "speaking";
     this.emitTurn(roomId, room);
 
-    const context = this.renderContext(room, rt, botId);
+    const context = this.renderContextUncommitted(room, rt, botId);
 
     // First-token watchdog (§6.1): no delta within replyTimeoutMs ⇒ interrupt
-    // and mark the slot timed-out. Deltas arrive via BotManager events.
+    // and mark the slot timed-out (verdict is STICKY for this turn — the
+    // success path must not overwrite it, review R1 P1-2).
     let sawFirstToken = false;
+    let timedOut = false;
     const onDelta = (e: { botId: string; text: string }): void => {
       if (e.botId === botId) sawFirstToken = true;
     };
     this.bots.on("delta", onDelta);
     const watchdog = setTimeout(() => {
       if (!sawFirstToken) {
+        timedOut = true;
         rt.slots[botId] = "timed-out";
         this.emitTurn(roomId, room);
         void this.bots.interrupt(botId).catch(() => undefined);
@@ -194,52 +217,67 @@ export class RoomEngine extends EventEmitter {
 
     let reply: string;
     try {
-      reply = await this.bots.prompt(botId, context, "chat");
-      rt.slots[botId] = sawFirstToken ? "posted" : "failed";
+      reply = await this.bots.prompt(botId, context.text, "chat");
     } catch (error) {
-      // The watchdog may have flipped the slot to timed-out before the
-      // interrupt landed; keep that verdict, otherwise the turn failed.
-      const slotNow = rt.slots[botId] as SlotState | undefined;
-      rt.slots[botId] = slotNow === "timed-out" ? "timed-out" : "failed";
-      this.systemLine(roomId, rt, `${this.botName(botId)} turn failed: ${String(error).slice(0, 160)}`);
-      this.emitTurn(roomId, room);
       clearTimeout(watchdog);
       this.bots.off("delta", onDelta);
+      rt.slots[botId] = timedOut ? "timed-out" : "failed";
+      if (!timedOut) {
+        this.systemLine(roomId, rt, `${this.botName(botId)} turn failed: ${String(error).slice(0, 160)}`);
+      } else {
+        this.systemLine(roomId, rt, `${this.botName(botId)} timed out after ${guards.replyTimeoutMs}ms with no first token`);
+      }
       rt.turnTools.delete(botId);
+      this.emitTurn(roomId, room);
+      // Watermark untouched: prompt never accepted ⇒ the message stays
+      // injectable next turn (review R1 P1-1).
       return;
     }
     clearTimeout(watchdog);
     this.bots.off("delta", onDelta);
+    rt.slots[botId] = timedOut ? "timed-out" : sawFirstToken ? "posted" : "failed";
+    if (timedOut) {
+      // The interrupt makes prompt RESOLVE (aborted settle) — the timeout
+      // verdict + system line must land on this path too (R1 P1-2).
+      this.systemLine(roomId, rt, `${this.botName(botId)} timed out after ${guards.replyTimeoutMs}ms with no first token`);
+    }
 
-    if (reply.trim().length > 0) {
+    if (!timedOut && reply.trim().length > 0) {
       this.append(roomId, rt, { kind: "bot", id: botId }, reply);
     }
+    // Prompt accepted and settled ⇒ commit the watermark (the injected
+    // context is now durably in the bot's session; R1 P1-1).
+    rt.watermark.set(botId, context.seq);
 
-    // Ping-pong evaluation on turn completion.
-    const toolCalls = rt.turnTools.get(botId) ?? 0;
-    rt.turnTools.delete(botId);
-    const verdict = afterBotTurn(guards, rt.pingPong, toolCalls);
-    rt.pingPong = verdict.state;
-    if (verdict.pauseNow) {
-      rt.pausedReason = "ping-pong";
-      this.store.updateRoom(roomId, { status: "paused" });
-      this.systemLine(
-        roomId,
-        rt,
-        `paused — ${verdict.state.consecutivePure} idle replies in a row (guard N=${guards.pingPongN}), waiting for you`
-      );
+    // Ping-pong evaluation ONLY on real completed turns: timed-out turns
+    // produced nothing and must not feed the guard (review R1 P1-2).
+    if (!timedOut) {
+      const toolCalls = rt.turnTools.get(botId) ?? 0;
+      const verdict = afterBotTurn(guards, rt.pingPong, toolCalls);
+      rt.pingPong = verdict.state;
+      if (verdict.pauseNow && rt.pausedReason === null) {
+        // Priority merge: never downgrade a budget pause (review R1 P2-3).
+        rt.pausedReason = "ping-pong";
+        this.store.updateRoom(roomId, { status: "paused", pauseReason: "ping-pong" });
+        this.systemLine(
+          roomId,
+          rt,
+          `paused — ${verdict.state.consecutivePure} idle replies in a row (guard N=${guards.pingPongN}), waiting for you`
+        );
+      }
     }
+    rt.turnTools.delete(botId);
     this.emitTurn(roomId, room);
   }
 
   // --- context rendering (§5.1a) -------------------------------------------------
 
   /**
-   * Render the prompt for one bot's turn: system header + only the messages
-   * it has NOT yet been injected (others' messages; own history lives in its
-   * pi session). The watermark then advances to the room tail.
+   * Render the prompt for one bot's turn WITHOUT advancing the watermark:
+   * the caller commits `seq` only after the prompt was accepted and settled
+   * (a rejected prompt leaves the messages injectable next turn — R1 P1-1).
    */
-  private renderContext(room: RoomRecord, rt: RoomRuntime, botId: string): string {
+  private renderContextUncommitted(room: RoomRecord, rt: RoomRuntime, botId: string): { text: string; seq: number } {
     const members = room.members
       .map((id) => this.store.bot(id)?.name ?? id)
       .join(", ");
@@ -256,8 +294,10 @@ export class RoomEngine extends EventEmitter {
       (m) => m.seq > since && !(m.from.kind === "bot" && m.from.id === botId)
     );
     const dialogue = pending.map((m) => this.formatForInjection(m)).join("\n");
-    rt.watermark.set(botId, rt.lastSeq);
-    return dialogue.length > 0 ? `${header}\n\n${dialogue}` : header;
+    return {
+      text: dialogue.length > 0 ? `${header}\n\n${dialogue}` : header,
+      seq: rt.lastSeq,
+    };
   }
 
   private workingLine(room: RoomRecord, rt: RoomRuntime): string {
@@ -291,7 +331,14 @@ export class RoomEngine extends EventEmitter {
       ...(meta !== undefined ? { meta } : {}),
     };
     mkdirSync(join(this.roomsRoot, roomId), { recursive: true });
-    appendFileSync(messagesPath(this.roomsRoot, roomId), `${JSON.stringify(msg)}\n`, "utf8");
+    // fsync per line (R1 P2-4): the room log must not lag the bot sessions
+    // that already consumed the message — a lost tail would desync them.
+    const fd = openSync(messagesPath(this.roomsRoot, roomId), "a");
+    try {
+      writeSync(fd, `${JSON.stringify(msg)}\n`);
+    } finally {
+      closeSync(fd);
+    }
     this.emit("message", msg);
     return msg;
   }
@@ -340,7 +387,11 @@ export class RoomEngine extends EventEmitter {
       pingPong: { consecutivePure: 0 },
       watermark,
       slots: {},
-      pausedReason: null,
+      // Restart honesty (R1 P1-3): a persisted pause stays a pause; an
+      // unknown reason is treated as budget (the un-liftable kind) —
+      // conservative beats resuming spend by accident.
+      pausedReason:
+        room.status === "paused" ? (room.pauseReason ?? "budget") : null,
       turnTools: new Map(),
     };
     this.runtimes.set(roomId, rt);

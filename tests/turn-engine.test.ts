@@ -104,3 +104,20 @@ test("slotsSnapshot: members default waiting, overrides applied", () => {
   assert.equal(slots.bot_writer, "working");
   assert.equal(slots.bot_research, "waiting");
 });
+
+test("pickResponder: @all from a NON-admin bot is ignored (§5); admin ∉ members answers nobody", () => {
+  // user sender: fan-out
+  assert.deepEqual(pickResponder(POLICY, { botIds: [], all: true }, 0, false, { kind: "user" }).reason, "all");
+  // admin bot sender: fan-out allowed
+  assert.deepEqual(
+    pickResponder(POLICY, { botIds: [], all: true }, 0, false, { kind: "bot", id: "bot_chief" }).reason,
+    "all"
+  );
+  // non-admin bot sender: @all stripped → admin default
+  const d = pickResponder(POLICY, { botIds: [], all: true }, 0, false, { kind: "bot", id: "bot_writer" });
+  assert.deepEqual(d, { responders: ["bot_chief"], reason: "admin-default" });
+
+  // admin not in members ⇒ no responder (deleted admin can't answer)
+  const broken = { admin: "bot_gone", mode: "admin-reply" as const, members: ["bot_writer"] };
+  assert.deepEqual(pickResponder(broken, { botIds: [], all: false }, 0, false).responders, []);
+});

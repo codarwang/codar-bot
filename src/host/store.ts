@@ -63,6 +63,9 @@ export interface RoomRecord {
   goal: string | null;
   guards: { pingPongN: number; replyTimeoutMs: number };
   status: "active" | "paused";
+  /** Why a paused room is paused (persisted so a restart keeps budget stops
+   *  un-liftable by user messages, §5.3). Absent = unknown/none. */
+  pauseReason?: "ping-pong" | "budget" | "manual" | null;
 }
 
 export interface WorkRecord {
