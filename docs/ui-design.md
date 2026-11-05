@@ -99,7 +99,8 @@ M1 的 Overview/Chat/Usage 三 Tab 废弃，改为常驻三区（Grok Bot 同构
 
 - 每 slot：头像 + 名 + 状态色点（waiting/speaking/posted/passed/working/failed/
   timed-out ——架构 §6.1 状态机一一对应）。
-- 空闲乒乓暂停时整条变琥珀色：`⏸ paused — bots idle-talked 4 turns, waiting
+- 窄屏时回合条**单行横向滚动**，任何元素不折行（回合态一眼可扫）；
+  空闲乒乓暂停时整条变琥珀色：`⏸ paused — bots idle-talked 4 turns, waiting
   for you`（PRD 3.3-1 反场景的直接呈现）。
 - 单聊（单成员 room）不显示此条。
 
