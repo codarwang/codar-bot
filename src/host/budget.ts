@@ -122,7 +122,7 @@ export class Budget extends EventEmitter {
       if (key.startsWith("room:")) {
         const roomId = key.slice(5);
         const room = this.store.room(roomId);
-        if (room?.status === "paused" && room.pauseReason === "budget") {
+        if (room?.status === "paused" && (room.pauseReason ?? "budget") === "budget") {
           try { this.rooms.resume(roomId, "new month — budget window reset"); } catch { /* shutting down */ }
         }
       }
@@ -163,12 +163,10 @@ export class Budget extends EventEmitter {
     // restart wiped it and the pause stuck until a manual budget PUT. A
     // same-month pause (restart or not) still holds: no stamp from THIS
     // month ≠ rollover (M2-C R3 P2).
-    if (room.pausedAt !== undefined && room.pausedAt !== null) {
-      if (monthKey(new Date(room.pausedAt)) !== monthKey()) {
-        // Perform the window reset EXPLICITLY: after a restart there is no
-        // in-memory state, and scope()'s no-state branch must NOT resume
-        // (that is the M2-C R3 semantics — only a PROVEN old-month pause
-        // lifts, and the durable stamp IS the proof).
+    const stamp = room.pausedAt !== undefined && room.pausedAt !== null ? new Date(room.pausedAt) : null;
+    if (stamp !== null && !Number.isNaN(stamp.getTime())) {
+      if (monthKey(stamp) !== monthKey()) {
+        // Counter reset ONLY when the window is actually stale in memory.
         const key = `room:${roomId}`;
         const st = this.scopes.get(key);
         if (st === undefined || st.month !== monthKey()) {
@@ -177,8 +175,15 @@ export class Budget extends EventEmitter {
             const parts = w.split(":");
             if (parts[1] === "room" && parts[2] === roomId) this.warned.delete(w);
           }
-          try { this.rooms.resume(roomId, "new month — budget window reset"); } catch { /* shutting down */ }
         }
+        // Resume whenever the stamp proves an old-month pause and the room
+        // is still held: a current-month in-memory state here can ONLY come
+        // from scope()'s no-state branch (a post-restart touch), which never
+        // resumes — gating resume on it wedged the durable path for a whole
+        // month (R5 P2-1). A corrupt non-ISO stamp is NOT proof — it falls
+        // through to the legacy branch below instead of fail-open resuming
+        // (R5 P3-2).
+        try { this.rooms.resume(roomId, "new month — budget window reset"); } catch { /* shutting down */ }
       }
       return;
     }

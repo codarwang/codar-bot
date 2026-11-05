@@ -338,3 +338,71 @@ test("M2-C R4: dispatch into a budget-paused room's member is rejected honestly"
     await r.dispose();
   }
 });
+
+test("M2-C R5: budget gates run the stale-pause test — a next-month pause lifts instead of refusing", async () => {
+  const r = await rig();
+  const budget = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+  r.handoff.stalePauseCheck = (roomId) => budget.rolloverIfStale(roomId);
+  try {
+    // Budget-pause the room, backdate the stamp to last month, restart
+    // (fresh Budget memory) — the gate must lift the pause, not reject.
+    r.rooms.pause(r.roomId, "budget", "test pause");
+    const old = new Date(Date.now() - 32 * 24 * 3600 * 1000).toISOString();
+    r.store.updateRoom(r.roomId, { pausedAt: old });
+    const stale = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+    r.handoff.stalePauseCheck = (roomId) => stale.rolloverIfStale(roomId);
+    const { workId } = await r.handoff.dispatch({
+      fromBot: r.chiefId, toBot: r.writerId, task: "t", requestId: "stale-gate-1", roomId: r.roomId,
+    });
+    assert.ok(workId.startsWith("work_"), "dispatch is NOT refused — the stale pause lifted");
+    assert.equal(r.store.room(r.roomId)!.status, "active");
+    // The current-month control still refuses (gate is not a bypass).
+    r.rooms.pause(r.roomId, "budget", "pause again");
+    await assert.rejects(
+      () => r.handoff.dispatch({
+        fromBot: r.chiefId, toBot: r.writerId, task: "t", requestId: "stale-gate-2", roomId: r.roomId,
+      }),
+      /budget-paused/
+    );
+  } finally {
+    await r.dispose();
+  }
+});
+
+test("M2-C R5: cross-room run-side gate notifies the REQUESTER's room, not just the child's", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    // A second room holding ONLY the writer; the default room keeps only
+    // the chief — a true cross-room dispatch (chief@A → writer@B).
+    const def = r.store.room(r.roomId)!;
+    r.store.updateRoom(r.roomId, { members: [r.chiefId, ...def.members.filter((m) => m === r.chiefId)] });
+    const roomB = r.store.addRoom({
+      name: "b", members: [r.writerId], admin: r.writerId,
+      mode: "admin-reply", sharedDir: join(r.root, "s2"), budget: defaultBudget(), goal: null,
+    });
+    await r.bots.start(r.writerId);
+    // Occupy the writer so the dispatch queues as pending…
+    const slowTurn = r.rooms.userSay(roomB.id, "@Writer take it SLOW");
+    await new Promise((s2) => setTimeout(s2, 150));
+    const { workId } = await r.handoff.dispatch({
+      fromBot: r.chiefId, toBot: r.writerId, task: "t", requestId: "xroom-1", roomId: r.roomId,
+    });
+    // …then budget-pause the CHILD's room before the writer goes idle.
+    r.rooms.pause(roomB.id, "budget", "child room paused");
+    await slowTurn; // writer settles → idle → runChild → run-side gate
+    const d = Date.now() + 5_000;
+    while (r.handoff.work(workId)!.status !== "failed" && Date.now() < d) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    assert.equal(r.handoff.work(workId)!.status, "failed", "queued work refused under the child's pause");
+    // The REQUESTER's room (work.roomId) carries the notice (R5 P3-1).
+    assert.ok(
+      r.rooms.history(r.roomId).some((m) => m.from.kind === "system" && m.text.includes("not started")),
+      "requester room notified"
+    );
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});

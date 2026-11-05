@@ -428,3 +428,40 @@ test("M2-C R4: pausedAt month stamp makes next-month auto-resume durable across 
     await r.dispose();
   }
 });
+
+test("M2-C R5: a post-restart scope touch must not wedge the durable next-month resume", async () => {
+  const r = await rig();
+  try {
+    const room = r.store.room(r.roomId)!;
+    r.store.updateRoom(r.roomId, { budget: { ...room.budget, maxCostMicros: 100 } });
+    r.ledger.record({
+      hour: monthHour(), botId: r.chiefId, model: "fake/f", kind: "chat",
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150,
+    });
+    const pDeadline = Date.now() + 5_000;
+    while (r.store.room(r.roomId)!.status !== "paused" && Date.now() < pDeadline) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    assert.equal(r.store.room(r.roomId)!.status, "paused");
+    // The pause is from LAST month; a fresh Budget instance = restart.
+    const old = new Date(Date.now() - 32 * 24 * 3600 * 1000).toISOString();
+    r.store.updateRoom(r.roomId, { pausedAt: old });
+    const reborn = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+    // THE WEDGE (R5 P2-1): before any rollover entry point runs, some path
+    // touches scope("room:…") — a member settle, a ledger write, an admin
+    // PUT. The no-state branch then holds a CURRENT-month state while the
+    // room is still paused; resume must fire anyway when asked.
+    reborn.turnsThisMonth("room", r.roomId); // scope touch, no rollover entry
+    assert.equal(r.store.room(r.roomId)!.status, "paused", "a mere touch does not resume");
+    reborn.rolloverIfStale(r.roomId);
+    assert.equal(r.store.room(r.roomId)!.status, "active", "stamped old-month pause still lifts after a touch");
+    // Corrupt stamp is NOT proof — no fail-open resume (R5 P3-2).
+    r.rooms.pause(r.roomId, "budget", "pause again");
+    r.store.updateRoom(r.roomId, { pausedAt: "not-a-date" });
+    const reborn2 = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+    reborn2.rolloverIfStale(r.roomId);
+    assert.equal(r.store.room(r.roomId)!.status, "paused", "corrupt stamp falls back conservatively");
+  } finally {
+    await r.dispose();
+  }
+});

@@ -74,6 +74,7 @@ export class Host {
     const budget = new Budget(store, ledger, bots, rooms, p.root);
     rooms.deadlineMs = (botId: string) => budget.wallDeadlineMs(botId); // §6.1a
     handoff.deadlineMs = (botId: string) => budget.wallDeadlineMs(botId); // §6.1a
+    handoff.stalePauseCheck = (roomId) => budget.rolloverIfStale(roomId); // §5.3 entry-point rollover test
     const api = new HttpApi({
       store, bots, ledger, rooms, handoff, budget,
       webDir: opts.webDir ?? (existsSync(join(p.root, "web-dist")) ? join(p.root, "web-dist") : undefined),
