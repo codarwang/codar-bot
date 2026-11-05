@@ -42,6 +42,7 @@ import type { UsageLedger } from "./usage-ledger.js";
 import type { RoomEngine } from "./room-engine.js";
 import type { Handoff } from "./handoff.js";
 import type { Budget } from "./budget.js";
+import type { MemoryEngine } from "./memory.js";
 
 export interface ApiDeps {
   store: Store;
@@ -50,6 +51,7 @@ export interface ApiDeps {
   rooms: RoomEngine;
   handoff: Handoff;
   budget: Budget;
+  memory: MemoryEngine;
   /** Built web UI dir (web/dist); absent ⇒ API-only mode. */
   webDir?: string;
 }
@@ -413,6 +415,54 @@ export class HttpApi {
       }
     }
 
+    if (resource === "memory") {
+      // /api/memory/bots/<id> | /api/memory/rooms/<id> | /api/memory/team
+      // (PRD 2.3 记忆可管理): GET lists files + pending; PUT edits one file.
+      const scopePart = id;
+      const scope = scopePart === "bots" ? "bot" : scopePart === "rooms" ? "room" : scopePart === "team" ? "team" : null;
+      if (scope === null) throw new ApiError(400, `scope must be bots|rooms|team, got "${scopePart}"`);
+      const targetId = scope === "team" ? "team" : action;
+      if (targetId === undefined) throw new ApiError(400, `scope ${scopePart} needs an id`);
+      if (scope === "bot" && this.deps.store.bot(targetId) === undefined) {
+        throw new ApiError(404, `no bot ${targetId}`);
+      }
+      if (scope === "room" && this.deps.store.room(targetId) === undefined) {
+        throw new ApiError(404, `no room ${targetId}`);
+      }
+      if (req.method === "GET") {
+        this.send(res, 200, {
+          files: this.deps.memory.files(scope, targetId),
+          pending: this.deps.memory.pendingCount(scope, targetId),
+        });
+        return;
+      }
+      if (req.method === "PUT") {
+        const body = (await this.readJson(req)) as { path?: unknown; content?: unknown };
+        if (typeof body.path !== "string" || typeof body.content !== "string") {
+          throw new ApiError(400, "need {path, content}");
+        }
+        try {
+          this.deps.memory.writeFile(scope, targetId, body.path, body.content);
+        } catch (e) {
+          throw new ApiError(400, String(e).slice(0, 200));
+        }
+        this.send(res, 200, { ok: true });
+        return;
+      }
+    }
+    if (resource === "settings") {
+      if (req.method === "GET" && id === undefined) {
+        this.send(res, 200, { reviewModel: this.deps.store.state.reviewModel });
+        return;
+      }
+      if (req.method === "PUT" && id === "review-model") {
+        const body = (await this.readJson(req)) as Record<string, unknown>;
+        const model = validateModel(body);
+        this.deps.store.setReviewModel(model);
+        this.send(res, 200, { reviewModel: model });
+        return;
+      }
+    }
     if (resource === "budget") {
       if (req.method === "GET" && parts.length === 2) {
         // Collection: summarize every scope's current-month usage.

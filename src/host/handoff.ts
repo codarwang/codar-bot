@@ -41,6 +41,13 @@ export class Handoff extends EventEmitter {
    *  (§6.1a maxWallMs — M2-C R2 P2-4). */
   deadlineMs: ((botId: string) => number | null) | null = null;
 
+  /** Completed-work hook (memory ingest for out-of-band runs); set by Host. */
+  onWorkDone: ((work: WorkRecord, result: string) => void) | null = null;
+
+  /** Frozen bot-memory snapshot for the child's task prompt tail; set by
+   *  Host. Null/"" = nothing injected. */
+  memoryTail: ((botId: string) => string | null) | null = null;
+
   /** Stale-pause test (Budget.rolloverIfStale); set by Host. Both budget
    *  gates run it BEFORE refusing — the established entry-point pattern
    *  ("whoever is about to reject activity performs the rollover test
@@ -216,7 +223,16 @@ export class Handoff extends EventEmitter {
 
     // The child's context = its own session + the task text (injected like a
     // room message from the parent, §5.1a format).
-    const injected = `[${this.botName(work.parent)} → you] ${task}`;
+    const tail = (() => {
+      try {
+        return this.memoryTail?.(work.child) ?? "";
+      } catch {
+        return "";
+      }
+    })();
+    const injected = tail.length > 0
+      ? `[${this.botName(work.parent)} → you] ${task}\n\n${tail}`
+      : `[${this.botName(work.parent)} → you] ${task}`;
     const lastProgress = { oneLiner: "" };
     const onTool = (e: { botId: string; toolName: string }): void => {
       if (e.botId !== work.child) return;
@@ -297,6 +313,15 @@ export class Handoff extends EventEmitter {
       oneLiner: progressLiner || "done",
       status: "done",
     });
+    // Memory ingest for the out-of-band run (§3 memory module): the child's
+    // task+result is a real turn for the bot scope (and its room, if any).
+    if (result.trim().length > 0) {
+      try {
+        this.onWorkDone?.(work, result);
+      } catch {
+        /* memory ingest must never break result delivery */
+      }
+    }
     // Caller wake (§5.2 step 4): the parent gets the result as a new prompt
     // when idle; a BUSY parent queues (never dropped — M2-B R1 P2). Results
     // for room-scoped works also arrive via room injection next turn.

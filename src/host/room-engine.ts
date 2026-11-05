@@ -64,6 +64,14 @@ export class RoomEngine extends EventEmitter {
   /** Per-task wall-clock provider (Budget.wallDeadlineMs); null = uncapped. */
   deadlineMs: ((botId: string) => number | null) | null = null;
 
+  /** Real-turn-settled hook (memory ingest, §5.1a); set by Host. Fires ONLY
+   *  for completed turns with a recorded reply — not timeouts/errors. */
+  onTurnSettled: ((roomId: string, botId: string, reply: string) => void) | null = null;
+
+  /** Frozen memory snapshot for the speaking bot's prompt tail (§5.1a 注入于
+   *  系统段尾部); set by Host. Null/"" = no memory yet, nothing injected. */
+  memoryTail: ((botId: string, roomId: string) => string | null) | null = null;
+
   constructor(
     private readonly store: Store,
     private readonly bots: BotManager,
@@ -295,6 +303,11 @@ export class RoomEngine extends EventEmitter {
 
     if (!timedOut && !turnErrored && reply.trim().length > 0) {
       this.append(roomId, rt, { kind: "bot", id: botId }, reply);
+      try {
+        this.onTurnSettled?.(roomId, botId, reply);
+      } catch {
+        /* memory ingest must never break the turn loop */
+      }
     }
     // Prompt accepted and settled ⇒ commit the watermark (the injected
     // context is now durably in the bot's session; R1 P1-1).
@@ -344,11 +357,29 @@ export class RoomEngine extends EventEmitter {
     const pending = this.readAll(room.id).filter(
       (m) => m.seq > since && !(m.from.kind === "bot" && m.from.id === botId)
     );
+    // Frozen memory snapshot at the tail of the system-ish header (§5.1a):
+    // byte-stable between reviews (snapshot freeze), "" while no memory.
+    const tail = (() => {
+      try {
+        return this.memoryTail?.(botId, room.id) ?? "";
+      } catch {
+        return "";
+      }
+    })();
+    const head = tail.length > 0 ? `${header}\n\n${tail}` : header;
     const dialogue = pending.map((m) => this.formatForInjection(m)).join("\n");
     return {
-      text: dialogue.length > 0 ? `${header}\n\n${dialogue}` : header,
+      text: dialogue.length > 0 ? `${head}\n\n${dialogue}` : head,
       seq: rt.lastSeq,
     };
+  }
+
+  /** The exact prompt text the next turn for this bot would render
+   *  (debug/UI; advances nothing — watermarks untouched). */
+  previewContext(roomId: string, botId: string): string {
+    const room = this.store.room(roomId);
+    if (room === undefined) throw new Error(`no room ${roomId}`);
+    return this.renderContextUncommitted(room, this.runtime(roomId, room), botId).text;
   }
 
   private workingLine(room: RoomRecord, rt: RoomRuntime): string {

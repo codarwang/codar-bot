@@ -143,6 +143,42 @@ async function runPrompt(id, message) {
     return;
   }
 
+  if (message.includes("[codar memory review]")) {
+    // M2-D review-child branch. FAKE_PI_MEM_REVIEW selects the outcome:
+    //   ok (default) — valid FILE blocks | broken — unparseable prose |
+    //   huge — entry.md at 2.5x the hard cap
+    const mode = process.env.FAKE_PI_MEM_REVIEW ?? "ok";
+    transcript.push({ role: "user", content: message });
+    respond(id, "prompt", { disposition: "started" });
+    out({ type: "agent_start" });
+    out({ type: "turn_start" });
+    out({ type: "message_start", message: { role: "system", content: "" } });
+    out({ type: "message_end", message: { role: "system", content: "" } });
+    let text;
+    if (mode === "broken") text = "sure, I updated the memory accordingly. (no structured blocks)";
+    else if (mode === "huge") text = `<<<FILE entry.md>>>\n${"x".repeat(5_000)}\n<<<END>>>`;
+    else {
+      text = [
+        "<<<FILE entry.md>>>",
+        "Chief prefers concise answers.",
+        "<<<FILE main.md>>>",
+        "Team shipped the budget feature; reviews run weekly.",
+        "<<<FILE topics/style.md>>>",
+        "User-facing lines stay in Chinese.",
+        "<<<END>>>",
+      ].join("\n");
+    }
+    lastText = text;
+    transcript.push({ role: "assistant", content: [{ type: "text", text }] });
+    out({ type: "message_start", message: { role: "assistant" } });
+    out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
+    out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", usage: usage(30, 6) } });
+    out({ type: "turn_end" });
+    out({ type: "agent_end" });
+    out({ type: "agent_settled", aborted: false });
+    return;
+  }
+
   const word = message.includes("ALPHA") ? "ALPHA" : message.includes("BRAVO") ? "BRAVO" : message.includes("PARKED") ? "PARKED" : "OK";
   const u = word === "ALPHA" ? usage(10, 1) : word === "BRAVO" ? usage(20, 2) : usage(5, 1);
   lastText = word;
