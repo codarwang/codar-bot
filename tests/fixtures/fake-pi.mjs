@@ -114,6 +114,12 @@ async function runPrompt(id, message) {
     respond(id, "prompt", { disposition: "handled" });
     return;
   }
+  if (process.env.FAKE_PI_MEM_REVIEW === "promptfail" && message.includes("[codar memory review]")) {
+    // The command's FIRST response is the rejection — nothing else follows
+    // (the host must take its early-return → kill → exit-emit path).
+    fail(id, "prompt", "injected prompt failure");
+    return;
+  }
   respond(id, "prompt", { disposition: "started" });
   out({ type: "agent_start" });
   out({ type: "turn_start" });
@@ -152,11 +158,6 @@ async function runPrompt(id, message) {
     //   ok (default) — valid FILE blocks | broken — unparseable prose |
     //   huge — entry.md at 2.5x the hard cap
     const mode = process.env.FAKE_PI_MEM_REVIEW ?? "ok";
-    if (mode === "promptfail") {
-      // Reject the prompt command itself: early-return ordering in the host.
-      fail(id, "prompt", "injected prompt failure");
-      return;
-    }
     transcript.push({ role: "user", content: message });
     respond(id, "prompt", { disposition: "started" });
     out({ type: "agent_start" });

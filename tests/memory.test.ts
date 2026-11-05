@@ -576,10 +576,15 @@ test("R2 P1-1: a child dying before the settle wait attaches cannot kill the hos
     r.memory.ingestTurn("bot", r.chiefId, turn("user", "x"));
     assert.equal(await r.memory.review("bot", r.chiefId), "failed", "start() path fails honestly");
     assert.equal(r.memory.pendingCount("bot", r.chiefId), 1, "claimed lines restored");
-    // And the early-return ordering: prompt command itself rejected.
+    // And the early-return ordering: the prompt command's FIRST response is
+    // the rejection (the fixture rejects before any started event — the old
+    // placement let a duplicate fail() land after success and the leg silently
+    // rode the 3-minute wall abort instead, R3). It must fail FAST.
     process.env.FAKE_PI_MEM_REVIEW = "promptfail";
     r.memory.ingestTurn("bot", r.chiefId, turn("user", "y"));
+    const t0 = Date.now();
     assert.equal(await r.memory.review("bot", r.chiefId), "failed", "prompt-reject path fails honestly");
+    assert.ok(Date.now() - t0 < 5_000, "the rejection ordering, not a wall-clock abort");
     assert.equal(r.memory.pendingCount("bot", r.chiefId), 2, "nothing stranded in inflight");
     assert.ok(true, "host process still alive — no unhandled rejection");
   } finally {
@@ -599,6 +604,22 @@ test("R2 P2-1: a torn pending line drops with an audit instead of wedging the sc
     assert.equal(await r.memory.review("bot", r.chiefId), "reviewed", "the good line still reviews");
     assert.equal(r.memory.pendingCount("bot", r.chiefId), 0, "no wedge — queue drains");
     assert.ok(r.memory.files("bot", r.chiefId).length > 0);
+    assert.match(readFileSync(join(r.root, "audit.jsonl"), "utf8"), /memory-review-torn/);
+  } finally {
+    await r.dispose();
+  }
+});
+
+test("R3 P3: a claim whose lines are ALL torn consumes without paying for a review", async () => {
+  const r = await rig();
+  try {
+    const pendingPath = join(r.root, "memory", "bots", r.chiefId, "pending.jsonl");
+    mkdirSync(dirname(pendingPath), { recursive: true });
+    writeFileSync(pendingPath, '{"torn":\n{"also torn\n');
+    assert.equal(await r.memory.review("bot", r.chiefId), "skipped", "zero good turns = no paid pass");
+    assert.equal(r.memory.pendingCount("bot", r.chiefId), 0, "claim consumed");
+    assert.equal(r.ledger.totals({ botId: r.chiefId, kind: "memory-review" }).length, 0, "nothing billed");
+    assert.equal(r.memory.files("bot", r.chiefId).length, 0, "no unprompted file mutation");
     assert.match(readFileSync(join(r.root, "audit.jsonl"), "utf8"), /memory-review-torn/);
   } finally {
     await r.dispose();
