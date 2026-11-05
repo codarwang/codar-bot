@@ -42,16 +42,21 @@ export function App(): JSX.Element {
   const [roomId, setRoomId] = useState<string>("");
   const [detailBotId, setDetailBotId] = useState<string | null>(null);
   const [messages, setMessages] = useState<RoomMessage[]>([]);
+  const [lastByRoom, setLastByRoom] = useState<Record<string, RoomMessage>>({});
+  const [unread, setUnread] = useState<Record<string, number>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [works, setWorks] = useState<Record<string, WorkView>>({});
   const [turn, setTurn] = useState<TurnEvent | null>(null);
   const [budgetRows, setBudgetRows] = useState<BudgetRow[]>([]);
-  const [approvals, setApprovals] = useState<Array<ApprovalEvent & { resolved?: boolean; outcome?: boolean }>>([]);
+  const [approvals, setApprovals] = useState<Array<ApprovalEvent & { resolved?: boolean; outcome?: boolean; stale?: boolean }>>([]);
   const [streaming, setStreaming] = useState<Record<string, string>>({});
   const [statuses, setStatuses] = useState<Record<string, string>>({});
   const [failures, setFailures] = useState<Record<string, string>>({});
   const [sse, setSse] = useState<"connecting" | "live" | "reconnecting">("connecting");
   const [ctxOpen, setCtxOpen] = useState(true);
   const [rosterOpen, setRosterOpen] = useState(true);
+
+  const lastSeqRef = useRef(0);
 
   const refreshOverview = useCallback(async () => {
     try {
@@ -76,11 +81,31 @@ export function App(): JSX.Element {
     void refreshBudget();
   }, [refreshOverview, refreshBudget]);
 
-  // Room works hydration on selection + live merge via SSE below.
+  // Hydrate every room's preview tail once the overview lands (the inbox
+  // metaphor needs per-room last lines, not just the selected room's).
+  useEffect(() => {
+    for (const r of overview?.rooms ?? []) {
+      if (lastByRoom[r.id] !== undefined) continue;
+      void jsonFetch<{ messages: RoomMessage[] }>(`/api/rooms/${r.id}/messages`)
+        .then((res) => {
+          const last = res.messages[res.messages.length - 1];
+          if (last !== undefined) setLastByRoom((prev) => ({ ...prev, [r.id]: last }));
+        })
+        .catch(() => undefined);
+    }
+  }, [overview, lastByRoom]);
+
+  // Room switch: hydrate history + works, reset the turn strip (no stale
+  // cross-room slots), clear unread, park the draft per room.
   useEffect(() => {
     if (roomId === "") return;
+    setTurn(null);
+    setUnread((prev) => ({ ...prev, [roomId]: 0 }));
     void jsonFetch<{ messages: RoomMessage[] }>(`/api/rooms/${roomId}/messages`)
-      .then((r) => setMessages(r.messages))
+      .then((r) => {
+        setMessages(r.messages);
+        lastSeqRef.current = r.messages.length > 0 ? r.messages[r.messages.length - 1]!.seq : 0;
+      })
       .catch(() => setMessages([]));
     void jsonFetch<WorkRecord[]>(`/api/works?room=${roomId}`)
       .then((ws) => {
@@ -100,6 +125,7 @@ export function App(): JSX.Element {
   roomRef.current = roomId;
   useEffect(() => {
     const es = new EventSource("/api/events");
+    let everConnected = false;
     const on = (name: string, fn: (d: unknown) => void): void => {
       es.addEventListener(name, (e) => {
         try {
@@ -109,7 +135,30 @@ export function App(): JSX.Element {
         }
       });
     };
-    es.onopen = (): void => setSse("live");
+    const resync = (): void => {
+      // §6 reconnect semantics: diff-fetch messages since the last seq we
+      // saw, and refresh the snapshot surfaces (status/budget/works).
+      void refreshOverview();
+      void refreshBudget();
+      const cur = roomRef.current;
+      if (cur !== "") {
+        void jsonFetch<{ messages: RoomMessage[] }>(`/api/rooms/${cur}/messages?since=${lastSeqRef.current}`)
+          .then((r) => {
+            if (r.messages.length === 0) return;
+            setMessages((prev) => {
+              const seen = new Set(prev.map((m) => m.seq));
+              return [...prev, ...r.messages.filter((m) => !seen.has(m.seq))];
+            });
+            lastSeqRef.current = Math.max(lastSeqRef.current, ...r.messages.map((m) => m.seq));
+          })
+          .catch(() => undefined);
+      }
+    };
+    es.onopen = (): void => {
+      setSse("live");
+      if (everConnected) resync(); // a RE-connect diff-fills; first open hydrates via effects
+      everConnected = true;
+    };
     es.onerror = (): void => setSse("reconnecting");
 
     on("status", (d) => {
@@ -117,6 +166,16 @@ export function App(): JSX.Element {
       setStatuses((prev) => ({ ...prev, [s.botId]: s.status }));
       if (s.status !== "working") {
         setStreaming((prev) => {
+          if (prev[s.botId] === undefined) return prev;
+          const next = { ...prev };
+          delete next[s.botId];
+          return next;
+        });
+      }
+      // A later transition clears the failure flag — one transient provider
+      // blip must not brand the bot red forever (R1 P2-3).
+      if (s.status === "idle" || s.status === "working" || s.status === "starting") {
+        setFailures((prev) => {
           if (prev[s.botId] === undefined) return prev;
           const next = { ...prev };
           delete next[s.botId];
@@ -156,8 +215,13 @@ export function App(): JSX.Element {
     });
     on("roommessage", (d) => {
       const m = d as RoomMessage;
-      if (m.room !== roomRef.current) return;
-      setMessages((prev) => (prev.some((x) => x.seq === m.seq) ? prev : [...prev, m]));
+      setLastByRoom((prev) => ({ ...prev, [m.room]: m }));
+      if (m.room === roomRef.current) {
+        lastSeqRef.current = Math.max(lastSeqRef.current, m.seq);
+        setMessages((prev) => (prev.some((x) => x.seq === m.seq) ? prev : [...prev, m]));
+      } else {
+        setUnread((prev) => ({ ...prev, [m.room]: (prev[m.room] ?? 0) + 1 }));
+      }
     });
     on("turn", (d) => {
       const s = d as TurnEvent;
@@ -168,27 +232,30 @@ export function App(): JSX.Element {
       if (s.roomId === roomRef.current) void refreshOverview();
     });
     on("work", (d) => {
-      const w = d as { workId: string; status: WorkRecord["status"]; parent: string; child: string };
+      const w = d as { workId: string; status: WorkRecord["status"]; parent: string; child: string; roomId?: string | null; task?: string };
+      const belongs = w.roomId !== undefined && w.roomId !== null ? w.roomId : roomRef.current;
       setWorks((prev) => {
         const cur = prev[w.workId];
         if (cur !== undefined && cur.status === w.status) return prev;
         return {
           ...prev,
           [w.workId]: {
-            ...(cur ?? { id: w.workId, parent: w.parent, child: w.child, requestId: "", roomId: roomRef.current, task: "", firstSeen: Date.now() }),
+            ...(cur ?? { id: w.workId, parent: w.parent, child: w.child, requestId: "", roomId: belongs, task: w.task ?? "", firstSeen: Date.now() }),
             status: w.status,
+            roomId: belongs,
+            task: w.task ?? cur?.task ?? "",
             endedAt: w.status === "done" || w.status === "failed" || w.status === "rejected" ? Date.now() : undefined,
           },
         };
       });
     });
     on("progress", (d) => {
-      const p = d as { workId: string; oneLiner: string; status: string };
+      const p = d as { workId: string; oneLiner: string; status: string; roomId?: string | null };
       setWorks((prev) => {
         const cur = prev[p.workId];
-        if (cur === undefined) return prev; // out-of-room work — WORKS panel filters by room anyway
+        if (cur === undefined) return prev;
         if (cur.oneLiner === p.oneLiner && cur.status === p.status) return prev;
-        return { ...prev, [p.workId]: { ...cur, oneLiner: p.oneLiner, status: p.status as WorkRecord["status"], firstSeen: cur.firstSeen ?? Date.now() } };
+        return { ...prev, [p.workId]: { ...cur, oneLiner: p.oneLiner, status: p.status as WorkRecord["status"] } };
       });
     });
     on("budget", (d) => {
@@ -201,8 +268,8 @@ export function App(): JSX.Element {
       void refreshOverview();
     });
     on("approvalResolved", (d) => {
-      const r = d as { id: string; confirmed: boolean };
-      setApprovals((prev) => prev.map((a) => (a.id === r.id ? { ...a, resolved: true, outcome: r.confirmed } : a)));
+      const r = d as { id: string; confirmed: boolean; stale?: boolean };
+      setApprovals((prev) => prev.map((a) => (a.id === r.id ? { ...a, resolved: true, outcome: r.confirmed, stale: r.stale === true } : a)));
     });
     return () => es.close();
   }, [refreshOverview, refreshBudget]);
@@ -220,6 +287,9 @@ export function App(): JSX.Element {
     () => Object.values(works).filter((w) => w.roomId === roomId),
     [works, roomId]
   );
+  const setDraft = useCallback((text: string): void => {
+    setDrafts((prev) => ({ ...prev, [roomRef.current]: text }));
+  }, []);
 
   return (
     <div className={`app ${rosterOpen ? "" : "roster-closed"} ${ctxOpen ? "" : "ctx-closed"}`}>
@@ -244,7 +314,8 @@ export function App(): JSX.Element {
           statuses={statuses}
           failures={failures}
           approvals={approvals}
-          messages={messages}
+          lastByRoom={lastByRoom}
+          unread={unread}
           roomId={roomId}
           onSelectRoom={setRoomId}
           onSelectBot={setDetailBotId}
@@ -259,9 +330,15 @@ export function App(): JSX.Element {
           messages={messages}
           works={roomWorks}
           streaming={streaming}
+          statuses={statuses}
+          failures={failures}
           approvals={approvals}
+          draft={drafts[roomId] ?? ""}
+          onDraft={setDraft}
           onResolveApproval={resolveApproval}
+          onOpenDetail={setDetailBotId}
           onRefresh={refreshOverview}
+          onBudgetChanged={refreshBudget}
         />
         <ContextPanel
           t={t}

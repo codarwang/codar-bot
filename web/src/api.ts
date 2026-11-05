@@ -62,6 +62,7 @@ export interface BudgetRow {
   tokens: number;
   costMicros: number;
   budget: Budget4;
+  turns?: number;
 }
 export interface ApprovalEvent {
   id: string;

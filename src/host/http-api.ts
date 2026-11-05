@@ -496,7 +496,12 @@ export class HttpApi {
             const totals = this.deps.ledger.totals({ botId: m, sinceHour });
             for (const row of totals) { tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros; }
           }
-          scopes.push({ scope: "room", id: r.id, month: sinceHour.slice(0, 7), tokens, costMicros: micros, budget: r.budget });
+          // The room's own memory-review rows feed the enforced window
+          // (Budget.checkRoom) — the meter must agree (M2-E R1 P2-9).
+          for (const row of this.deps.ledger.totals({ botId: r.id, sinceHour })) {
+            tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros;
+          }
+          scopes.push({ scope: "room", id: r.id, month: sinceHour.slice(0, 7), tokens, costMicros: micros, budget: r.budget, turns: this.deps.budget.turnsThisMonth("room", r.id) });
         }
         this.send(res, 200, scopes);
         return;
@@ -513,7 +518,18 @@ export class HttpApi {
         const limit = scope === "bot"
           ? this.deps.store.bot(id)?.budget
           : this.deps.store.room(id)?.budget;
-        this.send(res, 200, { scope, id, month: sinceHour.slice(0, 7), tokens, costMicros: micros, budget: limit ?? null });
+        // Detail parity with the enforced window: a ROOM's own
+        // memory-review rows count too (bot scope already aggregated [id]
+        // as its single member — double-counting otherwise).
+        if (scope === "room") {
+          for (const row of this.deps.ledger.totals({ botId: id, sinceHour })) {
+            tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros;
+          }
+        }
+        this.send(res, 200, {
+          scope, id, month: sinceHour.slice(0, 7), tokens, costMicros: micros, budget: limit ?? null,
+          turns: this.deps.budget.turnsThisMonth(scope, id),
+        });
         return;
       }
       if (req.method === "PUT" && id !== undefined && action === undefined) {
@@ -623,7 +639,10 @@ export class HttpApi {
   private budgetRow(scope: string, id: string, totals: Array<{ input: number; output: number; cacheRead: number; cacheWrite: number; costMicros: number }>, budget: { maxTokens: number; maxCostMicros: number }): Record<string, unknown> {
     let tokens = 0; let micros = 0;
     for (const r of totals) { tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros; }
-    return { scope, id, month: monthStartHour().slice(0, 7), tokens, costMicros: micros, budget };
+    return {
+      scope, id, month: monthStartHour().slice(0, 7), tokens, costMicros: micros, budget,
+      turns: this.deps.budget.turnsThisMonth(scope === "bot" ? "bot" : "room", id),
+    };
   }
 
   private readJson(req: IncomingMessage): Promise<unknown> {

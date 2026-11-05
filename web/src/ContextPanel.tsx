@@ -32,7 +32,9 @@ export function ContextPanel(p: Props): JSX.Element {
   if (p.detailBotId !== null) {
     const bot = p.overview?.bots.find((b) => b.id === p.detailBotId);
     if (bot !== undefined) {
-      return <BotDetail {...p} botId={bot.id} />;
+      // key = remount per bot: budget/memory drafts can never leak across
+      // bots (the M1 stale-closure class this rebuild must kill, §9).
+      return <BotDetail key={bot.id} {...p} botId={bot.id} />;
     }
   }
   const { t, room } = p;
@@ -93,24 +95,23 @@ export function ContextPanel(p: Props): JSX.Element {
 function BudgetMeter(props: { t: T; lang: Lang; row: BudgetRow | undefined; label: string }): JSX.Element {
   const { t, row } = props;
   if (row === undefined) return <div className="meter-row dim">{props.label} · …</div>;
-  const costBased = row.budget.maxCostMicros > 0;
-  const pct = costBased
-    ? Math.min(100, Math.round((row.costMicros / row.budget.maxCostMicros) * 100))
+  // Dimension preference: cost > tokens > turns — mirrors what can actually
+  // stop the scope; a fully-unlimited scope shows no meter (R1 P2-9).
+  const used = row.budget.maxCostMicros > 0
+    ? { pct: Math.min(100, Math.round((row.costMicros / row.budget.maxCostMicros) * 100)), display: `${money(props.lang, row.costMicros)} ${t.budgetOf} ${money(props.lang, row.budget.maxCostMicros)}` }
     : row.budget.maxTokens > 0
-      ? Math.min(100, Math.round((row.tokens / row.budget.maxTokens) * 100))
-      : 0;
-  const display = costBased
-    ? `${money(props.lang, row.costMicros)} ${t.budgetOf} ${money(props.lang, row.budget.maxCostMicros)}`
-    : `${row.tokens.toLocaleString()} ${t.budgetOf} ${row.budget.maxTokens.toLocaleString()}`;
-  const turnsLeft = row.budget.maxTurns > 0 ? t.budgetTurnsLeft(row.budget.maxTurns) : "";
+      ? { pct: Math.min(100, Math.round((row.tokens / row.budget.maxTokens) * 100)), display: `${row.tokens.toLocaleString()} ${t.budgetOf} ${row.budget.maxTokens.toLocaleString()}${row.costMicros === 0 ? ` · ${t.tokenFallback}` : ""}` }
+      : row.budget.maxTurns > 0 && row.turns !== undefined
+        ? { pct: Math.min(100, Math.round((row.turns / row.budget.maxTurns) * 100)), display: t.budgetTurnsUsed(row.turns, row.budget.maxTurns) }
+        : { pct: 0, display: t.budgetUnset };
   return (
-    <div className="meter-row" title={`${row.month} · ${display}${turnsLeft !== "" ? ` · ${turnsLeft}` : ""}${!costBased && row.budget.maxTokens > 0 ? ` · ${t.tokenFallback}` : ""}`}>
+    <div className="meter-row" title={`${row.month} · ${used.display}${row.budget.maxTurns > 0 && row.turns !== undefined && row.budget.maxCostMicros > 0 ? ` · ${t.budgetTurnsUsed(row.turns, row.budget.maxTurns)}` : ""}${row.budget.maxWallMs > 0 ? ` · ${t.budgetWall(row.budget.maxWallMs)}` : ""}`}>
       <span className="meter-label">{props.label}</span>
-      <span className={`meter ${pct >= 100 ? "over" : pct >= 80 ? "warn" : ""}`}>
-        <span className="meter-fill" style={{ width: `${pct}%` }} />
+      <span className={`meter ${used.pct >= 100 ? "over" : used.pct >= 80 ? "warn" : ""}`}>
+        <span className="meter-fill" style={{ width: `${used.pct}%` }} />
       </span>
-      <span className="meter-pct dim">{pct}%</span>
-      <span className="meter-val dim">{display}</span>
+      <span className="meter-pct dim">{used.pct}%</span>
+      <span className="meter-val dim">{used.display}</span>
     </div>
   );
 }
@@ -166,7 +167,7 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
         <div className="kv"><span>{t.modelLabel}</span><b>{bot.model.provider}/{bot.model.modelId}</b></div>
         <div className="kv"><span>{t.effortLabel}</span><b>{bot.model.thinkingLevel}</b></div>
         <div className="kv">
-          <span>sandbox</span>
+          <span>{t.sandboxLabel}</span>
           <b className={`badge-sandbox ${bot.sandbox.mode === "docker" ? "" : "warn"}`}>
             {bot.sandbox.mode === "docker" ? t.sandboxDocker : t.sandboxHost}
           </b>

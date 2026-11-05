@@ -85,8 +85,9 @@ const hourNow = (): string => new Date().toISOString().slice(0, 13);
 
 export class BotManager extends EventEmitter {
   private readonly bots = new Map<string, ManagedBot>();
-  /** Parked confirm requests awaiting a Web approval card (M2-E §3.5). */
-  private readonly parkedApprovals = new Map<string, RpcClient>();
+  /** Parked confirm requests awaiting a Web approval card (M2-E §3.5);
+   *  host id → { client, child-side request id }. */
+  private readonly parkedApprovals = new Map<string, { client: RpcClient; reqId: string }>();
   private readonly spawnDefaults: SpawnOptions;
 
   constructor(
@@ -308,6 +309,7 @@ export class BotManager extends EventEmitter {
 
   private dropClient(m: ManagedBot, client: RpcClient): void {
     if (m.client === client) m.client = null;
+    this.purgeApprovalsOf(client);
     client.kill();
   }
 
@@ -507,10 +509,15 @@ export class BotManager extends EventEmitter {
         client.replyUi({ type: "extension_ui_response", id: req.id, confirmed: true });
         return;
       }
+      // HOST-generated approval id (M2-E R1 P1-3): the child-supplied req.id
+      // has no uniqueness guarantee across children (fake-pi emits park-1
+      // from every process — a real collision orphaned the earlier park).
+      // The host id keys the map; the child id rides along for the reply.
       const botId = this.botIdOf(client);
-      this.parkedApprovals.set(req.id, client);
+      const approvalId = `apr_${randomUUID().slice(0, 8)}`;
+      this.parkedApprovals.set(approvalId, { client, reqId: req.id });
       this.emit("approval", {
-        id: req.id,
+        id: approvalId,
         botId,
         title: req.title,
         message: (req as { message?: unknown }).message ?? "",
@@ -520,12 +527,22 @@ export class BotManager extends EventEmitter {
 
   /** Resolve a parked approval from the Web approval card (§3.5 M2 简版). */
   resolveApproval(id: string, confirmed: boolean): boolean {
-    const client = this.parkedApprovals.get(id);
-    if (client === undefined) return false;
+    const parked = this.parkedApprovals.get(id);
+    if (parked === undefined) return false;
     this.parkedApprovals.delete(id);
-    client.replyUi({ type: "extension_ui_response", id, confirmed });
+    parked.client.replyUi({ type: "extension_ui_response", id: parked.reqId, confirmed });
     this.emit("approvalResolved", { id, confirmed });
     return true;
+  }
+
+  /** Drop every approval parked on a dying client — the card must not sit
+   *  clickable forever promising a resolve that can never land (R1 P1-3). */
+  private purgeApprovalsOf(client: RpcClient): void {
+    for (const [id, parked] of [...this.parkedApprovals]) {
+      if (parked.client !== client) continue;
+      this.parkedApprovals.delete(id);
+      this.emit("approvalResolved", { id, confirmed: false, stale: true });
+    }
   }
 
   private botIdOf(client: RpcClient): string | null {
