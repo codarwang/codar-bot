@@ -41,6 +41,22 @@ export class Handoff extends EventEmitter {
    *  (§6.1a maxWallMs — M2-C R2 P2-4). */
   deadlineMs: ((botId: string) => number | null) | null = null;
 
+  /** Stale-pause test (Budget.rolloverIfStale); set by Host. Both budget
+   *  gates run it BEFORE refusing — the established entry-point pattern
+   *  ("whoever is about to reject activity performs the rollover test
+   *  first"): a next-month pause left undated in memory by a restart must
+   *  lift here, not block honest work (M2-C R5 P2-2). */
+  stalePauseCheck: ((roomId: string) => void) | null = null;
+
+  /** Is this room under an ACTIVE budget pause? Runs the stale test first. */
+  private budgetPaused(roomId: string): boolean {
+    if (this.stalePauseCheck !== null) {
+      try { this.stalePauseCheck(roomId); } catch { /* shutting down */ }
+    }
+    const room = this.store.room(roomId);
+    return room?.status === "paused" && (room.pauseReason ?? "budget") === "budget";
+  }
+
   /** Results for busy callers, delivered when the caller goes idle.
    *  Multi-slot per parent: a busy window can produce SEVERAL results —
    *  each gets its own wake prompt, none overwritten (M2-B R2 P2-a). */
@@ -116,9 +132,13 @@ export class Handoff extends EventEmitter {
     // rejected up front — the caller bot SEES the refusal instead of getting
     // a work that never runs. §5.3 group-stop semantics: the pause already
     // aborted the members' in-flight work; new runs must not sidestep it.
-    const childRoom = this.store.state.rooms.find((r) => r.members.includes(req.toBot));
-    if (childRoom?.status === "paused" && (childRoom.pauseReason ?? "budget") === "budget") {
-      throw new Error(`message_bot: ${this.botName(req.toBot)}'s room is budget-paused (§5.3) — adjust the budget to resume`);
+    // ANY member room under an active pause refuses (multi-room members are
+    // legal state; first-match found the wrong room in R5 review).
+    // budgetPaused() runs the stale-pause test first (R5 P2-2).
+    for (const r of this.store.state.rooms) {
+      if (r.members.includes(req.toBot) && this.budgetPaused(r.id)) {
+        throw new Error(`message_bot: ${this.botName(req.toBot)}'s room is budget-paused (§5.3) — adjust the budget to resume`);
+      }
     }
 
     // Anti-cycle: the target must not be a pending ancestor of the sender.
@@ -167,15 +187,23 @@ export class Handoff extends EventEmitter {
     }
     // Budget gate, run-side twin of the dispatch gate (M2-C R4): a work that
     // queued as pending may reach an idle child AFTER its room got
-    // budget-paused. Honest failure with a room line, key released for a
-    // post-resume retry.
-    const childRoom = this.store.state.rooms.find((r) => r.members.includes(work.child));
-    if (childRoom?.status === "paused" && (childRoom.pauseReason ?? "budget") === "budget") {
+    // budget-paused. Honest failure, key released for a post-resume retry.
+    // ANY member room under an active pause refuses; budgetPaused() runs the
+    // stale-pause test first (R5 P2-2).
+    const childPaused = this.store.state.rooms.some((r) => r.members.includes(work.child) && this.budgetPaused(r.id));
+    if (childPaused) {
       this.store.updateWork(work.id, { status: "failed" });
       this.emit("work", { workId: work.id, status: "failed", parent: work.parent, child: work.child });
-      try {
-        this.rooms.appendSystem(childRoom.id, `task ${work.id} → ${this.botName(work.child)} not started — room budget paused (§5.3)`);
-      } catch { /* shutdown */ }
+      // Notify where the interrupted path notifies (R5 P3-1): the
+      // REQUESTER's room, or the parent directly for room-less works — a
+      // cross-room dispatch must not leave the caller unnotified.
+      if (work.roomId !== null) {
+        try {
+          this.rooms.appendSystem(work.roomId, `task ${work.id} → ${this.botName(work.child)} not started — room budget paused (§5.3)`);
+        } catch { /* shutdown */ }
+      } else {
+        this.deliverWake(work.parent, `[task ${work.id}: not started — ${this.botName(work.child)}'s room is budget-paused (§5.3)]`);
+      }
       return;
     }
     this.store.updateWork(work.id, { status: "working" });
