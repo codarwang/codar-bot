@@ -150,7 +150,10 @@ export class BotManager extends EventEmitter {
     }
     m.status = status;
     this.audit("lifecycle", { botId: m.botId, from, to: status, detail });
-    this.emit("status", { botId: m.botId, status, detail });
+    // `from` rides the event so consumers can distinguish real turn settles
+    // (working→idle) from starts/restarts (starting→idle) — maxTurns counts
+    // only the former (M2-C R2 P2-1).
+    this.emit("status", { botId: m.botId, status, detail, from });
   }
 
   async start(
