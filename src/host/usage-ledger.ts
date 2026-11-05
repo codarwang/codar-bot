@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS usage (
 
 export class UsageLedger {
   private readonly db: DatabaseSync;
+  /** Post-write hook (budget enforcement checks after every record). */
+  onRecord: ((botId: string) => void) | null = null;
 
   constructor(dbPath: string) {
     this.db = new DatabaseSync(dbPath);
@@ -70,6 +72,7 @@ export class UsageLedger {
         u.hour, u.botId, u.model, u.kind,
         u.input, u.output, u.cacheRead, u.cacheWrite, u.cacheWrite1h, u.costMicros
       );
+    this.onRecord?.(u.botId);
   }
 
   /** Aggregate totals for a query window (per bot × model × kind rows —

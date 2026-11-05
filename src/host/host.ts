@@ -9,6 +9,7 @@ import { UsageLedger } from "./usage-ledger.js";
 import { BotManager } from "./bot-manager.js";
 import { RoomEngine } from "./room-engine.js";
 import { Handoff } from "./handoff.js";
+import { Budget } from "./budget.js";
 import { HttpApi } from "./http-api.js";
 import { paths, type HostPaths } from "./paths.js";
 import { loadKeys } from "./provider-config.js";
@@ -70,8 +71,9 @@ export class Host {
     const rooms = new RoomEngine(store, bots, p.roomsRoot);
     const handoff = new Handoff(store, bots, rooms);
     bots.handoff = handoff; // late bind (M2-B D1 bridge)
+    const budget = new Budget(store, ledger, bots, rooms, p.root);
     const api = new HttpApi({
-      store, bots, ledger, rooms, handoff,
+      store, bots, ledger, rooms, handoff, budget,
       webDir: opts.webDir ?? (existsSync(join(p.root, "web-dist")) ? join(p.root, "web-dist") : undefined),
     });
     return new Host(opts, store, ledger, bots, api);

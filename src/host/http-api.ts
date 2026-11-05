@@ -33,6 +33,7 @@ import { defaultBudget } from "./store.js";
 import type { UsageLedger } from "./usage-ledger.js";
 import type { RoomEngine } from "./room-engine.js";
 import type { Handoff } from "./handoff.js";
+import type { Budget } from "./budget.js";
 
 export interface ApiDeps {
   store: Store;
@@ -40,6 +41,7 @@ export interface ApiDeps {
   ledger: UsageLedger;
   rooms: RoomEngine;
   handoff: Handoff;
+  budget: Budget;
   /** Built web UI dir (web/dist); absent ⇒ API-only mode. */
   webDir?: string;
 }
@@ -60,13 +62,14 @@ export class HttpApi {
     bots.on("message", (e) => this.broadcast("message", e));
     bots.on("failure", (e) => this.broadcast("failure", e));
     bots.on("aborted", (e) => this.broadcast("aborted", e));
-    const { rooms, handoff } = deps;
+    const { rooms, handoff, budget } = deps;
     rooms.on("turn", (e) => this.broadcast("turn", e));
     rooms.on("system", (e) => this.broadcast("system", e));
     rooms.on("message", (e) => this.broadcast("roommessage", e));
     bots.on("tool", (e) => this.broadcast("tool", e));
     handoff.on("progress", (e) => this.broadcast("progress", e));
     handoff.on("work", (e) => this.broadcast("work", e));
+    budget.on("budget", (e) => this.broadcast("budget", e));
   }
 
   /** Static serving of the built SPA (non-/api GET). Traversal-safe. */
@@ -393,6 +396,60 @@ export class HttpApi {
       }
     }
 
+    if (resource === "budget") {
+      if (req.method === "GET" && parts.length === 3) {
+        this.send(res, 200, { scope: "all" });
+        return;
+      }
+      if (req.method === "GET" && id !== undefined && action === undefined) {
+        // /api/budget/bot_xxx or /api/budget/room_xxx — report month usage.
+        const scope = id.startsWith("room_") ? "room" : "bot";
+        const since = new Date();
+        since.setUTCDate(1); since.setUTCHours(0, 0, 0, 0);
+        const sinceHour = since.toISOString().slice(0, 13);
+        const memberIds = scope === "room" ? (this.deps.store.room(id)?.members ?? []) : [id];
+        let tokens = 0; let micros = 0;
+        for (const m of memberIds) {
+          const totals = this.deps.ledger.totals({ botId: m, sinceHour });
+          for (const r of totals) { tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros; }
+        }
+        const limit = scope === "bot"
+          ? this.deps.store.bot(id)?.budget
+          : this.deps.store.room(id)?.budget;
+        this.send(res, 200, { scope, id, month: sinceHour.slice(0, 7), tokens, costMicros: micros, budget: limit ?? null });
+        return;
+      }
+      if (req.method === "PUT" && id !== undefined && action === undefined) {
+        const body = (await this.readJson(req)) as Record<string, unknown>;
+        const patch: Partial<{ maxTokens: number; maxCostMicros: number; maxTurns: number; maxWallMs: number }> = {};
+        for (const k of ["maxTokens", "maxCostMicros", "maxTurns", "maxWallMs"] as const) {
+          const v = body[k];
+          if (v !== undefined) {
+            if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+              throw new ApiError(400, `${k} must be a non-negative number`);
+            }
+            patch[k] = v;
+          }
+        }
+        if (Object.keys(patch).length === 0) throw new ApiError(400, "no budget fields");
+        if (id.startsWith("room_")) {
+          const room = this.deps.store.room(id);
+          if (room === undefined) throw new ApiError(404, `no room ${id}`);
+          this.deps.store.updateRoom(id, { budget: { ...room.budget, ...patch } });
+          // A limit raise resumes a budget-paused room (§5.3 recovery).
+          if (room.status === "paused" && room.pauseReason === "budget") {
+            this.deps.rooms.resume(id, "budget adjusted — room resumed");
+          }
+          this.send(res, 200, this.deps.store.room(id)!.budget);
+          return;
+        }
+        const bot = this.deps.store.bot(id);
+        if (bot === undefined) throw new ApiError(404, `no bot ${id}`);
+        this.deps.store.updateBot(id, { budget: { ...bot.budget, ...patch } });
+        this.send(res, 200, this.deps.store.bot(id)!.budget);
+        return;
+      }
+    }
     if (resource === "works") {
       if (req.method === "GET" && parts.length === 2) {
         this.send(res, 200, this.deps.handoff.works(url.searchParams.get("room") ?? undefined));
