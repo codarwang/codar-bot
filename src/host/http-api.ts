@@ -421,6 +421,9 @@ export class HttpApi {
       const scopePart = id;
       const scope = scopePart === "bots" ? "bot" : scopePart === "rooms" ? "room" : scopePart === "team" ? "team" : null;
       if (scope === null) throw new ApiError(400, `scope must be bots|rooms|team, got "${scopePart}"`);
+      if (scopePart === "team" && action !== undefined) {
+        throw new ApiError(400, "the team scope takes no id");
+      }
       const targetId = scope === "team" ? "team" : action;
       if (targetId === undefined) throw new ApiError(400, `scope ${scopePart} needs an id`);
       if (scope === "bot" && this.deps.store.bot(targetId) === undefined) {
@@ -532,6 +535,11 @@ export class HttpApi {
             for (const m of room.members) {
               const totals = this.deps.ledger.totals({ botId: m, sinceHour });
               for (const row of totals) { tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros; }
+            }
+            // Same window as Budget.checkRoom (M2-D R1 P2-3): the room's own
+            // memory-review rows count toward its budget.
+            for (const row of this.deps.ledger.totals({ botId: id, sinceHour })) {
+              tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros;
             }
             clears =
               (nextBudget.maxTokens <= 0 || tokens < nextBudget.maxTokens) &&

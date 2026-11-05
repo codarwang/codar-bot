@@ -228,6 +228,11 @@ export class Budget extends EventEmitter {
       const totals = this.ledger.totals({ botId: m, sinceHour: `${month}-01T00` });
       for (const r of totals) { tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros; }
     }
+    // Room-scoped memory reviews bill under the room's own id (§4 台账) —
+    // they must feed the SAME window they can exhaust (M2-D R1 P2-3), or
+    // review spend escapes the room budget entirely.
+    const ownRows = this.ledger.totals({ botId: roomId, sinceHour: `${month}-01T00` });
+    for (const r of ownRows) { tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros; }
     this.evaluate("room", roomId, room.budget, tokens, micros);
   }
 

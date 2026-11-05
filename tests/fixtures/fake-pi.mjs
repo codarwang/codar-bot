@@ -157,6 +157,14 @@ async function runPrompt(id, message) {
     let text;
     if (mode === "broken") text = "sure, I updated the memory accordingly. (no structured blocks)";
     else if (mode === "huge") text = `<<<FILE entry.md>>>\n${"x".repeat(5_000)}\n<<<END>>>`;
+    else if (mode === "delete") {
+      text = "<<<FILE entry.md>>>\nkept.\n<<<DELETE topics/style.md>>>\n<<<END>>>";
+    }
+    else if (mode === "crash") {
+      // Review child dies mid-run: started, then hard exit without settling.
+      setTimeout(() => process.exit(1), 30);
+      return;
+    }
     else {
       text = [
         "<<<FILE entry.md>>>",
@@ -168,14 +176,19 @@ async function runPrompt(id, message) {
         "<<<END>>>",
       ].join("\n");
     }
-    lastText = text;
-    transcript.push({ role: "assistant", content: [{ type: "text", text }] });
-    out({ type: "message_start", message: { role: "assistant" } });
-    out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
-    out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", usage: usage(30, 6) } });
-    out({ type: "turn_end" });
-    out({ type: "agent_end" });
-    out({ type: "agent_settled", aborted: false });
+    const finish = () => {
+      lastText = text;
+      transcript.push({ role: "assistant", content: [{ type: "text", text }] });
+      out({ type: "message_start", message: { role: "assistant" } });
+      out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
+      out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }], stopReason: "stop", usage: usage(30, 6) } });
+      out({ type: "turn_end" });
+      out({ type: "agent_end" });
+      out({ type: "agent_settled", aborted: false });
+    };
+    const delay = Number(process.env.FAKE_PI_MEM_DELAY_MS ?? 0);
+    if (delay > 0) setTimeout(finish, delay);
+    else finish();
     return;
   }
 

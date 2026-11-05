@@ -23,8 +23,10 @@
  *
  * Snapshot freeze (§5.1a): snapshot() returns the on-disk files verbatim and
  * is byte-stable between reviews — files are the frozen snapshot; only a
- * completed review (or a manual API edit) changes them, so injected prompts
- * stay prefix-cache-friendly.
+ * completed review (or a manual API edit) changes them. The tail rides the
+ * user prompt text, so it never invalidates an EXISTING session prefix; the
+ * freeze keeps the injected block from churning per turn (the header above
+ * it still varies — workingLine — so the truly stable prefix is short).
  *
  * Fail-safe: a malformed/oversized review output keeps the old files AND the
  * pending turns (the next review retries), audited as memory-review-rejected
@@ -70,6 +72,19 @@ const TEAM_REVIEW_THRESHOLD = 5;
  *  aborted and retried on the next settle (pending is kept). */
 const REVIEW_WALL_MS = 3 * 60_000;
 
+/** One review pass consumes at most this many pending turns — an unbounded
+ *  pass would grow the prompt linearly under a failing reviewer until the
+ *  scope wedges past its context window (R1 P2-2). The rest waits for the
+ *  follow-up pass. */
+const REVIEW_TURNS_MAX = 40;
+
+/** After a failed/rejected review the scope cools down before the NEXT
+ *  auto-schedule (manual review() calls bypass it): a broken reviewer must
+ *  not turn every settle into a paying retry (R1 P2-2). Grows per
+ *  consecutive failure, capped. */
+const REVIEW_COOLDOWN_BASE_MS = 10 * 60_000;
+const REVIEW_COOLDOWN_CAP_MS = 60 * 60_000;
+
 const HOUR_NOW = (): string => new Date().toISOString().slice(0, 13);
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
@@ -88,6 +103,14 @@ interface SpawnDefaults {
   bin?: string;
   sandboxArgv?: string[];
   env: Record<string, string>;
+}
+
+function safeRead(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return "";
+  }
 }
 
 /** Atomic write: tmp → fsync → rename (store.ts 同款纪律). */
@@ -109,6 +132,9 @@ export class MemoryEngine {
   private readonly snapshotCache = new Map<string, string>();
   /** Single-flight review per scope key. */
   private readonly reviewing = new Set<string>();
+  /** Cooldown-until per scope after failed/rejected reviews (R1 P2-2). */
+  private readonly cooldownUntil = new Map<string, number>();
+  private readonly cooldownFails = new Map<string, number>();
   private readonly auditPath: string;
 
   constructor(
@@ -205,6 +231,12 @@ export class MemoryEngine {
   /** Manual edit (API): whitelisted path only; invalidates the freeze cache. */
   writeFile(scope: MemoryScope, id: string, path: string, content: string): void {
     if (!isValidMemoryPath(path)) throw new Error(`invalid memory path "${path}"`);
+    const cap = path === "entry.md" ? LIMITS["entry.md"] : path === "main.md" ? LIMITS["main.md"] : LIMITS.topic;
+    if (content.length > cap * 2) {
+      // Manual edits live under the same 固定尺寸 discipline as reviews
+      // (R1 P3-4): an unbounded entry.md would ride EVERY prompt tail.
+      throw new Error(`${path} ${content.length} chars > 2x budget ${cap * 2}`);
+    }
     const abs = join(this.scopeDir(scope, id), path);
     mkdirSync(dirname(abs), { recursive: true });
     atomicWrite(abs, content.endsWith("\n") ? content : `${content}\n`);
@@ -237,6 +269,8 @@ export class MemoryEngine {
     const key = this.scopeKey(scope, id);
     if (this.reviewing.has(key)) return;
     if (this.reviewBlocked(scope, id)) return;
+    const cool = this.cooldownUntil.get(key);
+    if (cool !== undefined && Date.now() < cool) return;
     if (scope === "team" && this.pendingCount(scope, id) < TEAM_REVIEW_THRESHOLD) return;
     if (this.pendingCount(scope, id) === 0) return;
     this.reviewing.add(key);
@@ -244,6 +278,11 @@ export class MemoryEngine {
       .catch(() => undefined) // review() audits its own failures
       .finally(() => {
         this.reviewing.delete(key);
+        // Turns that arrived mid-review (or beyond REVIEW_TURNS_MAX) get a
+        // follow-up pass — the single-flight must not swallow the tail.
+        if (this.pendingCount(scope, id) > 0 && !this.reviewBlocked(scope, id)) {
+          this.schedule(scope, id);
+        }
       });
   }
 
@@ -280,37 +319,106 @@ export class MemoryEngine {
    */
   async review(scope: MemoryScope, id: string): Promise<"reviewed" | "skipped" | "rejected" | "failed"> {
     const key = this.scopeKey(scope, id);
-    const pending = this.readPending(scope, id);
-    if (pending.length === 0) return "skipped";
+    try {
+      return await this.reviewInner(scope, id, key);
+    } catch (error) {
+      // Infrastructure failures (keys/config/disk) must be visible, not
+      // swallowed by schedule()'s catch (R1 P3-1).
+      this.audit({ kind: "memory-review-failed", scope, id, error: String(error).slice(0, 200) });
+      return "failed";
+    }
+  }
+
+  private async reviewInner(
+    scope: MemoryScope,
+    id: string,
+    key: string
+  ): Promise<"reviewed" | "skipped" | "rejected" | "failed"> {
+    const dir = this.scopeDir(scope, id);
+    mkdirSync(dir, { recursive: true });
+    const pendingPath = this.pendingPath(scope, id);
+    const inflightPath = join(dir, "pending-inflight.jsonl");
+
+    // Claim the CURRENT pending lines ATOMICALLY (R1 P1-1): renames leave
+    // new ingests landing in a fresh pending.jsonl while this review
+    // consumes the inflight file — a mid-review turn is never swallowed by
+    // the end-of-review truncation.
+    if (existsSync(inflightPath)) {
+      // Orphan from a crashed review: merge back before claiming a new one.
+      const orphan = safeRead(inflightPath);
+      atomicWrite(pendingPath, orphan + safeRead(pendingPath));
+      unlinkSync(inflightPath);
+    }
+    try {
+      renameSync(pendingPath, inflightPath);
+    } catch {
+      return "skipped"; // nothing pending
+    }
+    const restore = (): void => {
+      // Failed pass: the claimed lines go back (oldest first) — retried by
+      // the next schedule.
+      atomicWrite(pendingPath, safeRead(inflightPath) + safeRead(pendingPath));
+      unlinkSync(inflightPath);
+    };
+    const all = safeRead(inflightPath)
+      .split("\n")
+      .filter((l) => l.trim().length > 0);
+    const consumed = all.slice(0, REVIEW_TURNS_MAX).join("\n");
+    if (consumed.length === 0) {
+      unlinkSync(inflightPath);
+      return "skipped";
+    }
+    const pending = consumed.split("\n").map((l) => JSON.parse(l) as TurnRecord);
+    const leftover = all.slice(REVIEW_TURNS_MAX).join("\n");
 
     const model = this.resolveReviewModel(scope, id);
     if (model === null) {
       this.audit({ kind: "memory-review-skipped", scope, id, reason: "no review model configured" });
+      restore();
       return "skipped";
     }
 
-    const dir = this.scopeDir(scope, id);
-    mkdirSync(dir, { recursive: true });
-    const prompt = this.renderReviewPrompt(scope, id, this.files(scope, id), pending);
+    const preFiles = this.files(scope, id);
+    const pre = new Map(preFiles.map((f) => [f.path, f.content]));
+    const prompt = this.renderReviewPrompt(scope, id, preFiles, pending);
     const outcome = await this.runReviewChild(scope, id, model, prompt);
 
+    const notReviewed = (reason: string): "rejected" | "failed" => {
+      // Failed pass: ALL claimed lines (including beyond-cap leftovers still
+      // sitting in the inflight file) go back, oldest first.
+      atomicWrite(pendingPath, safeRead(inflightPath) + safeRead(pendingPath));
+      unlinkSync(inflightPath);
+      this.bumpCooldown(key);
+      return reason === "failed-output" ? "failed" : "rejected";
+    };
     if (outcome.text === null) {
       this.audit({ kind: "memory-review-failed", scope, id, error: outcome.error ?? "no output" });
-      return "failed";
+      return notReviewed("failed-output");
     }
     const update = parseReviewOutput(outcome.text);
     if (update === null) {
       this.audit({ kind: "memory-review-rejected", scope, id, reason: "unparseable output" });
-      return "rejected";
+      return notReviewed("rejected");
     }
     const err = validateUpdate(update);
     if (err !== null) {
       this.audit({ kind: "memory-review-rejected", scope, id, reason: err });
-      return "rejected";
+      return notReviewed("rejected");
+    }
+    // Manual-edit conflict (R1 P3-2): if an API edit landed on a file this
+    // update touches while the child ran, the model worked from stale
+    // content — refuse rather than silently clobber the edit.
+    for (const f of [...update.files.map((x) => x.path), ...update.deletes]) {
+      const before = pre.get(f);
+      const now = safeRead(join(dir, f));
+      if ((before ?? "") !== (now ?? "") && !(before === undefined && now === "")) {
+        this.audit({ kind: "memory-review-rejected", scope, id, reason: `manual edit conflict on ${f}` });
+        return notReviewed("rejected");
+      }
     }
 
-    // All-or-nothing apply: writes first (atomic each), then pending clear,
-    // then the durable review log.
+    // All-or-nothing apply: writes first (atomic each), then the claimed
+    // pending settles, then the durable review log.
     for (const f of update.files) this.writeFile(scope, id, f.path, f.content);
     for (const p of update.deletes) {
       try {
@@ -320,21 +428,23 @@ export class MemoryEngine {
         /* already gone — the review log still records the intent */
       }
     }
-    atomicWrite(this.pendingPath(scope, id), "");
-    appendFileSync(join(dir, "reviews.log"), `${new Date().toISOString()} turns=${pending.length} files=${update.files.length} deletes=${update.deletes.length}\n`, "utf8");
+    atomicWrite(pendingPath, (leftover.length > 0 ? `${leftover}\n` : "") + safeRead(pendingPath));
+    unlinkSync(inflightPath);
+    appendFileSync(
+      join(dir, "reviews.log"),
+      `${new Date().toISOString()} turns=${pending.length} files=${update.files.length} deletes=${update.deletes.length}\n`,
+      "utf8"
+    );
+    this.cooldownFails.delete(key);
     this.audit({ kind: "memory-review", scope, id, turns: pending.length, files: update.files.length });
     return "reviewed";
   }
 
-  private readPending(scope: MemoryScope, id: string): TurnRecord[] {
-    try {
-      return readFileSync(this.pendingPath(scope, id), "utf8")
-        .split("\n")
-        .filter((l) => l.trim().length > 0)
-        .map((l) => JSON.parse(l) as TurnRecord);
-    } catch {
-      return [];
-    }
+  private bumpCooldown(key: string): void {
+    const fails = (this.cooldownFails.get(key) ?? 0) + 1;
+    this.cooldownFails.set(key, fails);
+    const ms = Math.min(REVIEW_COOLDOWN_BASE_MS * fails, REVIEW_COOLDOWN_CAP_MS);
+    this.cooldownUntil.set(key, Date.now() + ms);
   }
 
   private renderReviewPrompt(scope: MemoryScope, id: string, files: MemoryFile[], pending: TurnRecord[]): string {
@@ -377,7 +487,11 @@ export class MemoryEngine {
     prompt: string
   ): Promise<{ text: string | null; error?: string }> {
     const keys = loadKeys(this.keysPath);
-    const cfg = buildSpawnConfig(keys, dirname(this.root), "memory-review", model.provider, model.modelId);
+    // Per-SCOPE conf dir (R1 P2-1): concurrent bot+room reviews used to
+    // share one models.json — the later materialize overwrote the earlier
+    // child's catalog mid-boot ("model not found" churn). Single-flight
+    // makes a per-scope dir race-free.
+    const cfg = buildSpawnConfig(keys, dirname(this.root), `review-${scope}-${id}`, model.provider, model.modelId);
     materializePiConf(cfg);
     const usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number; costTotal: number } = {
       input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costTotal: 0,
@@ -394,6 +508,22 @@ export class MemoryEngine {
         env: { ...this.spawn.env, ...cfg.env, PI_CODING_AGENT_DIR: cfg.piConfDir },
         idleTimeoutMs: REVIEW_WALL_MS,
         wallTimeoutMs: REVIEW_WALL_MS,
+      });
+      // RpcClient.fail() emits "error" — with ZERO listeners that throws
+      // synchronously inside a timer/stdout callback and kills the whole
+      // host (R1 P1-2). The failure itself surfaces through the settle wait
+      // below; this listener only disarms the throw.
+      client.on("error", () => undefined);
+      // Settle wait (same contract as BotManager.prompt): the prompt
+      // command resolves at disposition "started" — harvesting immediately
+      // raced the FIRST streamed token and every slow model came back
+      // "empty review output" (found while reproducing the R1 delay cases).
+      const c = client;
+      const settled = new Promise<void>((resolveSettle, rejectSettle) => {
+        c.on("settled", () => resolveSettle());
+        c.on("aborted", () => resolveSettle()); // aborted settles too; harvest decides
+        c.on("exit", (e: { error?: string | null }) =>
+          rejectSettle(new Error(`review child exited: ${e?.error ?? "no output"}`)));
       });
       client.on("event", (e) => {
         if ((e as { type?: string }).type !== "message_end") return;
@@ -415,12 +545,15 @@ export class MemoryEngine {
       });
       const res = await client.command({ type: "prompt", message: prompt } as Record<string, unknown>);
       if (!res.success) return { text: null, error: `prompt rejected: ${String(res.error).slice(0, 160)}` };
+      await settled; // wait out the streamed run before harvesting
       const last = await client.command({ type: "get_last_assistant_text" } as Record<string, unknown>);
       const text =
         last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
           ? (last.data as { text: string }).text
           : null;
-      if (text !== null && text.trim().length > 0 && (usage.input > 0 || usage.output > 0)) {
+      // Bill whatever the child actually burned — even a failed/aborted
+      // pass consumed its input tokens (R1 P3-3); all-zero stays a no-op.
+      if (usage.input > 0 || usage.output > 0) {
         this.ledger.record({
           hour: HOUR_NOW(),
           botId: id, // scope id — bot_xxx / room_xxx / team (§4 台账 id 风格)
