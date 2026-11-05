@@ -292,6 +292,12 @@ export class MemoryEngine {
   }
 
   private reviewBlocked(scope: MemoryScope, id: string): boolean {
+    // No resolvable review model (room admin deleted, chief gone, empty
+    // roster) ⇒ no review, no claim, no re-chain: this state used to spin
+    // schedule()'s follow-up in a pure microtask loop — restore kept pending
+    // > 0 forever while the event loop starved (R4 P1, reachable via plain
+    // DELETE /api/bots/:id on an admin/chief).
+    if (this.resolveReviewModel(scope, id) === null) return true;
     if (scope === "room") {
       const room = this.store.room(id);
       return room?.status === "paused" && (room.pauseReason ?? "budget") === "budget";
@@ -407,6 +413,10 @@ export class MemoryEngine {
     if (model === null) {
       this.audit({ kind: "memory-review-skipped", scope, id, reason: "no review model configured" });
       restore();
+      // Cooldown even on skip: a state that slipped past reviewBlocked must
+      // not let schedule()'s follow-up re-enter claim→skip→restore forever
+      // (R4 P1 belt — the gate above should have caught it).
+      this.bumpCooldown(key);
       return "skipped";
     }
 

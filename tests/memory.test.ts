@@ -625,3 +625,31 @@ test("R3 P3: a claim whose lines are ALL torn consumes without paying for a revi
     await r.dispose();
   }
 });
+
+test("R4 P1: a scope with no resolvable review model must not spin the follow-up loop", async () => {
+  const r = await rig();
+  try {
+    // Single-bot rig: deleting the chief leaves the room with a dangling
+    // admin AND the team without its chief — every scope loses its model.
+    r.store.removeBot(r.chiefId);
+    r.memory.ingestTurn("room", r.roomId, turn("user", "x"));
+    const t0 = Date.now();
+    r.memory.schedule("room", r.roomId); // must be a no-op, not a spin
+    await new Promise((s2) => setTimeout(s2, 500)); // the loop starved this in the bug
+    const elapsed = Date.now() - t0;
+    // With the fix, schedule() is a no-op at the gate — the audit file may
+    // not even exist (zero spins, zero skip audits).
+    let skips = 0;
+    try {
+      skips = readFileSync(join(r.root, "audit.jsonl"), "utf8")
+        .split("\n").filter((l) => l.includes("memory-review-skipped")).length;
+    } catch {
+      skips = 0;
+    }
+    assert.ok(elapsed >= 450 && elapsed < 2_000, "event loop alive (timer fired on time)");
+    assert.ok(skips <= 1, `no spin (skip audits: ${skips})`);
+    assert.equal(r.memory.pendingCount("room", r.roomId), 1, "turns wait for a model, never lost");
+  } finally {
+    await r.dispose();
+  }
+});
