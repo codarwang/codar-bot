@@ -119,3 +119,32 @@ test("bot CRUD guards: duplicate name 409, docker mode 501, patch immutables 400
     await teardown(t.host, t.root);
   }
 });
+
+test("lower-layer error mapping: bad JSON 400, unknown bot 404, busy/stopped 409 (R4 gap)", async () => {
+  const t = await boot();
+  try {
+    const badJson = await json(t.port, "/api/bots", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{not json",
+    });
+    assert.equal(badJson.status, 400);
+    const unknownStart = await json(t.port, "/api/bots/bot_missing/start", { method: "POST" });
+    assert.equal(unknownStart.status, 404);
+    const stoppedPrompt = await json(t.port, `/api/bots/${t.botId}/prompt`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "hi" }),
+    });
+    assert.equal(stoppedPrompt.status, 409);
+    await (await json(t.port, `/api/bots/${t.botId}/start`, { method: "POST" })).json();
+    const dupStart = await json(t.port, `/api/bots/${t.botId}/start`, { method: "POST" });
+    assert.equal(dupStart.status, 409);
+    const badProvider = await json(t.port, "/api/bots", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Evil", workDir: "/tmp/e", model: { provider: "a;b$(rm)", modelId: "x", thinkingLevel: "low" } }),
+    });
+    assert.equal(badProvider.status, 400);
+    const junkDelete = await json(t.port, `/api/bots/${t.botId}/junk`, { method: "DELETE" });
+    assert.equal(junkDelete.status, 404);
+  } finally {
+    await teardown(t.host, t.root);
+  }
+});
