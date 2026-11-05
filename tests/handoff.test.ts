@@ -224,3 +224,16 @@ test("M2-B R1: §5.5 restart sweep — pending/working works fail on store reope
     await r.dispose();
   }
 });
+
+test("M2-B R2: failed work releases its request_id — a retry creates a NEW work", async () => {
+  const r = await rig();
+  try {
+    const a = await r.handoff.dispatch({ fromBot: r.chiefId, toBot: r.writerId, task: "t", requestId: "rel-1", roomId: null });
+    r.store.updateWork(a.workId, { status: "failed" });
+    const b = await r.handoff.dispatch({ fromBot: r.chiefId, toBot: r.writerId, task: "retry", requestId: "rel-1", roomId: null });
+    assert.notEqual(a.workId, b.workId, "terminal work must not answer duplicate-ok");
+    assert.equal(b.duplicate, false);
+  } finally {
+    await r.dispose();
+  }
+});

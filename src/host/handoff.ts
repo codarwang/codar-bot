@@ -37,8 +37,10 @@ export interface HandoffEvents {
 }
 
 export class Handoff extends EventEmitter {
-  /** Results for busy callers, delivered when the caller goes idle. */
-  private readonly wakeQueue = new Map<string, string>();
+  /** Results for busy callers, delivered when the caller goes idle.
+   *  Multi-slot per parent: a busy window can produce SEVERAL results —
+   *  each gets its own wake prompt, none overwritten (M2-B R2 P2-a). */
+  private readonly wakeQueue = new Map<string, string[]>();
 
   constructor(
     private readonly store: Store,
@@ -50,10 +52,22 @@ export class Handoff extends EventEmitter {
     // "queued" is never a black hole (M2-B R1 P1-2).
     bots.on("status", (e: { botId: string; status: string }) => {
       if (e.status !== "idle") return;
-      const wake = this.wakeQueue.get(e.botId);
-      if (wake !== undefined) {
-        this.wakeQueue.delete(e.botId);
-        void this.bots.prompt(e.botId, wake, "chat").catch(() => undefined);
+      const wakes = this.wakeQueue.get(e.botId);
+      if (wakes !== undefined && wakes.length > 0) {
+        // Deliver one wake per idle slot (ordered); the rest follow on the
+        // next idle transition so each result keeps its own causal frame.
+        const wake = wakes.shift()!;
+        if (wakes.length === 0) this.wakeQueue.delete(e.botId);
+        void this.bots.prompt(e.botId, wake, "chat").catch((err: unknown) => {
+          // A failed wake is surfaced on the room log when possible — never
+          // silently swallowed (M2-B R2 P2-a note).
+          if (e.botId !== undefined) {
+            const roomId = this.store.state.rooms.find((r) => r.members.includes(e.botId))?.id;
+            if (roomId !== undefined) {
+              try { this.rooms.appendSystem(roomId, `wake delivery to ${this.botName(e.botId)} failed: ${String(err).slice(0, 140)}`); } catch { /* shutdown */ }
+            }
+          }
+        });
         return;
       }
       const pendingFor = this.store.state.works.find(
@@ -79,10 +93,24 @@ export class Handoff extends EventEmitter {
       throw new Error(`message_bot: cannot dispatch to yourself ("${req.toBot}")`);
     }
 
-    // request_id idempotency (§6.2): same key = same work, never re-run.
-    const existing = this.store.state.works.find((w) => w.requestId === req.requestId);
+    // request_id idempotency (§6.2): same key = same work, never re-run —
+    // but ONLY over works that ran or are still live: a FAILED/REJECTED work
+    // answering "ok, duplicate" would promise an execution that never
+    // happens (M2-B R2 P2-b).
+    const existing = this.store.state.works.find(
+      (w) => w.requestId === req.requestId &&
+        (w.status === "pending" || w.status === "working" || w.status === "done")
+    );
     if (existing !== undefined) {
       return { workId: existing.id, duplicate: true };
+    }
+    const dead = this.store.state.works.find(
+      (w) => w.requestId === req.requestId && (w.status === "failed" || w.status === "rejected")
+    );
+    if (dead !== undefined) {
+      // Terminal works release the key: the caller may genuinely want a
+      // re-run — with a NEW work id (honest restart semantics).
+      void dead;
     }
 
     // Anti-cycle: the target must not be a pending ancestor of the sender.
@@ -188,7 +216,9 @@ export class Handoff extends EventEmitter {
       if (this.bots.status(work.parent) === "idle") {
         void this.bots.prompt(work.parent, wake, "chat").catch(() => undefined);
       } else {
-        this.wakeQueue.set(work.parent, wake);
+        const q = this.wakeQueue.get(work.parent) ?? [];
+        q.push(wake);
+        this.wakeQueue.set(work.parent, q);
       }
     }
   }
