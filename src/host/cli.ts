@@ -9,6 +9,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { Host } from "./host.js";
 import { paths } from "./paths.js";
+import { initTeam } from "./init.js";
 
 function readRuntime(): { pid: number; port: number } | null {
   const p = paths().hostRuntime;
@@ -42,6 +43,44 @@ async function main(): Promise<void> {
     };
     process.on("SIGINT", () => void shutdown("SIGINT"));
     process.on("SIGTERM", () => void shutdown("SIGTERM"));
+    return;
+  }
+  if (cmd === "init") {
+    // Non-interactive bootstrap (§3.2): keys via args or env (never echoed).
+    //   codar init --provider zai-coding-cn --model glm-5.3 [--base-url …] [--thinking low]
+    // API key comes from stdin (one line) or $CODAR_INIT_KEY.
+    const args = new Map<string, string>();
+    for (let i = 3; i < process.argv.length; i += 2) {
+      args.set(String(process.argv[i]).replace(/^--/, ""), String(process.argv[i + 1] ?? ""));
+    }
+    const provider = args.get("provider");
+    const modelId = args.get("model");
+    if (provider === undefined || modelId === undefined) {
+      console.error("usage: codar init --provider <name> --model <modelId> [--base-url <url>] [--thinking <level>]");
+      console.error("       (api key on stdin, or CODAR_INIT_KEY env)");
+      process.exitCode = 1;
+      return;
+    }
+    let apiKey = process.env.CODAR_INIT_KEY ?? "";
+    if (apiKey === "" && !process.stdin.isTTY) {
+      apiKey = (await new Promise<string>((resolve) => {
+        let buf = "";
+        process.stdin.once("data", (c) => { buf += c.toString(); resolve(buf.trim()); });
+        setTimeout(() => resolve(buf.trim()), 2_000).unref();
+      })) ?? "";
+    }
+    if (apiKey === "") {
+      console.error("no api key provided (stdin or CODAR_INIT_KEY)");
+      process.exitCode = 1;
+      return;
+    }
+    const result = initTeam({
+      provider, apiKey, modelId,
+      baseUrl: args.get("base-url"),
+      thinkingLevel: args.get("thinking"),
+      dataRoot: process.env.CODAR_BOT_HOME,
+    });
+    console.log(`initialized: chief=${result.chiefId} room=${result.roomId} workDir=${result.workDir} keyWritten=${result.keyWritten}`);
     return;
   }
   if (cmd === "status") {
