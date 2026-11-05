@@ -9,9 +9,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import type { BotManager } from "./bot-manager.js";
-import { join } from "node:path";
 import { mkdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, relative, isAbsolute, sep, join } from "node:path";
 import { ApiError } from "./http-error.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -66,20 +65,35 @@ export class HttpApi {
       this.send(res, 404, { error: "no web UI built (API-only mode)" });
       return;
     }
-    const rel = urlPath === "/" ? "index.html" : decodeURIComponent(urlPath).replace(/^\//, "");
-    const target = resolve(webDir, rel);
-    if (!target.startsWith(resolve(webDir))) {
+    let rel: string;
+    try {
+      // Decode AFTER URL normalization — %2e%2e%2f re-introduces "../" here,
+      // so the containment check below MUST be boundary-safe (R1 P1).
+      rel = urlPath === "/" ? "index.html" : decodeURIComponent(urlPath).replace(/^\//, "");
+    } catch {
+      this.send(res, 400, { error: "malformed path encoding" });
+      return;
+    }
+    const webRoot = resolve(webDir);
+    const target = resolve(webRoot, rel);
+    const inside = relative(webRoot, target);
+    if (inside.startsWith("..") || isAbsolute(inside)) {
       this.send(res, 404, { error: "not found" });
       return;
     }
+    let served: string; // the file ACTUALLY served (fallback changes it)
     let body: Buffer;
     try {
       body = readFileSync(target);
+      served = target;
     } catch {
-      // SPA fallback: unknown non-asset paths get index.html.
+      // SPA fallback: unknown non-asset paths get index.html; the content
+      // type follows the SERVED file, not the requested path (R1 P2).
       if (!rel.startsWith("assets/")) {
-        try { body = readFileSync(join(webDir, "index.html")); }
-        catch { this.send(res, 404, { error: "not found" }); return; }
+        try {
+          served = join(webRoot, "index.html");
+          body = readFileSync(served);
+        } catch { this.send(res, 404, { error: "not found" }); return; }
       } else {
         this.send(res, 404, { error: "not found" });
         return;
@@ -93,8 +107,12 @@ export class HttpApi {
       ".png": "image/png",
       ".ico": "image/x-icon",
     };
-    const ext = target.slice(target.lastIndexOf("."));
-    res.writeHead(200, { "content-type": types[ext] ?? "application/octet-stream" });
+    const ext = served.slice(served.lastIndexOf("."));
+    res.writeHead(200, {
+      "content-type": types[ext] ?? "application/octet-stream",
+      // Hashed vite assets are immutable; everything else revalidates.
+      ...(served.includes(`${sep}assets${sep}`) ? { "cache-control": "public, max-age=31536000, immutable" } : {}),
+    });
     res.end(body);
   }
 
