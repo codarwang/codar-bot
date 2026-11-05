@@ -25,6 +25,7 @@ interface Props {
   statuses: Record<string, string>;
   failures: Record<string, string>;
   approvals: Array<ApprovalEvent & { resolved?: boolean; outcome?: boolean; stale?: boolean }>;
+  approvalErrors: Record<string, string>;
   draft: string;
   onDraft: (text: string) => void;
   onResolveApproval: (id: string, confirmed: boolean) => Promise<void>;
@@ -162,7 +163,14 @@ export function Chat(p: Props): JSX.Element {
               <WorkCard key={w.id} t={t} w={w} botName={botName} now={now} />
             ))}
             {openApprovals.map((a) => (
-              <ApprovalCard key={a.id} t={t} a={a} botName={botName} onResolve={p.onResolveApproval} />
+              <ApprovalCard
+                key={a.id}
+                t={t}
+                a={a}
+                error={p.approvalErrors[a.id]}
+                botName={botName}
+                onResolve={p.onResolveApproval}
+              />
             ))}
             {roomMembers
               .filter((m) => p.streaming[m] !== undefined && p.streaming[m] !== "")
@@ -328,6 +336,7 @@ function WorkCard(props: { t: T; w: WorkView; botName: (id?: string) => string; 
 function ApprovalCard(props: {
   t: T;
   a: ApprovalEvent & { resolved?: boolean; outcome?: boolean; stale?: boolean };
+  error?: string;
   botName: (id?: string) => string;
   onResolve: (id: string, confirmed: boolean) => Promise<void>;
 }): JSX.Element {
@@ -346,6 +355,7 @@ function ApprovalCard(props: {
         ) : (
           <div>{a.stale === true ? t.approvalStale : a.outcome === true ? t.approvalResolvedAllow : t.approvalResolvedDeny}</div>
         )}
+        {props.error !== undefined && <div className="error">{t.retryableError} · {props.error}</div>}
       </div>
     </div>
   );
