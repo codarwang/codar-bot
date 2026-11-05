@@ -394,6 +394,14 @@ export class MemoryEngine {
     }
     if (torn > 0) this.audit({ kind: "memory-review-torn", scope, id, dropped: torn });
     const leftover = all.slice(REVIEW_TURNS_MAX).join("\n");
+    if (pending.length === 0) {
+      // Every claimed line was torn: consume the claim WITHOUT paying for a
+      // zero-turn review pass (the model would rewrite files unprompted,
+      // R3 P3) — leftovers and fresh ingests survive.
+      atomicWrite(pendingPath, (leftover.length > 0 ? `${leftover}\n` : "") + safeRead(pendingPath));
+      unlinkSync(inflightPath);
+      return "skipped";
+    }
 
     const model = this.resolveReviewModel(scope, id);
     if (model === null) {
@@ -407,12 +415,14 @@ export class MemoryEngine {
     const prompt = this.renderReviewPrompt(scope, id, preFiles, pending);
     const outcome = await this.runReviewChild(scope, id, model, prompt);
 
-    const notReviewed = (reason: string): "rejected" | "failed" => {
+    const notReviewed = (reason: string, cooldown = true): "rejected" | "failed" => {
       // Failed pass: ALL claimed lines (including beyond-cap leftovers still
       // sitting in the inflight file) go back, oldest first.
       atomicWrite(pendingPath, safeRead(inflightPath) + safeRead(pendingPath));
       unlinkSync(inflightPath);
-      this.bumpCooldown(key);
+      // A reviewer failure escalates the cooldown; a manual-edit conflict is
+      // NOT the reviewer's fault and must not (R3 P3).
+      if (cooldown) this.bumpCooldown(key);
       return reason === "failed-output" ? "failed" : "rejected";
     };
     if (outcome.text === null) {
@@ -437,7 +447,7 @@ export class MemoryEngine {
       const now = safeRead(join(dir, f));
       if ((before ?? "") !== (now ?? "") && !(before === undefined && now === "")) {
         this.audit({ kind: "memory-review-rejected", scope, id, reason: `manual edit conflict on ${f}` });
-        return notReviewed("rejected");
+        return notReviewed("rejected", false);
       }
     }
 
@@ -600,7 +610,11 @@ export class MemoryEngine {
         try {
           this.ledger.record({
             hour: HOUR_NOW(),
-            botId: id, // scope id — bot_xxx / room_xxx / team (§4 台账 id 风格)
+            botId: id, // scope id — bot_xxx / room_xxx / team (§4 台账 id 风格).
+            // Bot rows feed the bot window; room rows feed checkRoom via
+            // onRecord routing; "team" rides NO budget window BY DESIGN —
+            // §6.1a defines bot/room windows only (team reviews are rare
+            // and batched; a team budget would be a PRD-level decision).
             model: `${model.provider}/${model.modelId}`,
             kind: "memory-review",
             input: usage.input, output: usage.output,
