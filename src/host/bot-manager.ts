@@ -120,6 +120,11 @@ export class BotManager extends EventEmitter {
 
   private setStatus(m: ManagedBot, status: BotStatus, detail?: string): void {
     const from = m.status;
+    if (from === status) {
+      // Same-state transitions are no-ops: handover re-funnels used to
+      // double-write "exhausted → stopped" (R6 P3). No event, no audit line.
+      return;
+    }
     m.status = status;
     this.audit("lifecycle", { botId: m.botId, from, to: status, detail });
     this.emit("status", { botId: m.botId, status, detail });
