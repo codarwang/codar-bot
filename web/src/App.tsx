@@ -23,6 +23,8 @@ interface Overview {
   bots: Array<BotRecord & { runtime?: RuntimeStatus }>;
   rooms: Array<{ id: string; name: string; members: string[]; admin: string; mode: string }>;
 }
+
+type BotWithRuntime = BotRecord & { runtime?: RuntimeStatus };
 interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
@@ -168,6 +170,16 @@ function Chat(): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // Hydrate the status pill for an already-running bot (no status event
+    // will arrive until the next transition).
+    void jsonFetch<Overview>("/api/overview")
+      .then((o) => {
+        const me: BotWithRuntime | undefined = o.bots.find((b) => b.id === botId);
+        if (me?.runtime) setStatus(me.runtime.status);
+      })
+      .catch(() => undefined);
+  }, [botId]);
+  useEffect(() => {
     void jsonFetch<BotRecord[]>("/api/bots").then((bs) => {
       setBots(bs);
       if (bs.length > 0) setBotId((cur) => cur === "" ? bs[0]!.id : cur);
@@ -208,8 +220,12 @@ function Chat(): JSX.Element {
         if (last?.role === "assistant" && last.streaming === true) {
           return [...ms.slice(0, -1), { role: "assistant", text: d.text }];
         }
-        // No streaming bubble (event missed in a reconnect window): the
-        // authoritative final still lands — append instead of dropping.
+        // Already landed via the /prompt response (same text): dedupe.
+        if (last?.role === "assistant" && last.text === d.text && d.text !== "") {
+          return ms;
+        }
+        // No streaming bubble and not a duplicate (event missed in a
+        // reconnect window): append instead of dropping.
         return [...ms, { role: "assistant", text: d.text }];
       });
       setStreaming(false);
@@ -241,12 +257,15 @@ function Chat(): JSX.Element {
       // The response IS the authoritative final — SSE may have delivered it
       // already (dedupe), or the event was missed in a reconnect window.
       setMessages((ms) => {
+        // Dedupe key is the TEXT, not the streaming flag: the normal order
+        // is message_end SSE BEFORE this response, by which time the flag
+        // is already cleared (R2's double-render).
         const last = ms[ms.length - 1];
-        if (last?.role === "assistant" && last.streaming === true && last.text === r.text) {
-          return [...ms.slice(0, -1), { role: "assistant", text: r.text }];
+        if (last?.role === "assistant" && last.text === r.text && r.text !== "") {
+          return ms; // already finalized by SSE
         }
         if (last?.role === "assistant" && last.streaming === true) {
-          return ms; // a message_end is imminent; let it finalize
+          return ms; // message_end imminent with different text; let it land
         }
         return [...ms, { role: "assistant", text: r.text }];
       });
