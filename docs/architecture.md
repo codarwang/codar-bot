@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.11（M2-A/B/C 已落地；预算停机与 handoff 语义按 M2-C 实现固化） |
+| 版本 | v0.12（M2-A/B/C/D 已落地；记忆系统按 M2-D 实现固化） |
 | 日期 | 2026-11-05 |
 | 上游 | `docs/PRD.md` v1.4（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
@@ -381,9 +381,11 @@ Shared files live in ~/shared (prefix your writes with your name).
 - 本 Bot 自己的历史走 pi session 上下文（session 内天然有），对话段只渲染
   **其他成员**的消息——避免重复注入；且为**增量注入**：每回合只注入上次
   注入之后的新消息（历史由 pi session 上下文承载，防止上下文二次膨胀）；
-- 记忆快照（三作用域）注入于系统段尾部，随 memory 快照冻结而稳定（M2 细化）；
+- 记忆快照（三作用域拼接：bot + room + team）注入于 header 尾部，随 memory
+  快照冻结而字节稳定（M2-D 已实现；尾部随 user prompt 文本追加，不破坏既有
+  session 前缀，header 之上的 workingLine 本就逐 turn 变化）；
 - 「谁在干活 + 进度」注入即 PRD §5 statusOf 语义；
-- K 与摘要策略由 memory 模块决定（快照冻结保证前缀缓存稳定）。
+- K 与摘要策略由 memory 模块决定（快照冻结保证注入块不逐 turn 抖动）。
 
 
 
@@ -454,6 +456,31 @@ codar start → store.load（schema 迁移）→ 逐 Bot spawn + switch_session
   → works 中 pending/working 标记 failed（reason:"host-restart"，不猜状态）
   → audit.append(lifecycle) 全量记录
 ```
+
+### 5.6 记忆系统（M2-D 已实现，v0.12 固化）
+
+三作用域 `memory/{bots/<id>, rooms/<id>, team}/{entry.md, main.md, topics/*.md}`
+（固定尺寸分层：entry 2K / main 20K / topic 8K、最多 8 个 topic，2× 硬顶）。
+
+**生命周期**：真实 settle（room 回合 + handoff 完成）→ `ingestTurn` 追加持久
+`pending.jsonl` → 单飞 auto-review（bot/room 每 settle、team 攒 5 条批量）→
+短命宿主侧 pi 子进程（`reviewModel` 全局槽位，回落链 bot 自身/room admin/
+chief；**等待真实 settle 再收割**——prompt 命令在 started 即返回）按严格
+`<<<FILE path>>>` 块格式重写文件，per-file 原子落盘；usage 以 scope id 入账
+（kind=memory-review；bot 行入 bot 窗口、room 行经 onRecord 直路由
+checkRoom、team 行按 §6.1a 设计不入任何窗口）。
+
+**失败安全（5 轮 review 固化）**：review 前 rename 认领（mid-review 新 turn
+落新队列，apply 永不吞行；孤儿 inflight 下次先合并）；撕裂行丢弃+audit 不
+wedge；畸形/超尺寸输出旧文件与 pending 全保留；失败递增冷却（10min×次数
+封顶 1h）防 wedge 型烧钱；手工编辑冲突拒绝陈旧基准 apply（且不升 reviewer
+冷却）；**无 review model 的 scope（admin/chief 被删）在调度门直接 no-op**
+（follow-up 重链曾把事件循环饿死——普通 DELETE bot 即可触发）；子进程
+`on("error")` 从构造起挂载（零监听 emit 会同步 throw 杀 host）、settle
+promise 的 rejection 从诞生起处理。
+
+**管理面（PRD 2.3）**：`GET/PUT /api/memory/{bots/<id>|rooms/<id>|team}`
+（路径白名单；手工编辑同受 2× 预算）、`GET/PUT /api/settings/review-model`。
 
 ## 6. 核心算法边界
 
@@ -533,6 +560,15 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
 
 ## 修订记录
 
+- 2026-11-05 v0.12：M2-D（记忆）5 轮 review 收敛后按实现落文——新增 §5.6
+  记忆系统（三作用域固定分层、快照冻结注入语义、rename 认领 + 孤儿合并的
+  pending 机制、单飞 + 批量阈值 + 递增冷却、无 model 门控防事件循环饿死、
+  settle 后收割契约、scope id 计费与 onRecord 直路由、2× 尺寸硬顶、手工
+  编辑冲突拒写、管理 API）；§5.1a 记忆注入行按实现改写（尾部追加不破坏
+  既有前缀）。评审 deferred 项挂 backlog：API /prompt abort 后返回陈旧收割
+  文本（partial-text 语义决策）、runTurn 墙钟触发沿用 first-token 文案、
+  listFiles 对非目录 topics 条目的 ENOTDIR 防线、memory pending/reviews.log
+  磁盘无界、materializePiConf/writeKeys 的 fsync 一致性。
 - 2026-11-05 v0.11：M2-C（预算停机）6 轮 review 收敛后按实现落文——§5.3
   固化：sticky stop + rearm 时机（不充分提额不 rearm 同一违约）、恢复三
   路径（用户消息不可解除 budget 暂停）、`pausedAt` durable 月戳语义（严格
