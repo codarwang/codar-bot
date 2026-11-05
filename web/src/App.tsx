@@ -53,6 +53,7 @@ export function App(): JSX.Element {
   const [statuses, setStatuses] = useState<Record<string, string>>({});
   const [failures, setFailures] = useState<Record<string, string>>({});
   const [sse, setSse] = useState<"connecting" | "live" | "reconnecting">("connecting");
+  const [approvalErrors, setApprovalErrors] = useState<Record<string, string>>({});
   const [ctxOpen, setCtxOpen] = useState(true);
   const [rosterOpen, setRosterOpen] = useState(true);
 
@@ -178,6 +179,11 @@ export function App(): JSX.Element {
           .catch(() => undefined);
         void jsonFetch<{ messages: RoomMessage[] }>(`/api/rooms/${cur}/messages?since=${lastSeqRef.current}`)
           .then((r) => {
+            // Same guard as the history fetch: a reconnect fetch in flight
+            // while the user switches rooms must not append the OLD room's
+            // messages into the new timeline (per-room seq spaces make the
+            // seq dedupe and the watermark blind to the mix — R5 P1).
+            if (roomRef.current !== cur) return;
             if (r.messages.length === 0) return;
             setMessages((prev) => {
               const seen = new Set(prev.map((m) => m.seq));
@@ -306,11 +312,16 @@ export function App(): JSX.Element {
     on("approvalResolved", (d) => {
       const r = d as { id: string; confirmed: boolean; stale?: boolean };
       setApprovals((prev) => prev.map((a) => (a.id === r.id ? { ...a, resolved: true, outcome: r.confirmed, stale: r.stale === true } : a)));
+      setApprovalErrors((prev) => {
+        if (prev[r.id] === undefined) return prev;
+        const next = { ...prev };
+        delete next[r.id];
+        return next;
+      });
     });
     return () => es.close();
   }, [refreshOverview, refreshBudget]);
 
-  const [approvalErrors, setApprovalErrors] = useState<Record<string, string>>({});
   const resolveApproval = async (id: string, confirmed: boolean): Promise<void> => {
     setApprovalErrors((prev) => {
       if (prev[id] === undefined) return prev;
@@ -328,7 +339,10 @@ export function App(): JSX.Element {
       // staling it would lie about a still-parked approval (R4 P2).
       if ((e as { status?: number }).status === 404) {
         setApprovals((prev) =>
-          prev.map((a) => (a.id === id ? { ...a, resolved: true, outcome: false, stale: true } : a))
+          // Never downgrade: a double-click whose first resolve SUCCEEDED can
+          // 404 on the second — the SSE settle (allowed) already landed and
+          // must win over the stale text (R5 P3).
+          prev.map((a) => (a.id === id && a.resolved !== true ? { ...a, resolved: true, outcome: false, stale: true } : a))
         );
         return;
       }
