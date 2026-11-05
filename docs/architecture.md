@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 版本 | v0.12（M2-A/B/C/D 已落地；记忆系统按 M2-D 实现固化） |
+| 版本 | v0.13（M2 全部落地；UI 三区工作站 + 审批桥按 M2-E 实现固化） |
 | 日期 | 2026-11-05 |
 | 上游 | `docs/PRD.md` v1.4（需求权威；冲突时以 PRD 为准并走修订） |
 | 证据基线 | pi 1.5.0（`@earendil-works/*` npm 包类型与源码逐字节读取，2026-11-04/05）+ WorkerOS `pi-adapter.ts` 实战注释（只读捐献） |
@@ -560,6 +560,15 @@ GET  /api/events                   # SSE：message|progress|approval|budget|syst
 
 ## 修订记录
 
+- 2026-11-06 v0.13：M2-E（UI 三区工作站，6 轮 review 收敛）落文——§7 增：审批桥
+  `POST /api/approvals/:id/resolve`（confirm 请求 park → SSE `approval`（宿主自
+  生成 `apr_*` id，子进程 id 仅作回复凭据）→ resolve；宿主重启/停机/崩溃路径
+  全部清退为 `approvalResolved{stale}`，绝不静默拒绝或假 allowed）；budget
+  GET 行增 `turns` 已用数与群自身 memory-review 行（meter 口径=执法窗口）；
+  SSE 事件增补 `approval`/`approvalResolved`/`work`/`progress`（后两者携带
+  roomId+task，跨群卡片归对群）。UI 实现契约见 `docs/ui-design.md` v1.3
+  （实现红线 §10a 已验证：真实 Chromium 几何探针全过）。M2 至此全部落地，
+  进入 dogfood 闸门（PRD 2.6）。
 - 2026-11-05 v0.12：M2-D（记忆）5 轮 review 收敛后按实现落文——新增 §5.6
   记忆系统（三作用域固定分层、快照冻结注入语义、rename 认领 + 孤儿合并的
   pending 机制、单飞 + 批量阈值 + 递增冷却、无 model 门控防事件循环饿死、
