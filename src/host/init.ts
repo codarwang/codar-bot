@@ -75,13 +75,12 @@ export function initTeam(input: InitInput): InitResult {
         sandbox: { mode: "host-not-isolated" },
         budget: defaultBudget(),
       });
-    } else if (
-      chief.model.provider !== input.provider ||
-      chief.model.modelId !== input.modelId ||
-      chief.model.thinkingLevel !== model.thinkingLevel
-    ) {
-      chief = store.updateBot(chief.id, { model }); // full triple compare
     }
+    // A LATER init only adds/updates the KEY. It must never rewrite the
+    // chief's model: "register a second provider" and "switch the chief to
+    // it" are different intents — model changes go through PATCH (or the
+    // UI), not as a side effect of key entry (found in real dual-provider
+    // use, 2026-11-05).
     const room =
       store.state.rooms.find((r) => r.name === "default") ??
       store.addRoom({
