@@ -31,20 +31,28 @@ export function initTeam(input: InitInput): InitResult {
   for (const dir of [p.root, p.piConfRoot, p.memoryRoot, p.roomsRoot, p.logs, join(p.root, "work")]) {
     mkdirSync(dir, { recursive: true });
   }
-  // 1. keys.json (merge — init is re-runnable for a second provider).
-  const keys: KeysDoc = loadKeys(p.keys);
-  const keyExisted = keys.providers[input.provider]?.apiKey !== undefined;
-  keys.providers[input.provider] = {
-    ...keys.providers[input.provider],
-    apiKey: input.apiKey,
-    ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
-  };
-  writeKeys(p.keys, keys);
+  // Provider names become keys.json members and pi provider ids — restrict
+  // to a safe charset (blocks __proto__/constructor prototype escapes).
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.provider)) {
+    throw new Error(`invalid provider name "${input.provider}" (use [A-Za-z0-9._-])`);
+  }
 
-  // 2. Chief bot + default room (single-chief invariant: idempotent re-init
-  //    keeps the existing chief, only updates the model if given).
-  const store = Store.openExclusive(p.state, { create: true }); // single-writer vs a live host
+  // Take the single-writer lock FIRST: a locked-out init must leave NOTHING
+  // behind (previously the key was written before the lock threw).
+  const store = Store.openExclusive(p.state, { create: true });
   try {
+    // 1. keys.json (merge — init is re-runnable for a second provider).
+    const keys: KeysDoc = loadKeys(p.keys);
+    const keyExisted = Object.hasOwn(keys.providers, input.provider) &&
+      keys.providers[input.provider]!.apiKey !== undefined;
+    keys.providers[input.provider] = {
+      ...(Object.hasOwn(keys.providers, input.provider) ? keys.providers[input.provider] : {}),
+      apiKey: input.apiKey,
+      ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
+    };
+    writeKeys(p.keys, keys);
+
+    // 2. Chief bot + default room (single-chief invariant: idempotent).
     const model: BotModelRef = {
       provider: input.provider,
       modelId: input.modelId,

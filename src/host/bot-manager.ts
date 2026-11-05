@@ -150,28 +150,28 @@ export class BotManager extends EventEmitter {
     m.pendingFailure = null;
     this.setStatus(m, "starting");
 
-    // env merges DEEPLY (defaults < override < provider chain), unlike the
-    // rest of spawn options which the override replaces wholesale.
+    // env merges DEEPLY; the provider chain is spread LAST (highest
+    // priority): keys.json is the tracked source of credentials and must not
+    // be silently shadowed by spawn env (R2 P3).
     const spawn = {
       ...this.spawnDefaults,
       ...spawnOverride,
       env: { ...this.spawnDefaults.env, ...spawnOverride.env },
     };
-    // §3.3: standard providers inject their env var; custom providers get a
-    // models.json with $CODAR_BOT_KEY interpolation (secret never on disk).
-    // Keys are re-read per start; materialization lives INSIDE the try so an
-    // IO failure re-enters the recovery funnel (R1 P2-1).
-    const keys = this.keysPath !== null ? loadKeys(this.keysPath) : { providers: {} };
-    const cfg: BotSpawnConfig = buildSpawnConfig(keys, this.dataRoot, botId, bot.model.provider);
-    materializePiConf(cfg);
-    spawn.env = { ...cfg.env, ...spawn.env, PI_CODING_AGENT_DIR: cfg.piConfDir };
-    // Everything that can fail — including BEFORE the client exists (mkdir
-    // ENOENT etc.) — lives inside this try: pre-client failures must re-enter
-    // the recovery funnel, not strand a parked baton (R5 P3-2).
+    // Everything that can fail — including BEFORE the client exists (keys
+    // load, mkdir, models.json writes) — lives inside this try: pre-client
+    // failures must re-enter the recovery funnel, not strand a parked baton
+    // (R1 P2-1 / R5 P3-2).
     let client: RpcClient;
     try {
-      mkdirSync(botPiConfDir(this.dataRoot, botId), { recursive: true });
+      // §3.3 chain (inside the funnel): keys re-read per start; standard
+      // providers inject their env var; custom providers get a models.json
+      // with $CODAR_BOT_KEY interpolation (secret never on disk).
+      const keys = this.keysPath !== null ? loadKeys(this.keysPath) : { providers: {} };
+      const cfg: BotSpawnConfig = buildSpawnConfig(keys, this.dataRoot, botId, bot.model.provider);
+      materializePiConf(cfg);
       mkdirSync(bot.workDir, { recursive: true });
+      spawn.env = { ...spawn.env, ...cfg.env, PI_CODING_AGENT_DIR: cfg.piConfDir };
       client = new RpcClient({
         bin: spawn.bin,
         argvPrefix: spawn.sandboxArgv,

@@ -51,10 +51,10 @@ export function loadKeys(keysPath: string): KeysDoc {
   try {
     doc = JSON.parse(readFileSync(keysPath, "utf8")) as KeysDoc;
   } catch (error) {
-    throw new Error(`keys at ${keysPath} is not valid JSON (${String(error).slice(0, 120)})`);
+    throw new Error(`server config error: keys.json at ${keysPath} is not valid JSON (${String(error).slice(0, 120)})`);
   }
   if (typeof doc !== "object" || doc === null || typeof doc.providers !== "object") {
-    throw new Error("keys.json must be {providers: {...}}");
+    throw new Error("server config error: keys.json must be {providers: {...}}");
   }
   return doc;
 }
