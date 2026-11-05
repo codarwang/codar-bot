@@ -50,6 +50,7 @@ const transcript = [];
 let sessionFile = process.env.FAKE_PI_SESSION_FILE ?? null;
 let autoRetry = true;
 let pendingPark = null;
+let pendingMessageBot = null;
 
 function respond(id, command, data) {
   out({ id, type: "response", command, success: true, data });
@@ -60,6 +61,28 @@ function fail(id, command, error) {
 
 async function runPrompt(id, message) {
   void id;
+  if (message.includes("DISPATCH")) {
+    // Chief-like turn: call the message_bot tool — the gate parks it on the
+    // ui bridge (input dialog with the codar: title), then the host Handoff
+    // answers; the tool result is recorded and the turn settles.
+    respond(id, "prompt", { disposition: "started" });
+    out({ type: "agent_start" });
+    out({ type: "turn_start" });
+    out({ type: "message_start", message: { role: "system", content: "" } });
+    out({ type: "message_end", message: { role: "system", content: "" } });
+    const callId = `call-dispatch-${++seq}`;
+    const target = process.env.FAKE_PI_MB_TARGET ?? "Writer";
+    out({ type: "message_start", message: { role: "assistant" } });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "message_bot", args: { to: target, task: "draft the weekly report" } });
+    out({
+      type: "extension_ui_request", id: `mb-${++seq}`, method: "input",
+      title: "codar:message_bot",
+      placeholder: JSON.stringify({ to: target, task: "Reply with the single word BRAVO.", request_id: "" }),
+    });
+    pendingMessageBot = { callId };
+    return;
+  }
+
   if (message.includes("SLOW")) {
     // Deterministic long run: started → 1.5s of silence → settle with OK.
     transcript.push({ role: "user", content: message });
@@ -173,6 +196,24 @@ process.stdin.on("data", (chunk) => {
     }
     if (cmd.type === "extension_ui_response") {
       if (pendingPark !== null && cmd.id === pendingPark) finishParked(cmd.confirmed === true);
+      if (pendingMessageBot !== null && typeof cmd.value === "string") {
+        const mb = pendingMessageBot;
+        pendingMessageBot = null;
+        let ok = false; let text = "rejected";
+        try {
+          const parsed = JSON.parse(cmd.value);
+          ok = parsed?.status === "ok";
+          text = ok ? `accepted — work ${parsed.workId}` : `rejected — ${parsed.error ?? "?"}`;
+        } catch { ok = false; }
+        lastText = `DISPATCHED:${ok ? "ok" : "no"}`;
+        transcript.push({ role: "assistant", content: [{ type: "text", text: lastText }] });
+        out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: lastText }], stopReason: "stop", usage: usage(8, 4) } });
+        out({ type: "tool_execution_end", toolCallId: mb.callId });
+        out({ type: "message_end", message: { role: "toolResult", content: [{ type: "text", text }] } });
+        out({ type: "turn_end" });
+        out({ type: "agent_end" });
+        out({ type: "agent_settled", aborted: false });
+      }
       continue;
     }
     const { id, type } = cmd;

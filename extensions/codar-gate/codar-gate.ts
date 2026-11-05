@@ -49,6 +49,9 @@ const CONFIRM_TITLE = "codar-gate: approval required";
 /** S2 criterion ② marker: structured dispatch over the ui bridge (D1). */
 export const BRIDGE_ECHO_TITLE = "codar:bridge-echo";
 const BRIDGE_ECHO_TOOL = "bridge_echo";
+/** M2-B D1: the bot-to-bot dispatch bridge title. */
+export const MESSAGE_BOT_TITLE = "codar:message_bot";
+const MESSAGE_BOT_TOOL = "message_bot";
 const REASON_MAX = 256;
 
 function boundedReason(text: string): string {
@@ -105,6 +108,63 @@ export default function codarGate(pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     try {
+      // message_bot branch — BEFORE the rule engine (§3.1/§6.2 D1): the
+      // dispatch parks on ctx.ui.input; params (to/task/request_id) go OUT
+      // as placeholder JSON, the host's Handoff module answers {workId} (or
+      // an error string for cycle/unknown rejections the model must see).
+      if (event.toolName === "message_bot") {
+        const args = (typeof event.input === "object" && event.input !== null ? event.input : {}) as {
+          to?: unknown; task?: unknown; request_id?: unknown;
+        };
+        audit.append(
+          toolCallEntry({
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            input: event.input,
+            action: "gate",
+            ruleId: "gate:tool:message_bot",
+          })
+        );
+        if (!ctx.hasUI) {
+          return {
+            block: true,
+            reason: boundedReason("codar-gate: message_bot requires a UI channel and none is available (fail-closed)"),
+          };
+        }
+        const outbound = JSON.stringify({
+          to: typeof args.to === "string" ? args.to : "",
+          task: typeof args.task === "string" ? args.task : "",
+          request_id: typeof args.request_id === "string" ? args.request_id : "",
+        });
+        const answer = await ctx.ui.input("codar:message_bot", outbound);
+        if (answer === undefined) {
+          return {
+            block: true,
+            reason: boundedReason("codar-gate: message_bot cancelled by host — no dispatch happened"),
+          };
+        }
+        let ok: boolean; let body: string;
+        try {
+          const parsed = JSON.parse(answer) as { status?: string; workId?: string; error?: string };
+          ok = parsed?.status === "ok" && typeof parsed.workId === "string";
+          body = ok ? `accepted — work ${parsed.workId}` : `rejected — ${parsed.error ?? "unknown reason"}`;
+        } catch {
+          ok = false;
+          body = "rejected — host bridge reply was not JSON";
+        }
+        audit.append({
+          kind: "approval",
+          ts: nowIso(),
+          toolCallId: event.toolCallId,
+          approved: ok,
+          waitedMs: 0,
+        });
+        if (!ok) {
+          return { block: true, reason: boundedReason(`codar-gate: message_bot ${body}`) };
+        }
+        return undefined;
+      }
+
       // bridge_echo branch — BEFORE the rule engine: the structured
       // round-trip parks on ctx.ui.input (params out as placeholder JSON,
       // host reply back as the value), the memo records the outcome, and the
@@ -238,6 +298,32 @@ export default function codarGate(pi: ExtensionAPI): void {
     } catch (error) {
       console.error(`[codar-gate] usage audit failed: ${String(error).slice(0, 160)}`);
     }
+  });
+
+  // message_bot tool registration — the model-facing dispatch surface (D1).
+  // The tool_call branch above parks it on the ui bridge; this execute body
+  // only REPORTS the accepted work id (recorded by the branch above).
+  pi.registerTool({
+    name: MESSAGE_BOT_TOOL,
+    label: "Message Bot",
+    description:
+      "Send a task to another bot in your team. The host dispatches it (work tree, cycle-safe, idempotent by request_id); you get the work id immediately and the result is delivered back to you / the room when it finishes.",
+    parameters: Type.Object({
+      to: Type.String({ description: "Target bot name (exact, case-sensitive)" }),
+      task: Type.String({ description: "What the target bot should do (1..4096 bytes)" }),
+      request_id: Type.Optional(Type.String({ description: "Idempotency key: same id = same work, never re-run" })),
+    }) as ToolDefinition["parameters"],
+    async execute(toolCallId, _params) {
+      void toolCallId;
+      // The tool_call branch ran BEFORE this body and recorded the outcome in
+      // its audit line; the model-facing result text is produced there. This
+      // body mirrors the accepted-shape so pi's transcript stays consistent.
+      return {
+        isError: false,
+        details: undefined,
+        content: [{ type: "text", text: JSON.stringify({ status: "dispatched" }) }],
+      };
+    },
   });
 
   // S2 criterion ② — the report half of the ask_user pattern: the dialog

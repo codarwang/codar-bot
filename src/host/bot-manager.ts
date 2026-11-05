@@ -101,6 +101,14 @@ export class BotManager extends EventEmitter {
     this.spawnDefaults = spawnDefaults;
   }
 
+  /** M2-B: the handoff dispatcher — late-bound by Host after construction
+   *  (Handoff's ctor takes this manager; late binding breaks the cycle). */
+  handoff: {
+    dispatch(req: {
+      fromBot: string; toBot: string; task: string; requestId: string; roomId: string | null;
+    }): Promise<{ workId: string; duplicate: boolean }>;
+  } | null = null;
+
   status(botId: string): BotStatus {
     return this.bots.get(botId)?.status ?? "stopped";
   }
@@ -457,6 +465,13 @@ export class BotManager extends EventEmitter {
   }
 
   private handleUi(client: RpcClient, req: UiRequest): void {
+    // M2-B: message_bot dispatches ride the ui bridge as input dialogs with
+    // the codar: prefix (the D1 channel S2 proved).
+    if (req.method === "input" && req.title === "codar:message_bot") {
+      const botId = this.botIdOf(client);
+      void this.dispatchMessageBot(client, req, botId);
+      return;
+    }
     // M1-A slice: no approval surface yet. CODAR_M1_AUTOAPPROVE=1 (tests and
     // spikes only) auto-approves confirms; otherwise requests park until an
     // approval surface exists (Web UI approval cards — M3 per §5.4; the M1
@@ -465,6 +480,65 @@ export class BotManager extends EventEmitter {
     if (process.env.CODAR_M1_AUTOAPPROVE === "1" && req.method === "confirm") {
       client.replyUi({ type: "extension_ui_response", id: req.id, confirmed: true });
     }
+  }
+
+  private botIdOf(client: RpcClient): string | null {
+    for (const [botId, m] of this.bots) {
+      if (m.client === client) return botId;
+    }
+    return null;
+  }
+
+  private async dispatchMessageBot(client: RpcClient, req: UiRequest, botId: string | null): Promise<void> {
+    const reply = (status: "ok" | "error", extra: Record<string, string>): void => {
+      client.replyUi({
+        type: "extension_ui_response",
+        id: req.id,
+        value: JSON.stringify({ status, ...extra }),
+      });
+    };
+    if (this.handoff === null || botId === null) {
+      reply("error", { error: "host dispatch unavailable" });
+      return;
+    }
+    let parsed: { to?: string; task?: string; request_id?: string };
+    try {
+      parsed = JSON.parse(req.placeholder ?? "{}") as typeof parsed;
+    } catch {
+      reply("error", { error: "malformed message_bot payload" });
+      return;
+    }
+    const task = (parsed.task ?? "").trim();
+    if (task.length === 0 || task.length > 4096) {
+      reply("error", { error: "task must be 1..4096 bytes" });
+      return;
+    }
+    // The model addresses bots by NAME; the work tree keys on id.
+    const toName = parsed.to ?? "";
+    const target = this.store.state.bots.find((b) => b.name === toName)?.id ?? toName;
+    // Default idempotency key: (from,to,task-prefix) — a model retry of the
+    // same dispatch gets the SAME work, never a re-run (§6.2).
+    const requestId =
+      parsed.request_id?.trim() || `mb:${botId}:${target}:${task.slice(0, 64)}`;
+    try {
+      const { workId } = await this.handoff.dispatch({
+        fromBot: botId,
+        toBot: target,
+        task,
+        requestId,
+        roomId: this.roomOf(botId),
+      });
+      reply("ok", { workId });
+    } catch (error) {
+      reply("error", { error: String(error).slice(0, 200) });
+    }
+  }
+
+  /** The (single) room a bot belongs to — M2 bots join one room; the handoff
+   *  result line lands there. */
+  private roomOf(botId: string): string | null {
+    const room = this.store.state.rooms.find((r) => r.members.includes(botId));
+    return room?.id ?? null;
   }
 
   private onEvent(bot: BotRecord, client: RpcClient, e: AgentEvent): void {
