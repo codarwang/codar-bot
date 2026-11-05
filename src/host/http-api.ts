@@ -294,7 +294,11 @@ export class HttpApi {
             this.deps.store.state.bots.some((b) => b.name === patch.name)) {
           throw new ApiError(409, `bot name "${patch.name}" already in use`);
         }
-        this.send(res, 200, this.deps.store.updateBot(id, patch));
+        const updated = this.deps.store.updateBot(id, patch);
+        // Budget edits re-arm the sticky stop here too (M2-C R3 P2 — the
+        // dedicated budget PUT re-armed, this route silently didn't).
+        if (patch.budget !== undefined) this.deps.budget.rearm("bot", id);
+        this.send(res, 200, updated);
         return;
       }
       if (req.method === "POST" && id !== undefined && action === "start") {
@@ -462,27 +466,33 @@ export class HttpApi {
           if (room === undefined) throw new ApiError(404, `no room ${id}`);
           const nextBudget = { ...room.budget, ...patch };
           this.deps.store.updateRoom(id, { budget: nextBudget });
-          // A new limit re-arms the window's enforcement (M2-C R2 P2-2).
-          this.deps.budget.rearm("room", id);
           // Resume ONLY when the new limit actually clears this month's usage
           // (M2-C R1 P2: an unconditional resume un-pauses a still-over room).
-          if (room.status === "paused" && room.pauseReason === "budget") {
+          // The sticky stop re-arms under the same rule (M2-C R3 P2): an
+          // unconditional re-arm on an insufficient raise re-enables the SAME
+          // breach — a phantom second pause ceremony on the next ledger write.
+          const underBudgetStop = room.status === "paused" && room.pauseReason === "budget";
+          let clears = true;
+          if (underBudgetStop) {
             const sinceHour = monthStartHour();
             let micros = 0; let tokens = 0;
             for (const m of room.members) {
               const totals = this.deps.ledger.totals({ botId: m, sinceHour });
               for (const row of totals) { tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros; }
             }
-            const clears =
+            clears =
               (nextBudget.maxTokens <= 0 || tokens < nextBudget.maxTokens) &&
               (nextBudget.maxCostMicros <= 0 || micros < nextBudget.maxCostMicros) &&
               // Turns dimension: this month's settles must sit below the new
               // limit too (M2-C R2 P2-2 — a turns-paused room with a raised
               // token limit stays paused otherwise).
               (nextBudget.maxTurns <= 0 || this.deps.budget.turnsThisMonth("room", id) < nextBudget.maxTurns);
-            if (clears) {
-              this.deps.rooms.resume(id, "budget adjusted — room resumed");
-            }
+          }
+          if (!underBudgetStop || clears) {
+            this.deps.budget.rearm("room", id);
+          }
+          if (underBudgetStop && clears) {
+            this.deps.rooms.resume(id, "budget adjusted — room resumed");
           }
           this.send(res, 200, this.deps.store.room(id)!.budget);
           return;

@@ -431,15 +431,17 @@ export class BotManager extends EventEmitter {
     } catch {
       /* best-effort persistence; next successful prompt retries */
     }
-    let text = "";
+    let text: string | null = null;
     try {
       // Harvest FIRST, flip idle LAST (M2-B R1 P1-1): no concurrent prompt
       // can start a turn in this window and overwrite the lastText we read.
+      // null = the harvest did NOT succeed (command failed or bad shape) —
+      // distinct from a genuinely empty "" reply, so the idle flip below can
+      // report "harvest failure" honestly (M2-C R3 P3: the check was dead).
       const last = await client.command({ type: "get_last_assistant_text" } as Record<string, unknown>);
-      text =
-        last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
-          ? (last.data as { text: string }).text
-          : "";
+      if (last.success && typeof (last.data as { text?: unknown } | null)?.text === "string") {
+        text = (last.data as { text: string }).text;
+      }
     } finally {
       // The harvest await can reject on a LIVE child (command timeout / stdin
       // failure) — without this guard the bot stays "working" forever and the
