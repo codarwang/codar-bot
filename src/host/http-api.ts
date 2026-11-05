@@ -14,6 +14,14 @@ import { resolve, relative, isAbsolute, sep, join } from "node:path";
 import { ApiError } from "./http-error.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/** UTC calendar-month start as a ledger `hour` string (§6.1a window). */
+function monthStartHour(): string {
+  const d = new Date();
+  d.setUTCDate(1);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString().slice(0, 13);
+}
 /** Shared POST/PATCH model validation (R5: the PATCH copy had drifted out
  *  of existence — one validator, both routes). */
 function validateModel(model: unknown): BotRecord["model"] {
@@ -397,16 +405,28 @@ export class HttpApi {
     }
 
     if (resource === "budget") {
-      if (req.method === "GET" && parts.length === 3) {
-        this.send(res, 200, { scope: "all" });
+      if (req.method === "GET" && parts.length === 2) {
+        // Collection: summarize every scope's current-month usage.
+        const sinceHour = monthStartHour();
+        const scopes: Array<Record<string, unknown>> = [];
+        for (const b of this.deps.store.state.bots) {
+          const totals = this.deps.ledger.totals({ botId: b.id, sinceHour });
+          scopes.push(this.budgetRow("bot", b.id, totals, b.budget));
+        }
+        for (const r of this.deps.store.state.rooms) {
+          let tokens = 0; let micros = 0;
+          for (const m of r.members) {
+            const totals = this.deps.ledger.totals({ botId: m, sinceHour });
+            for (const row of totals) { tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros; }
+          }
+          scopes.push({ scope: "room", id: r.id, month: sinceHour.slice(0, 7), tokens, costMicros: micros, budget: r.budget });
+        }
+        this.send(res, 200, scopes);
         return;
       }
       if (req.method === "GET" && id !== undefined && action === undefined) {
-        // /api/budget/bot_xxx or /api/budget/room_xxx — report month usage.
         const scope = id.startsWith("room_") ? "room" : "bot";
-        const since = new Date();
-        since.setUTCDate(1); since.setUTCHours(0, 0, 0, 0);
-        const sinceHour = since.toISOString().slice(0, 13);
+        const sinceHour = monthStartHour();
         const memberIds = scope === "room" ? (this.deps.store.room(id)?.members ?? []) : [id];
         let tokens = 0; let micros = 0;
         for (const m of memberIds) {
@@ -435,10 +455,23 @@ export class HttpApi {
         if (id.startsWith("room_")) {
           const room = this.deps.store.room(id);
           if (room === undefined) throw new ApiError(404, `no room ${id}`);
-          this.deps.store.updateRoom(id, { budget: { ...room.budget, ...patch } });
-          // A limit raise resumes a budget-paused room (§5.3 recovery).
+          const nextBudget = { ...room.budget, ...patch };
+          this.deps.store.updateRoom(id, { budget: nextBudget });
+          // Resume ONLY when the new limit actually clears this month's usage
+          // (M2-C R1 P2: an unconditional resume un-pauses a still-over room).
           if (room.status === "paused" && room.pauseReason === "budget") {
-            this.deps.rooms.resume(id, "budget adjusted — room resumed");
+            const sinceHour = monthStartHour();
+            let micros = 0; let tokens = 0;
+            for (const m of room.members) {
+              const totals = this.deps.ledger.totals({ botId: m, sinceHour });
+              for (const row of totals) { tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros; }
+            }
+            const clears =
+              (nextBudget.maxTokens <= 0 || tokens < nextBudget.maxTokens) &&
+              (nextBudget.maxCostMicros <= 0 || micros < nextBudget.maxCostMicros);
+            if (clears) {
+              this.deps.rooms.resume(id, "budget adjusted — room resumed");
+            }
           }
           this.send(res, 200, this.deps.store.room(id)!.budget);
           return;
@@ -487,6 +520,12 @@ export class HttpApi {
       clearInterval(ping);
       this.sseClients.delete(client);
     });
+  }
+
+  private budgetRow(scope: string, id: string, totals: Array<{ input: number; output: number; cacheRead: number; cacheWrite: number; costMicros: number }>, budget: { maxTokens: number; maxCostMicros: number }): Record<string, unknown> {
+    let tokens = 0; let micros = 0;
+    for (const r of totals) { tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros; }
+    return { scope, id, month: monthStartHour().slice(0, 7), tokens, costMicros: micros, budget };
   }
 
   private readJson(req: IncomingMessage): Promise<unknown> {

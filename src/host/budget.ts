@@ -38,10 +38,21 @@ export function monthKey(now = new Date()): string {
 
 const WARN_PCT = 80;
 
+/** Per-scope monthly enforcement state (window bookkeeping + sticky). */
+interface ScopeState {
+  /** Turns settled this month (§6.1a maxTurns). */
+  turns: number;
+  /** Already stopped/paused this window (sticky — §5.3). */
+  stopped: boolean;
+  /** The month these counters belong to (rollover resets). */
+  month: string;
+}
+
 export class Budget extends EventEmitter {
   private readonly auditPath: string;
   /** month × scope already warned at (one warn per window per scope). */
   private readonly warned = new Set<string>();
+  private readonly scopes = new Map<string, ScopeState>();
 
   constructor(
     private readonly store: Store,
@@ -52,10 +63,69 @@ export class Budget extends EventEmitter {
   ) {
     super();
     this.auditPath = join(dataRoot, "audit.jsonl");
-    // Hook: after every usage write, check the writing bot's windows.
+    // Hook: after every usage write, check the writing bot's windows. A
+    // failed check is AUDITED, never swallowed (M2-C R1 P2-6).
     ledger.onRecord = (botId: string) => {
-      void this.checkBot(botId).catch(() => undefined);
+      this.checkBot(botId).catch((error: unknown) => {
+        this.audit({ kind: "budget-check-error", botId, error: String(error).slice(0, 200) });
+      });
     };
+    // Turns dimension: every settle counts (bot + its rooms).
+    bots.on("status", (e: { botId: string; status: string; detail?: string }) => {
+      if (e.status !== "idle" || e.detail === "prompt failed" || e.detail === "harvest failure") return;
+      this.onSettled(e.botId);
+    });
+  }
+
+  /** A bot turn settled (idle transition from a working state). */
+  private onSettled(botId: string): void {
+    const bot = this.store.bot(botId);
+    if (bot === undefined) return;
+    const st = this.scope(`bot:${botId}`);
+    st.turns += 1;
+    this.checkTurns("bot", botId, st.turns, bot.budget.maxTurns);
+    for (const room of this.store.state.rooms) {
+      if (!room.members.includes(botId)) continue;
+      const rs = this.scope(`room:${room.id}`);
+      rs.turns += 1;
+      this.checkTurns("room", room.id, rs.turns, room.budget.maxTurns);
+    }
+  }
+
+  private scope(key: string): ScopeState {
+    const month = monthKey();
+    let st = this.scopes.get(key);
+    if (st === undefined || st.month !== month) {
+      // Month rollover: fresh window resets counters AND the sticky stop
+      // (§5.3 "次月自动恢复") and re-arms the warn line.
+      st = { turns: 0, stopped: false, month };
+      this.scopes.set(key, st);
+      for (const w of [...this.warned]) {
+        if (w.endsWith(`:${key.split(":")[1]}`) === false) continue;
+      }
+      // Re-arm warns whose scope matches this key.
+      for (const w of [...this.warned]) {
+        const parts = w.split(":");
+        if (parts[1] === key.split(":")[0] && parts[2] === key.split(":")[1]) this.warned.delete(w);
+      }
+      // Resume a budget-paused room on rollover.
+      if (key.startsWith("room:")) {
+        const roomId = key.slice(5);
+        const room = this.store.room(roomId);
+        if (room?.status === "paused" && room.pauseReason === "budget") {
+          try { this.rooms.resume(roomId, "new month — budget window reset"); } catch { /* shutting down */ }
+        }
+      }
+    }
+    return st;
+  }
+
+  /** Per-task wall clock (§6.1a maxWallMs): returns a stop-at deadline for
+   *  the caller (room-engine / handoff) to enforce on their turn. */
+  wallDeadlineMs(botId: string): number | null {
+    const bot = this.store.bot(botId);
+    if (bot === undefined || bot.budget.maxWallMs <= 0) return null;
+    return bot.budget.maxWallMs;
   }
 
   /**
@@ -95,10 +165,13 @@ export class Budget extends EventEmitter {
   /** Turn-dimension check: called per agent_settled (§6.1a maxTurns). */
   checkTurns(scope: "bot" | "room", id: string, turns: number, limit: number): void {
     if (limit <= 0) return;
+    const st = this.scope(`${scope}:${id}`);
     const pct = Math.round((turns / limit) * 100);
     if (pct >= 100) {
-      this.emit("budget", { scope, id, dimension: "turns", used: turns, limit, pct, level: "stop" });
-      this.stopFor(scope, id, "turns", turns, limit);
+      if (!st.stopped) {
+        this.emit("budget", { scope, id, dimension: "turns", used: turns, limit, pct, level: "stop" });
+        this.stopFor(scope, id, "turns", turns, limit);
+      }
     } else if (pct >= WARN_PCT) {
       this.warnOnce(scope, id, "turns", turns, limit, pct);
     }
@@ -113,13 +186,15 @@ export class Budget extends EventEmitter {
     usedTokens: number,
     usedMicros: number
   ): void {
-    const month = monthKey();
+    const st = this.scope(`${scope}:${id}`);
     // Token dimension.
     if (budget.maxTokens > 0) {
       const pct = Math.round((usedTokens / budget.maxTokens) * 100);
       if (pct >= 100) {
-        this.emit("budget", { scope, id, dimension: "tokens", used: usedTokens, limit: budget.maxTokens, pct, level: "stop" });
-        this.stopFor(scope, id, "tokens", usedTokens, budget.maxTokens);
+        if (!st.stopped) {
+          this.emit("budget", { scope, id, dimension: "tokens", used: usedTokens, limit: budget.maxTokens, pct, level: "stop" });
+          this.stopFor(scope, id, "tokens", usedTokens, budget.maxTokens);
+        }
       } else if (pct >= WARN_PCT) {
         this.warnOnce(scope, id, "tokens", usedTokens, budget.maxTokens, pct);
       }
@@ -128,13 +203,14 @@ export class Budget extends EventEmitter {
     if (budget.maxCostMicros > 0) {
       const pct = Math.round((usedMicros / budget.maxCostMicros) * 100);
       if (pct >= 100) {
-        this.emit("budget", { scope, id, dimension: "cost", used: usedMicros, limit: budget.maxCostMicros, pct, level: "stop" });
-        this.stopFor(scope, id, "cost", usedMicros, budget.maxCostMicros);
+        if (!st.stopped) {
+          this.emit("budget", { scope, id, dimension: "cost", used: usedMicros, limit: budget.maxCostMicros, pct, level: "stop" });
+          this.stopFor(scope, id, "cost", usedMicros, budget.maxCostMicros);
+        }
       } else if (pct >= WARN_PCT) {
         this.warnOnce(scope, id, "cost", usedMicros, budget.maxCostMicros, pct);
       }
     }
-    void month;
   }
 
   private warnOnce(
@@ -150,14 +226,34 @@ export class Budget extends EventEmitter {
   }
 
   private stopFor(scope: "bot" | "room", id: string, dim: string, used: number, limit: number): void {
-    // Sticky: only stop when not already stopped/paused for this window.
+    const st = this.scope(`${scope}:${id}`);
+    st.stopped = true; // sticky within the window (M2-C R1 P2-4)
     if (scope === "bot") {
-      void this.bots.stop(id).catch(() => undefined);
+      // A failed stop is AUDITED as a failure — the audit never lies
+      // (M2-C R1 P2-6).
+      this.bots.stop(id)
+        .then(() => {
+          this.audit({ kind: "budget-stop", scope, id, dimension: dim, used, limit, stopResult: "stopped" });
+        })
+        .catch((error: unknown) => {
+          this.audit({ kind: "budget-stop", scope, id, dimension: dim, used, limit, stopResult: "stop-failed", error: String(error).slice(0, 160) });
+        });
       this.broadcast("bot", id, `⛔ BUDGET STOPPED — ${this.nameOf("bot", id)}: ${dim} ${used}/${limit} this month, bot stopped (§5.3)`);
     } else {
-      this.rooms.pause(id, "budget", `⛔ ROOM PAUSED — budget exhausted (${dim} ${used}/${limit} this month)`);
+      // §5.3 group stop: abort every WORKING member, then pause the room.
+      for (const m of this.store.room(id)?.members ?? []) {
+        const status = this.bots.status(m);
+        if (status === "working" || status === "starting") {
+          void this.bots.interrupt(m).catch(() => undefined);
+        }
+      }
+      try {
+        this.rooms.pause(id, "budget", `⛔ ROOM PAUSED — budget exhausted (${dim} ${used}/${limit} this month)`);
+        this.audit({ kind: "budget-stop", scope, id, dimension: dim, used, limit, stopResult: "paused" });
+      } catch (error) {
+        this.audit({ kind: "budget-stop", scope, id, dimension: dim, used, limit, stopResult: "pause-failed", error: String(error).slice(0, 160) });
+      }
     }
-    this.audit({ kind: "budget-stop", scope, id, dimension: dim, used, limit });
   }
 
   private broadcast(scope: "bot" | "room", id: string, text: string): void {
