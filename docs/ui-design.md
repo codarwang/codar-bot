@@ -255,6 +255,17 @@ M1 的 Overview/Chat/Usage 三 Tab 废弃，改为常驻三区（Grok Bot 同构
 8. 交接系统行可点跳转（跳到对应 Bot 消息）
 9. 右栏 Bot 详情视图（沙箱诚实徽章/预算四维度 hover）与文件预览
 
+## 10a. 实现红线（M2 前端 CSS 契约，原型 r5 血泪）
+
+1. **聊天流子项永不垂直压缩**：滚动容器若为 `flex-direction: column`，
+   所有子项必须 `flex-shrink: 0`。带 `overflow: hidden` 的卡片在 Chromium
+   中 `min-height: auto` 解析为 0，高度不足时会被压成 ~3px 色线（原型
+   r1-r4 的「折叠」事故根因；修复 `4b374ee`）。
+2. **回合条/卡片头/徽章单行**：`white-space: nowrap` + 容器横向滚动，
+   任何宽度不折行。
+3. **验证必须过真实 Chromium**：开发用内置浏览器引擎与用户浏览器在
+   flex min-height 行为上有差异——视觉验收一律在 Chrome/真实浏览器做。
+
 ## 11. 差异化定位声明（写给未来 README 的用户）
 
 Grok Bot 验证了「Bot 团队+聊天」形态，但：无回合制（噪音/烧钱吐槽）、审批疲劳、
@@ -267,3 +278,6 @@ transcript**——每一样都对着它的最强吐槽点。
 - 2026-11-05 v1.1：评审 R1/R2 修订——works 五态全覆盖（failed×2/pending 入
   §3.3 契约）、M2 简版审批卡、SSE 表三列对齐架构 §7 且 progress 带 status、
   右栏 BOT DETAIL 第二视图、群级停机卡独立形、i18n 全量与币种随 locale。
+- 2026-11-05 v1.3：Felix 终审通过（原型 r5）。原型迭代沉淀：场景过滤 chips、
+  720px 居中内容列、响应式（<1180 右栏浮层 / <920 roster 头像列）、§10a
+  实现红线（flex-shrink 压缩事故、真实 Chromium 验收纪律）。
