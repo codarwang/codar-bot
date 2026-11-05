@@ -112,7 +112,7 @@ export class HttpApi {
         this.send(res, 200, this.deps.store.state.bots);
         return;
       }
-      if (req.method === "GET" && id !== undefined) {
+      if (req.method === "GET" && id !== undefined && action === undefined) {
         const bot = this.deps.store.bot(id);
         if (bot === undefined) return this.send(res, 404, { error: `no bot ${id}` });
         this.send(res, 200, bot);
