@@ -32,8 +32,8 @@ export interface HandoffRequest {
 }
 
 export interface HandoffEvents {
-  work: { workId: string; status: WorkRecord["status"]; parent: string; child: string };
-  progress: { workId: string; botId: string; oneLiner: string; status: WorkRecord["status"] };
+  work: { workId: string; status: WorkRecord["status"]; parent: string; child: string; roomId: string | null; task: string };
+  progress: { workId: string; botId: string; oneLiner: string; status: WorkRecord["status"]; roomId: string | null };
 }
 
 export class Handoff extends EventEmitter {
@@ -161,7 +161,7 @@ export class Handoff extends EventEmitter {
       task: req.task,
     };
     this.store.addWork(work);
-    this.emit("work", { workId: work.id, status: "pending", parent: work.parent, child: work.child });
+    this.emit("work", { workId: work.id, roomId: work.roomId, task: work.task, status: "pending", parent: work.parent, child: work.child });
 
     // Out-of-band execution: the room turn is NOT blocked (§5.2); the child
     // runs as its own turn and the result flows back when it settles.
@@ -186,7 +186,7 @@ export class Handoff extends EventEmitter {
     // keeps that simple: prompt if idle, else leave pending (honest).
     if (this.bots.status(work.child) !== "idle") {
       this.emit("progress", {
-        workId: work.id, botId: work.child,
+        workId: work.id, botId: work.child, roomId: work.roomId,
         oneLiner: `queued — ${this.botName(work.child)} is busy`,
         status: "pending",
       });
@@ -200,7 +200,7 @@ export class Handoff extends EventEmitter {
     const childPaused = this.store.state.rooms.some((r) => r.members.includes(work.child) && this.budgetPaused(r.id));
     if (childPaused) {
       this.store.updateWork(work.id, { status: "failed" });
-      this.emit("work", { workId: work.id, status: "failed", parent: work.parent, child: work.child });
+      this.emit("work", { workId: work.id, roomId: work.roomId, task: work.task, status: "failed", parent: work.parent, child: work.child });
       // Notify where the interrupted path notifies (R5 P3-1): the
       // REQUESTER's room, or the parent directly for room-less works — a
       // cross-room dispatch must not leave the caller unnotified.
@@ -214,9 +214,9 @@ export class Handoff extends EventEmitter {
       return;
     }
     this.store.updateWork(work.id, { status: "working" });
-    this.emit("work", { workId: work.id, status: "working", parent: work.parent, child: work.child });
+    this.emit("work", { workId: work.id, roomId: work.roomId, task: work.task, status: "working", parent: work.parent, child: work.child });
     this.emit("progress", {
-      workId: work.id, botId: work.child,
+      workId: work.id, botId: work.child, roomId: work.roomId,
       oneLiner: "starting…",
       status: "working",
     });
@@ -237,7 +237,7 @@ export class Handoff extends EventEmitter {
     const onTool = (e: { botId: string; toolName: string }): void => {
       if (e.botId !== work.child) return;
       lastProgress.oneLiner = `${e.toolName}…`;
-      this.emit("progress", { workId: work.id, botId: work.child, oneLiner: lastProgress.oneLiner, status: "working" });
+      this.emit("progress", { workId: work.id, botId: work.child, oneLiner: lastProgress.oneLiner, status: "working", roomId: work.roomId });
     };
     this.bots.on("tool", onTool);
     // Turn-outcome correlation (M2-C R4 P1 — the same guard room-engine
@@ -269,7 +269,7 @@ export class Handoff extends EventEmitter {
         // Interrupted ⇒ failed, NEVER a silent "done": the cut lands where
         // it is observable (§5.3), and NO stale result is delivered.
         try { this.store.updateWork(work.id, { status: "failed" }); } catch { /* shutdown */ }
-        this.emit("work", { workId: work.id, status: "failed", parent: work.parent, child: work.child });
+        this.emit("work", { workId: work.id, roomId: work.roomId, task: work.task, status: "failed", parent: work.parent, child: work.child });
         if (work.roomId !== null) {
           try {
             this.rooms.appendSystem(work.roomId, `task ${work.id} → ${this.botName(work.child)} interrupted — no result delivered`);
@@ -280,7 +280,7 @@ export class Handoff extends EventEmitter {
         return;
       }
       this.store.updateWork(work.id, { status: "done" });
-      this.emit("work", { workId: work.id, status: "done", parent: work.parent, child: work.child });
+      this.emit("work", { workId: work.id, roomId: work.roomId, task: work.task, status: "done", parent: work.parent, child: work.child });
       // Result flows back: room line (if room-scoped) + caller wake prompt.
       await this.returnResult(work, result, lastProgress.oneLiner);
     } catch (error) {
@@ -288,7 +288,7 @@ export class Handoff extends EventEmitter {
       // closed, dirs removed) — a throwing catch-path would surface as an
       // unhandled rejection (suite-level test failure), so guard each step.
       try { this.store.updateWork(work.id, { status: "failed" }); } catch { /* shutdown */ }
-      this.emit("work", { workId: work.id, status: "failed", parent: work.parent, child: work.child });
+      this.emit("work", { workId: work.id, roomId: work.roomId, task: work.task, status: "failed", parent: work.parent, child: work.child });
       if (work.roomId !== null) {
         try {
           this.rooms.appendSystem(work.roomId, `task ${work.id} → ${this.botName(work.child)} failed: ${String(error).slice(0, 160)}`);
@@ -309,7 +309,7 @@ export class Handoff extends EventEmitter {
       } catch { /* shutdown race */ }
     }
     this.emit("progress", {
-      workId: work.id, botId: work.child,
+      workId: work.id, botId: work.child, roomId: work.roomId,
       oneLiner: progressLiner || "done",
       status: "done",
     });

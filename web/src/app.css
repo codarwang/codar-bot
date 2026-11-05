@@ -60,20 +60,36 @@ textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
 .lang { border: 1px solid var(--line); border-radius: 8px; padding: 3px 10px; }
 
 .zones {
-  display: grid; grid-template-columns: 264px minmax(0, 1fr) 300px;
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr) 300px;
+  grid-template-areas: "roster chat ctx";
   flex: 1; min-height: 0;
 }
+.roster { grid-area: roster; }
+.chat { grid-area: chat; }
+.ctx { grid-area: ctx; }
+/* Named areas keep chat/ctx in place when a hidden panel stops occupying
+ * its column (display:none children used to reflow chat into a 0px first
+ * column — the ☰ self-destruct, R1 P1-1). */
 .app.roster-closed .zones { grid-template-columns: 0 minmax(0, 1fr) 300px; }
 .app.roster-closed .roster { display: none; }
 .app.ctx-closed .zones { grid-template-columns: 264px minmax(0, 1fr) 0; }
 .app.ctx-closed .ctx { display: none; }
+/* Media overrides restate the full specificity so the closed-state rules
+ * cannot win inside them. */
 @media (max-width: 1180px) {
-  .zones { grid-template-columns: 232px minmax(0, 1fr); }
-  .ctx { display: none; }
+  .zones, .app.roster-closed .zones, .app.ctx-closed .zones {
+    grid-template-columns: 232px minmax(0, 1fr);
+    grid-template-areas: "roster chat";
+  }
+  .ctx, .app.ctx-closed .ctx { display: none; }
 }
 @media (max-width: 920px) {
-  .zones { grid-template-columns: 64px minmax(0, 1fr); }
-  .roster .row-main, .roster .roster-section, .roster .roster-foot { display: none; }
+  .zones, .app.roster-closed .zones, .app.ctx-closed .zones {
+    grid-template-columns: 64px minmax(0, 1fr);
+    grid-template-areas: "roster chat";
+  }
+  .roster .row-main, .roster .roster-section, .roster .roster-foot, .roster .form { display: none; }
 }
 
 /* --- roster ------------------------------------------------------------------ */
@@ -187,11 +203,30 @@ textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
   background: var(--warn-bg); color: var(--warn); flex-shrink: 0;
 }
 .pause-card.stop { background: var(--stop-bg); color: var(--stop); }
+.pause-edit { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
+.pause-edit label { display: flex; gap: 4px; align-items: center; }
+.pause-edit input { width: 110px; }
+.errorStrip {
+  margin: 0 16px; padding: 6px 12px; border-radius: var(--radius); font-size: 13px;
+  background: var(--stop-bg); color: var(--stop); flex-shrink: 0;
+}
+.badge-unread { background: #e8f0fe; color: var(--accent); }
+button.mini.danger { color: var(--stop); }
+.check { display: flex; gap: 6px; align-items: center; font-size: 13px; }
 .composer {
   display: flex; gap: 8px; padding: 10px 16px 14px; background: var(--panel);
-  border-top: 1px solid var(--line); flex-shrink: 0;
+  border-top: 1px solid var(--line); flex-shrink: 0; position: relative; align-items: flex-end;
 }
-.composer input { flex: 1; }
+.composer textarea {
+  flex: 1; resize: none; max-height: 120px; min-height: 36px;
+}
+.mention-pop {
+  position: absolute; bottom: 62px; left: 16px; z-index: 5;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 4px 14px rgba(20, 26, 40, 0.12); padding: 4px; min-width: 160px;
+}
+.mention-item { padding: 5px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.mention-item:hover { background: #eef1fe; }
 
 /* --- context panel -------------------------------------------------------------- */
 .ctx {

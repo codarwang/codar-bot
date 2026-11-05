@@ -1,10 +1,11 @@
 /**
  * Roster — the inbox sidebar (ui-design §2): every row is a bot or a room
- * with a one-line latest state; tri-state badges sort attention first.
+ * with a one-line latest state (per-room previews + unread counters);
+ * badges sort attention first; rooms creatable in-place.
  */
 import { useState } from "react";
 import type { Lang } from "./i18n";
-import { post, type ApprovalEvent, type Overview, type RoomMessage } from "./api";
+import { jsonFetch, post, type ApprovalEvent, type Overview, type RoomMessage } from "./api";
 
 type T = ReturnType<typeof import("./i18n").makeT>;
 
@@ -15,14 +16,15 @@ interface Props {
   statuses: Record<string, string>;
   failures: Record<string, string>;
   approvals: Array<ApprovalEvent & { resolved?: boolean }>;
-  messages: RoomMessage[];
+  lastByRoom: Record<string, RoomMessage>;
+  unread: Record<string, number>;
   roomId: string;
   onSelectRoom: (id: string) => void;
   onSelectBot: (id: string) => void;
   onRefresh: () => Promise<void>;
 }
 
-const AVATAR_COLORS = ["#6c8cff", "#41b883", "#e29a3a", "#c65cc4", "#3ab0c9", "#d4615f"];
+const AVATAR_COLORS = ["#6c8eff", "#41b883", "#e29a3a", "#c65cc4", "#3ab0c9", "#d4615f"];
 const avatarColor = (id: string): string =>
   AVATAR_COLORS[[...id].reduce((a, c) => a + c.charCodeAt(0), 0) % AVATAR_COLORS.length]!;
 
@@ -31,14 +33,6 @@ export function Roster(p: Props): JSX.Element {
   const [busy, setBusy] = useState<string | null>(null);
   const [creating, setCreating] = useState<"bot" | "room" | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-
-  const lastLine = (kind: "user" | "bot" | "system", id?: string): string => {
-    for (let i = p.messages.length - 1; i >= 0; i--) {
-      const m = p.messages[i]!;
-      if (m.from.kind === kind && (id === undefined || m.from.id === id)) return m.text;
-    }
-    return "";
-  };
 
   const attention = (botId: string): boolean =>
     p.approvals.some((a) => a.botId === botId && !a.resolved) || p.failures[botId] !== undefined;
@@ -63,38 +57,61 @@ export function Roster(p: Props): JSX.Element {
     }
   };
 
-  const roomPreview = (): string => {
-    const m = p.messages[p.messages.length - 1];
-    if (m === undefined) return t.emptyRoom;
-    return m.text.slice(0, 60);
-  };
+  // §2 sort: attention > working > name.
+  const bots = [...(overview?.bots ?? [])].sort((a, b) => {
+    const rank = (id: string): number => (attention(id) ? 0 : (p.statuses[id] ?? "") === "working" ? 1 : 2);
+    const r = rank(a.id) - rank(b.id);
+    return r !== 0 ? r : a.name.localeCompare(b.name);
+  });
 
   return (
     <aside className="roster">
       <div className="roster-section">{t.rosterRooms}</div>
-      {(overview?.rooms ?? []).map((r) => (
-        <div
-          key={r.id}
-          className={`row row-room ${r.id === p.roomId ? "sel" : ""}`}
-          onClick={() => p.onSelectRoom(r.id)}
-        >
-          <div className="stack">
-            {r.members.slice(0, 3).map((m, i) => (
-              <span key={m} className="avatar avatar-sm" style={{ background: avatarColor(m), marginLeft: i === 0 ? 0 : -6 }}>{(overview?.bots.find((b) => b.id === m)?.name ?? "?").slice(0, 1)}</span>
-            ))}
-          </div>
-          <div className="row-main">
-            <div className="row-title">
-              <span className="name">◎ {r.name}</span>
-              {r.status === "paused" && <span className={`badge badge-${r.pauseReason === "budget" ? "stop" : "warn"}`}>{r.pauseReason === "budget" ? t.pausedBudget : t.pausedPingPong}</span>}
+      {(overview?.rooms ?? []).map((r) => {
+        const last = p.lastByRoom[r.id];
+        return (
+          <div
+            key={r.id}
+            className={`row row-room ${r.id === p.roomId ? "sel" : ""}`}
+            onClick={() => p.onSelectRoom(r.id)}
+          >
+            <div className="stack">
+              {r.members.slice(0, 3).map((m, i) => (
+                <span key={m} className="avatar avatar-sm" style={{ background: avatarColor(m), marginLeft: i === 0 ? 0 : -6 }}>{(overview?.bots.find((b) => b.id === m)?.name ?? "?").slice(0, 1)}</span>
+              ))}
             </div>
-            <div className="row-sub">{roomPreview()}</div>
+            <div className="row-main">
+              <div className="row-title">
+                <span className="name">◎ {r.name}</span>
+                {(p.unread[r.id] ?? 0) > 0 && <span className="badge badge-unread">{p.unread[r.id]} {t.unread}</span>}
+                {r.status === "paused" && <span className={`badge badge-${r.pauseReason === "budget" ? "stop" : "warn"}`}>{r.pauseReason === "budget" ? t.pausedBudget : t.pausedPingPong}</span>}
+              </div>
+              <div className="row-sub">
+                {last !== undefined ? last.text.slice(0, 60) : `${r.members.length} ${t.membersLabel}`}
+              </div>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
+      <div className="roster-foot">
+        <button className="ghost" onClick={() => setCreating(creating === "room" ? null : "room")}>+ {t.newRoom}</button>
+      </div>
+      {creating === "room" && (
+        <RoomForm
+          t={t}
+          overview={overview}
+          error={formError}
+          setError={setFormError}
+          onDone={async () => {
+            setCreating(null);
+            await p.onRefresh();
+          }}
+          onCancel={() => setCreating(null)}
+        />
+      )}
 
       <div className="roster-section">{t.rosterBots}</div>
-      {(overview?.bots ?? []).map((b) => {
+      {bots.map((b) => {
         const badge = botBadge(b.id);
         return (
           <div
@@ -111,7 +128,7 @@ export function Roster(p: Props): JSX.Element {
               <div className="row-sub">
                 {p.failures[b.id] !== undefined
                   ? p.failures[b.id]!.slice(0, 60)
-                  : (p.statuses[b.id] === "working" ? lastLine("bot", b.id) || t.working : `${b.model.provider}/${b.model.modelId}`).slice(0, 60)}
+                  : (p.statuses[b.id] === "working" ? t.working : `${b.model.provider}/${b.model.modelId}`).slice(0, 60)}
               </div>
             </div>
             <div className="row-acts" onClick={(e) => e.stopPropagation()}>
@@ -121,6 +138,7 @@ export function Roster(p: Props): JSX.Element {
               {p.statuses[b.id] !== "stopped" && p.statuses[b.id] !== "crashed" && (
                 <button className="mini" disabled={busy !== null} onClick={() => void act(b.id, "stop")}>{t.stopBot}</button>
               )}
+              <button className="mini danger" disabled={busy !== null} onClick={() => void act(b.id, "delete")}>{t.delete}</button>
             </div>
           </div>
         );
@@ -144,6 +162,63 @@ export function Roster(p: Props): JSX.Element {
         />
       )}
     </aside>
+  );
+}
+
+function RoomForm(props: {
+  t: T;
+  overview: Overview | null;
+  error: string | null;
+  setError: (e: string | null) => void;
+  onDone: () => Promise<void>;
+  onCancel: () => void;
+}): JSX.Element {
+  const { t } = props;
+  const [name, setName] = useState("");
+  const [members, setMembers] = useState<string[]>([]);
+  const [admin, setAdmin] = useState("");
+  const [busy, setBusy] = useState(false);
+  const toggle = (id: string): void => {
+    setMembers((ms) => {
+      const next = ms.includes(id) ? ms.filter((x) => x !== id) : [...ms, id];
+      setAdmin((a) => (a === "" || next.includes(a) ? next[0] ?? "" : a));
+      return next;
+    });
+  };
+  const create = async (): Promise<void> => {
+    setBusy(true);
+    props.setError(null);
+    try {
+      await post("/api/rooms", { name, members, admin: admin || members[0] });
+      await props.onDone();
+    } catch (e) {
+      props.setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="form">
+      <input placeholder={t.roomNameLabel} value={name} onChange={(e) => setName(e.target.value)} />
+      {(props.overview?.bots ?? []).map((b) => (
+        <label key={b.id} className="check">
+          <input type="checkbox" checked={members.includes(b.id)} onChange={() => toggle(b.id)} /> {b.name}
+        </label>
+      ))}
+      <div className="form-row">
+        <span className="dim">{t.adminPick}</span>
+        <select value={admin} onChange={(e) => setAdmin(e.target.value)}>
+          {members.map((m) => (
+            <option key={m} value={m}>{props.overview?.bots.find((b) => b.id === m)?.name ?? m}</option>
+          ))}
+        </select>
+      </div>
+      {props.error !== null && <div className="error">{props.error}</div>}
+      <div className="form-row">
+        <button disabled={busy || name === "" || members.length === 0} onClick={() => void create()}>{t.createRoom}</button>
+        <button className="ghost" onClick={props.onCancel}>{t.cancel}</button>
+      </div>
+    </div>
   );
 }
 
