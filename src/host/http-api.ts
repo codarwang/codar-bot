@@ -71,8 +71,8 @@ export class HttpApi {
       const message = String(e);
       // Input errors deserve precise 4xx, not blanket 500s (R2/R3 P3).
       if (/^Error: no bot |^Error: no room /.test(message)) return this.send(res, 404, { error: message.slice(0, 400) });
-      if (/already working|already running|wait for idle/.test(message)) return this.send(res, 409, { error: message.slice(0, 400) });
-      const bad = /not valid JSON|Unexpected token|body too large|missing|already in use|must be|requires|rejected/.test(message);
+      if (/already working|already running|wait for idle|is not running/.test(message)) return this.send(res, 409, { error: message.slice(0, 400) });
+      const bad = /not valid JSON|Unexpected (token|end of JSON)|body too large|missing|already in use|must be|requires|rejected/.test(message);
       this.send(res, bad ? 400 : 500, { error: message.slice(0, 400) });
     });
   }
@@ -222,6 +222,7 @@ export class HttpApi {
       if (req.method === "DELETE" && id !== undefined) {
         await this.deps.bots.stop(id);
         this.deps.store.removeBot(id);
+        this.deps.bots.forget(id); // drop the runtime bookkeeping entry too
         this.send(res, 200, { ok: true });
         return;
       }

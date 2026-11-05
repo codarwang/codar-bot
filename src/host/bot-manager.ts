@@ -56,6 +56,10 @@ interface ManagedBot {
    *  mark live bots "stopped"; R3: chain-internal starts must not self-
    *  supersede or the single-flight flag latches forever). */
   epoch: number;
+  /** A failure that arrived while the single-flight flag was held by a
+   *  superseded chain — the exiting chain re-funnels it (R4 P2: new-
+   *  generation failures used to be silently dropped → permanent crashed). */
+  pendingFailure: string | null;
 }
 
 const MAX_RESTARTS = 3;
@@ -108,7 +112,7 @@ export class BotManager extends EventEmitter {
   private managed(botId: string): ManagedBot {
     let m = this.bots.get(botId);
     if (m === undefined) {
-      m = { botId, client: null, status: "stopped", restarts: 0, lastError: null, stopRequested: false, restarting: false, epoch: 0 };
+      m = { botId, client: null, status: "stopped", restarts: 0, lastError: null, stopRequested: false, restarting: false, epoch: 0, pendingFailure: null };
       this.bots.set(botId, m);
     }
     return m;
@@ -132,12 +136,14 @@ export class BotManager extends EventEmitter {
     if (m.client !== null) throw new Error(`bot ${botId} already running`);
     if (opts.internal !== true) m.epoch += 1; // external start supersedes chains
     m.stopRequested = false;
-    this.setStatus(m, "starting");
+    m.pendingFailure = null;
 
     // Host-controlled dirs must exist before the child starts (the gate's
-    // audit appendFileSync fails closed on ENOENT).
+    // audit appendFileSync fails closed on ENOENT). Before "starting" so an
+    // IO failure never leaves a starting residue.
     mkdirSync(botPiConfDir(this.dataRoot, botId), { recursive: true });
     mkdirSync(bot.workDir, { recursive: true });
+    this.setStatus(m, "starting");
 
     const spawn = { ...this.spawnDefaults, ...spawnOverride };
     const client = new RpcClient({
@@ -214,6 +220,11 @@ export class BotManager extends EventEmitter {
 
   async stopAll(): Promise<void> {
     await Promise.all([...this.bots.keys()].map((id) => this.stop(id)));
+  }
+
+  /** Drop runtime bookkeeping for a deleted bot (must be stopped first). */
+  forget(botId: string): void {
+    this.bots.delete(botId);
   }
 
   /** Prompt a bot; resolves with the final assistant text when it settles.
@@ -354,7 +365,7 @@ export class BotManager extends EventEmitter {
     await this.recoverFromFailure(bot, client, reason);
   }
 
-  private async recoverFromFailure(bot: BotRecord, deadClient: RpcClient, reason: string): Promise<void> {
+  private async recoverFromFailure(bot: BotRecord, deadClient: RpcClient | null, reason: string): Promise<void> {
     const m = this.bots.get(bot.id);
     if (m === undefined) return;
     if (m.client === deadClient) m.client = null;
@@ -362,7 +373,12 @@ export class BotManager extends EventEmitter {
       if (m.status !== "stopped") this.setStatus(m, "stopped", `stop honored after failure: ${reason}`);
       return;
     }
-    if (m.restarting) return; // single-flight: one chain owns recovery
+    if (m.restarting) {
+      // Another chain holds the flag. If it is a zombie (older epoch), it
+      // will exit without owning THIS failure — park it for the handover.
+      m.pendingFailure = reason;
+      return;
+    }
     if (m.restarts >= MAX_RESTARTS) {
       this.setStatus(m, "stopped", `restart budget exhausted (${reason})`);
       return;
@@ -391,6 +407,19 @@ export class BotManager extends EventEmitter {
       // Unconditional: while this chain held the flag no other chain could
       // enter (atomic check-and-set above), so clearing is always ours.
       m.restarting = false;
+      // Handover (R4 P2): a failure that arrived while we (a zombie) held
+      // the flag must be re-funneled by someone — that someone is us.
+      const pending = m.pendingFailure;
+      if (pending !== null && !m.stopRequested && m.client === null && m.epoch === myEpoch) {
+        m.pendingFailure = null;
+        void this.recoverFromFailure(bot, null, pending).catch(() => undefined);
+      } else if (pending !== null && m.epoch !== myEpoch) {
+        // We were superseded; the CURRENT generation needs the baton too.
+        m.pendingFailure = null;
+        void this.recoverFromFailure(bot, null, pending).catch(() => undefined);
+      } else {
+        m.pendingFailure = null;
+      }
     }
   }
 }
