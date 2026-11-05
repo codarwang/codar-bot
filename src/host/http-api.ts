@@ -10,7 +10,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { randomUUID } from "node:crypto";
 import type { BotManager } from "./bot-manager.js";
 import { join } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { ApiError } from "./http-error.js";
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -36,6 +37,8 @@ export interface ApiDeps {
   store: Store;
   bots: BotManager;
   ledger: UsageLedger;
+  /** Built web UI dir (web/dist); absent ⇒ API-only mode. */
+  webDir?: string;
 }
 
 interface SseClient {
@@ -54,6 +57,45 @@ export class HttpApi {
     bots.on("message", (e) => this.broadcast("message", e));
     bots.on("failure", (e) => this.broadcast("failure", e));
     bots.on("aborted", (e) => this.broadcast("aborted", e));
+  }
+
+  /** Static serving of the built SPA (non-/api GET). Traversal-safe. */
+  private serveStatic(res: ServerResponse, urlPath: string): void {
+    const webDir = this.deps.webDir;
+    if (webDir === undefined) {
+      this.send(res, 404, { error: "no web UI built (API-only mode)" });
+      return;
+    }
+    const rel = urlPath === "/" ? "index.html" : decodeURIComponent(urlPath).replace(/^\//, "");
+    const target = resolve(webDir, rel);
+    if (!target.startsWith(resolve(webDir))) {
+      this.send(res, 404, { error: "not found" });
+      return;
+    }
+    let body: Buffer;
+    try {
+      body = readFileSync(target);
+    } catch {
+      // SPA fallback: unknown non-asset paths get index.html.
+      if (!rel.startsWith("assets/")) {
+        try { body = readFileSync(join(webDir, "index.html")); }
+        catch { this.send(res, 404, { error: "not found" }); return; }
+      } else {
+        this.send(res, 404, { error: "not found" });
+        return;
+      }
+    }
+    const types: Record<string, string> = {
+      ".html": "text/html; charset=utf-8",
+      ".js": "text/javascript",
+      ".css": "text/css",
+      ".svg": "image/svg+xml",
+      ".png": "image/png",
+      ".ico": "image/x-icon",
+    };
+    const ext = target.slice(target.lastIndexOf("."));
+    res.writeHead(200, { "content-type": types[ext] ?? "application/octet-stream" });
+    res.end(body);
   }
 
   async listen(port: number, host = "127.0.0.1"): Promise<number> {
@@ -110,7 +152,8 @@ export class HttpApi {
       return;
     }
     if (parts[0] !== "api") {
-      this.send(res, 404, { error: "not found" });
+      if (req.method === "GET") this.serveStatic(res, url.pathname);
+      else this.send(res, 404, { error: "not found" });
       return;
     }
     const [, resource, id, action] = parts;
