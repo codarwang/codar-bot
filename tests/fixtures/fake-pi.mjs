@@ -77,7 +77,7 @@ async function runPrompt(id, message) {
     out({
       type: "extension_ui_request", id: `mb-${++seq}`, method: "input",
       title: "codar:message_bot",
-      placeholder: JSON.stringify({ to: target, task: "Reply with the single word BRAVO.", request_id: "" }),
+      placeholder: JSON.stringify({ to: target, task: "Reply with the single word BRAVO.", request_id: "", call_id: callId }),
     });
     pendingMessageBot = { callId };
     return;
@@ -205,6 +205,7 @@ process.stdin.on("data", (chunk) => {
           ok = parsed?.status === "ok";
           text = ok ? `accepted — work ${parsed.workId}` : `rejected — ${parsed.error ?? "?"}`;
         } catch { ok = false; }
+        void cmd.id;
         lastText = `DISPATCHED:${ok ? "ok" : "no"}`;
         transcript.push({ role: "assistant", content: [{ type: "text", text: lastText }] });
         out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: lastText }], stopReason: "stop", usage: usage(8, 4) } });
