@@ -165,7 +165,10 @@ export class Budget extends EventEmitter {
     // month ≠ rollover (M2-C R3 P2).
     const stamp = room.pausedAt !== undefined && room.pausedAt !== null ? new Date(room.pausedAt) : null;
     if (stamp !== null && !Number.isNaN(stamp.getTime())) {
-      if (monthKey(stamp) !== monthKey()) {
+      // Only a strictly PAST month proves the pause predates this window; a
+      // future stamp (clock rollback / hand-edited state) is not proof —
+      // fail closed (R6 P3-a).
+      if (monthKey(stamp) < monthKey()) {
         // Counter reset ONLY when the window is actually stale in memory.
         const key = `room:${roomId}`;
         const st = this.scopes.get(key);
