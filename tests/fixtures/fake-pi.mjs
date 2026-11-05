@@ -59,10 +59,11 @@ function fail(id, command, error) {
 }
 
 async function runPrompt(id, message) {
-  transcript.push({ role: "user", content: message });
-  transcript.push({ role: "assistant", content: [{ type: "text", text: "…" }] });
+  void id;
   if (message.includes("SLOW")) {
     // Deterministic long run: started → 1.5s of silence → settle with OK.
+    transcript.push({ role: "user", content: message });
+    transcript.push({ role: "assistant", content: [{ type: "text", text: "OK" }] });
     respond(id, "prompt", { disposition: "started" });
     out({ type: "agent_start" });
     out({ type: "turn_start" });
@@ -70,6 +71,7 @@ async function runPrompt(id, message) {
     out({ type: "message_end", message: { role: "system", content: "" } });
     setTimeout(() => {
       lastText = "OK";
+      void transcript;
       out({ type: "message_start", message: { role: "assistant" } });
       out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "OK" } });
       out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "OK" }], stopReason: "stop", usage: usage(4, 1) } });
@@ -121,6 +123,8 @@ async function runPrompt(id, message) {
   const word = message.includes("ALPHA") ? "ALPHA" : message.includes("BRAVO") ? "BRAVO" : message.includes("PARKED") ? "PARKED" : "OK";
   const u = word === "ALPHA" ? usage(10, 1) : word === "BRAVO" ? usage(20, 2) : usage(5, 1);
   lastText = word;
+  transcript.push({ role: "user", content: message });
+  transcript.push({ role: "assistant", content: [{ type: "text", text: word }] });
   out({ type: "message_start", message: { role: "assistant" } });
   for (const chunk of [word.slice(0, 1), word.slice(1) || ""].filter(Boolean)) {
     out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: chunk } });

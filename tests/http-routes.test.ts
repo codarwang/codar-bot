@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -170,5 +170,45 @@ test("lower-layer error mapping: bad JSON 400, unknown bot 404, busy/stopped 409
     assert.equal(nullBody.status, 400);
   } finally {
     await teardown(t.host, t.root);
+  }
+});
+
+test("serveStatic: containment, fallback content-type, malformed encoding (web UI regression)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-static-"));
+  mkdirSync(join(root, "web-dist", "assets"), { recursive: true });
+  mkdirSync(join(root, "web-dist-evil"), { recursive: true });
+  writeFileSync(join(root, "web-dist", "index.html"), "<html>ok</html>");
+  writeFileSync(join(root, "web-dist", "assets", "app-abc.js"), "console.log(1)");
+  writeFileSync(join(root, "web-dist-evil", "secret.txt"), "SECRET");
+  const host = Host.boot({
+    dataRoot: root,
+    bin: process.execPath,
+    argv: [FAKE_PI],
+    webDir: join(root, "web-dist"),
+  });
+  try {
+    process.env.CODAR_BOT_HOME = root;
+    process.env.CODAR_BOT_PORT = "0";
+    const port = await host.start();
+    const get = async (path: string): Promise<Response> =>
+      fetch(`http://127.0.0.1:${port}${path}`);
+    const idx = await get("/");
+    assert.equal(idx.status, 200);
+    assert.equal(idx.headers.get("content-type"), "text/html; charset=utf-8");
+    const asset = await get("/assets/app-abc.js");
+    assert.equal(asset.headers.get("cache-control"), "public, max-age=31536000, immutable");
+    const spa = await get("/chat");
+    assert.equal(spa.status, 200);
+    assert.equal(spa.headers.get("content-type"), "text/html; charset=utf-8");
+    assert.equal((await get("/assets/missing.js")).status, 404);
+    const evil = await get("/%2e%2e%2fweb-dist-evil%2fsecret.txt");
+    assert.equal(evil.status, 404);
+    assert.ok(!(await evil.text()).includes("SECRET"));
+    assert.equal((await get("/%zz")).status, 400);
+    await host.shutdown();
+  } finally {
+    delete process.env.CODAR_BOT_HOME;
+    delete process.env.CODAR_BOT_PORT;
+    rmSync(root, { recursive: true, force: true });
   }
 });
