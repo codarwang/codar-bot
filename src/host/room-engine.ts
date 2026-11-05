@@ -61,6 +61,9 @@ export class RoomEngine extends EventEmitter {
   /** Per-room FIFO turn batches (R1 P1-1: concurrent userSays serialize). */
   private readonly queues = new Map<string, Promise<unknown>>();
 
+  /** Per-task wall-clock provider (Budget.wallDeadlineMs); null = uncapped. */
+  deadlineMs: ((botId: string) => number | null) | null = null;
+
   constructor(
     private readonly store: Store,
     private readonly bots: BotManager,
@@ -239,13 +242,27 @@ export class RoomEngine extends EventEmitter {
         void this.bots.interrupt(botId).catch(() => undefined);
       }
     }, guards.replyTimeoutMs);
+    // Per-task wall clock (§6.1a maxWallMs): budget.deadlineMs(botId) caps
+    // the WHOLE turn; hitting it aborts and marks the slot timed-out (the
+    // same honest verdict as the first-token watchdog).
+    let wallClock: NodeJS.Timeout | null = null;
     const cleanup = (): void => {
       clearTimeout(watchdog);
+      if (wallClock !== null) clearTimeout(wallClock);
       this.bots.off("delta", onDelta);
       this.bots.off("failure", onFailure);
       this.bots.off("aborted", onAborted);
     };
 
+    const wallMs = this.deadlineMs?.(botId) ?? null;
+    if (wallMs !== null && wallMs > 0) {
+      wallClock = setTimeout(() => {
+        timedOut = true;
+        rt.slots[botId] = "timed-out";
+        this.emitTurn(roomId, room);
+        void this.bots.interrupt(botId).catch(() => undefined);
+      }, wallMs);
+    }
     let reply: string;
     try {
       reply = await this.bots.prompt(botId, context.text, "chat");

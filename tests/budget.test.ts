@@ -142,3 +142,75 @@ test("limit raise resumes a budget-paused room (§5.3 recovery)", async () => {
     await r.dispose();
   }
 });
+
+test("M2-C R1: sticky stop — subsequent over-limit writes do not re-broadcast", async () => {
+  const r = await rig({ maxTokens: 100 });
+  try {
+    const stops: string[] = [];
+    r.budget.on("budget", (e: { level: string }) => { if (e.level === "stop") stops.push("x"); });
+    const hour = monthHour();
+    for (let i = 0; i < 3; i++) {
+      r.ledger.record({
+        hour, botId: r.chiefId, model: "fake/f", kind: "chat",
+        input: 50, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0,
+      });
+    }
+    assert.equal(stops.length, 1, "one stop event, sticky afterwards");
+    const sys = r.rooms.history(r.roomId).filter((m) => m.from.kind === "system" && m.text.includes("BUDGET STOPPED"));
+    assert.equal(sys.length, 1, "one broadcast");
+  } finally {
+    await r.dispose();
+  }
+});
+
+test("M2-C R1: maxTurns wired — settled turns stop the bot at the limit", async () => {
+  const r = await rig({ maxTurns: 2 });
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId);
+    await r.rooms.userSay(r.roomId, "Reply with the single word ALPHA.");
+    assert.equal(r.store.room(r.roomId)!.status, "active", "1 turn < 2 limit");
+    await r.rooms.userSay(r.roomId, "Reply with the single word BRAVO.");
+    assert.equal(r.bots.status(r.chiefId), "stopped", "2nd settle hits maxTurns → stopped");
+    assert.ok(r.rooms.history(r.roomId).some((m) => m.from.kind === "system" && m.text.includes("turns")));
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("M2-C R1: HTTP GET /api/budget/:id reports month usage (route regression)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-bud-http-"));
+  mkdirSync(join(root, "work"), { recursive: true });
+  mkdirSync(join(root, "web-dist"), { recursive: true });
+  process.env.CODAR_BOT_HOME = root;
+  process.env.CODAR_BOT_PORT = "0";
+  const { Host } = await import("../src/host/host.js");
+  const host = Host.boot({ dataRoot: root, bin: process.execPath, argv: [FAKE_PI] });
+  try {
+    const port = await host.start();
+    const chief = host.store.addBot({
+      name: "C", role: "", chief: true,
+      model: { provider: "fake", modelId: "f", thinkingLevel: "low" },
+      workDir: join(root, "work"), sessionPath: null,
+      sandbox: { mode: "host-not-isolated" }, budget: defaultBudget(),
+    });
+    host.ledger.record({
+      hour: monthHour(), botId: chief.id, model: "fake/f", kind: "chat",
+      input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 12,
+    });
+    const detail = (await (await fetch(`http://127.0.0.1:${port}/api/budget/${chief.id}`)).json()) as {
+      scope: string; tokens: number; costMicros: number; budget: { maxTokens: number };
+    };
+    assert.equal(detail.scope, "bot");
+    assert.equal(detail.tokens, 12);
+    assert.equal(detail.costMicros, 12);
+    const collection = (await (await fetch(`http://127.0.0.1:${port}/api/budget`)).json()) as Array<{ id: string }>;
+    assert.ok(Array.isArray(collection) && collection.some((x) => x.id === chief.id));
+  } finally {
+    await host.shutdown();
+    delete process.env.CODAR_BOT_HOME;
+    delete process.env.CODAR_BOT_PORT;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
