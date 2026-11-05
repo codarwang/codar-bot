@@ -7,7 +7,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -565,6 +565,42 @@ test("R1: handoff onWorkDone feeds the child bot scope end-to-end", async () => 
     assert.match(r.memory.snapshot("bot", writer.id), /### Memory — Writer/);
   } finally {
     delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("R2 P1-1: a child dying before the settle wait attaches cannot kill the host", async () => {
+  const r = await rig();
+  try {
+    process.env.FAKE_PI_MEM_REVIEW = "startdie"; // exits before ANY rpc output
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "x"));
+    assert.equal(await r.memory.review("bot", r.chiefId), "failed", "start() path fails honestly");
+    assert.equal(r.memory.pendingCount("bot", r.chiefId), 1, "claimed lines restored");
+    // And the early-return ordering: prompt command itself rejected.
+    process.env.FAKE_PI_MEM_REVIEW = "promptfail";
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "y"));
+    assert.equal(await r.memory.review("bot", r.chiefId), "failed", "prompt-reject path fails honestly");
+    assert.equal(r.memory.pendingCount("bot", r.chiefId), 2, "nothing stranded in inflight");
+    assert.ok(true, "host process still alive — no unhandled rejection");
+  } finally {
+    delete process.env.FAKE_PI_MEM_REVIEW;
+    await r.dispose();
+  }
+});
+
+test("R2 P2-1: a torn pending line drops with an audit instead of wedging the scope", async () => {
+  const r = await rig();
+  try {
+    const pendingPath = join(r.root, "memory", "bots", r.chiefId, "pending.jsonl");
+    mkdirSync(dirname(pendingPath), { recursive: true });
+    // One torn line (crash mid-append) ahead of one good line.
+    writeFileSync(pendingPath, '{"ts":"2026-11-05T00:00:00.000Z","speaker":"u","text":"half-a-lin\n');
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "good turn"));
+    assert.equal(await r.memory.review("bot", r.chiefId), "reviewed", "the good line still reviews");
+    assert.equal(r.memory.pendingCount("bot", r.chiefId), 0, "no wedge — queue drains");
+    assert.ok(r.memory.files("bot", r.chiefId).length > 0);
+    assert.match(readFileSync(join(r.root, "audit.jsonl"), "utf8"), /memory-review-torn/);
+  } finally {
     await r.dispose();
   }
 });
