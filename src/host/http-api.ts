@@ -152,6 +152,9 @@ export class HttpApi {
         if (body.sandbox !== undefined && body.sandbox.mode !== "docker" && body.sandbox.mode !== "host-not-isolated") {
           throw new ApiError(400, "sandbox.mode must be docker | host-not-isolated");
         }
+        if (workDir.includes(":")) {
+          throw new ApiError(400, "workDir must not contain ':' (breaks docker -v mounts)");
+        }
         const model = body.model === undefined
           ? { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" }
           : validateModel(body.model);
@@ -166,7 +169,10 @@ export class HttpApi {
           bot = this.deps.store.addBot({
             name, role: String(body.role ?? ""), chief: body.chief === true,
             model, workDir, sessionPath: null,
-            sandbox: { mode: "host-not-isolated" }, budget,
+            // Requested mode honored (validated above) — never silently
+            // downgraded to a bare process while claiming isolation.
+            sandbox: body.sandbox?.mode === "docker" ? { mode: "docker" as const } : { mode: "host-not-isolated" as const },
+            budget,
           });
         } catch (e) {
           throw new ApiError(409, String(e).slice(0, 200));

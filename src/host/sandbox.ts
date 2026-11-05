@@ -28,13 +28,18 @@ export interface SandboxArgs {
 export function buildDockerArgv(args: SandboxArgs): string[] {
   const argv = [
     "run", "-i", "--rm",
+    // -w pins the cwd to the work mount (the image WORKDIR happens to match;
+    // this removes the coincidence coupling).
+    "-w", "/home/bot/work",
     "-v", `${args.workDir}:/home/bot/work`,
     "-v", `${args.piConfDir}:/state/pi-conf`,
     "-v", `${args.extensionsDir}:/opt/codar-ext:ro`,
   ];
+  // NOTE (M2): the Room sharedDir mount joins here once rooms have an
+  // engine (bot↔room is N:M — it cannot be derived from the bot record).
   for (const [key, value] of Object.entries(args.env)) {
     argv.push("-e", `${key}=${value}`);
   }
-  argv.push("-e", "PI_CODING_AGENT_DIR=/state/pi-conf", args.image);
+  argv.push(args.image);
   return argv;
 }
