@@ -137,6 +137,7 @@ textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
 .badge-stop { background: var(--stop-bg); color: var(--stop); }
 .badge-warn { background: var(--warn-bg); color: var(--warn); }
 .roster-foot { padding: 10px 12px; flex-shrink: 0; }
+.roster-error { padding: 6px 12px; flex-shrink: 0; }
 .form { padding: 8px 12px 14px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
 .form-row { display: flex; gap: 6px; align-items: center; }
 

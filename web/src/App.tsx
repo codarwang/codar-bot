@@ -107,8 +107,16 @@ export function App(): JSX.Element {
         // Race guard: a slow response for room A must not paint over room B
         // after a quick switch (R2 F4 — the M1 stale-closure class).
         if (roomRef.current !== cur) return;
-        setMessages(r.messages);
-        lastSeqRef.current = r.messages.length > 0 ? r.messages[r.messages.length - 1]!.seq : 0;
+        // MERGE, not clobber: messages that arrived via SSE between the
+        // switch and this response would vanish under a flat overwrite and
+        // stay gone until the next reconnect resync (R3 P3-2).
+        const tail = r.messages.length > 0 ? r.messages[r.messages.length - 1]!.seq : 0;
+        setMessages((prev) => {
+          const fetched = new Set(r.messages.map((m) => m.seq));
+          const liveOnly = prev.filter((m) => !fetched.has(m.seq) && m.seq > tail);
+          return [...r.messages, ...liveOnly];
+        });
+        lastSeqRef.current = Math.max(lastSeqRef.current, tail);
       })
       .catch(() => {
         if (roomRef.current === cur) setMessages([]);
@@ -296,7 +304,13 @@ export function App(): JSX.Element {
     try {
       await post(`/api/approvals/${id}/resolve`, { confirmed });
     } catch {
-      /* 404 = already resolved elsewhere; the SSE sync will settle the card */
+      // 404 = the approval no longer exists host-side — resolved elsewhere,
+      // or the host restarted and its parked map evaporated (R3 P2-2). No
+      // SSE event will ever settle THIS card: settle it locally as stale —
+      // never clickable forever.
+      setApprovals((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, resolved: true, outcome: false, stale: true } : a))
+      );
     }
   };
 

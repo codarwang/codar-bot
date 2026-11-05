@@ -73,6 +73,7 @@ export function Roster(p: Props): JSX.Element {
 
   return (
     <aside className="roster">
+      {formError !== null && creating === null && <div className="error roster-error">{formError}</div>}
       <div className="roster-section">{t.rosterRooms}</div>
       {(overview?.rooms ?? []).map((r) => {
         const last = p.lastByRoom[r.id];

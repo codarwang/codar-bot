@@ -65,6 +65,11 @@ export function Chat(p: Props): JSX.Element {
   // user message (§5.3) — the composer stays open there (R1 P1-2).
   const budgetPaused = room?.status === "paused" && room.pauseReason === "budget";
   const liftablePause = room?.status === "paused" && room.pauseReason !== "budget";
+  const roomMembers = room?.members ?? [];
+  const roomStreamingBot = roomMembers.find((m) => p.streaming[m] !== undefined && p.streaming[m] !== "");
+  // §7: a room whose EVERY member is stopped cannot take turns — the
+  // stopped banners above already explain and offer Start.
+  const allStopped = roomMembers.length > 0 && roomMembers.every((m) => p.statuses[m] === "stopped" || p.statuses[m] === "crashed");
 
   const send = async (): Promise<void> => {
     if (p.draft.trim() === "" || room === null || budgetPaused) return;
@@ -82,10 +87,11 @@ export function Chat(p: Props): JSX.Element {
   };
 
   const abortStreaming = async (): Promise<void> => {
-    const target = Object.keys(p.streaming)[0];
-    if (target === undefined) return;
+    // THE ROOM member — insertion order could pick a bot streaming in
+    // ANOTHER room and abort it (R3 P2-1).
+    if (roomStreamingBot === undefined) return;
     try {
-      await post(`/api/bots/${target}/abort`);
+      await post(`/api/bots/${roomStreamingBot}/abort`);
     } catch (e) {
       setError(String(e));
     }
@@ -108,8 +114,6 @@ export function Chat(p: Props): JSX.Element {
     inputRef.current?.focus();
   };
 
-  const roomMembers = room?.members ?? [];
-  const roomStreamingBot = roomMembers.find((m) => p.streaming[m] !== undefined && p.streaming[m] !== "");
   const openApprovals = p.approvals.filter(
     (a) => a.botId !== null && roomMembers.includes(a.botId)
   );
@@ -207,7 +211,7 @@ export function Chat(p: Props): JSX.Element {
               ref={inputRef}
               rows={1}
               placeholder={budgetPaused ? t.roomPausedComposer : t.saySomething}
-              disabled={budgetPaused}
+              disabled={budgetPaused || allStopped}
               value={p.draft}
               onChange={(e) => p.onDraft(e.target.value)}
               onKeyDown={(e) => {
@@ -228,7 +232,7 @@ export function Chat(p: Props): JSX.Element {
             {roomStreamingBot !== undefined ? (
               <button className="danger" onClick={() => void abortStreaming()}>■ {t.stopStreaming}</button>
             ) : (
-              <button className="primary" disabled={budgetPaused || p.draft.trim() === ""} onClick={() => void send()}>➤ {t.send}</button>
+              <button className="primary" disabled={budgetPaused || allStopped || p.draft.trim() === ""} onClick={() => void send()}>➤ {t.send}</button>
             )}
           </div>
         </>
