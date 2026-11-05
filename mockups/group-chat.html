@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>codar — group chat prototype (M2 design, rev2)</title>
+<style>
+  :root {
+    --bg: #111318; --panel: #15181f; --panel2: #1a1d24; --line: #2a2e38;
+    --fg: #d7dae0; --dim: #78818f; --accent: #8ab4e8; --ok: #7ec98f;
+    --warn: #d8b35a; --err: #e06c6c; --chip: #232733;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { font: 13px/1.5 ui-monospace, "SF Mono", Menlo, monospace; background: var(--bg); color: var(--fg); height: 100vh; display: flex; flex-direction: column; }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 14px; font-weight: normal; }
+  header h1 b { color: var(--accent); font-weight: normal; }
+  .lang button { background: none; border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 2px 8px; cursor: pointer; margin-left: 4px; }
+  .lang button.on { background: var(--line); }
+  .frame { flex: 1; display: flex; min-height: 0; }
+
+  .roster { width: 216px; border-right: 1px solid var(--line); padding: 10px 8px; overflow-y: auto; display: flex; flex-direction: column; }
+  .row { display: flex; gap: 8px; padding: 8px; border-radius: 8px; cursor: pointer; align-items: flex-start; }
+  .row:hover, .row.sel { background: var(--panel2); }
+  .avatar { width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; background: var(--chip); flex: none; position: relative; }
+  .row .body { min-width: 0; flex: 1; }
+  .row .top { display: flex; justify-content: space-between; gap: 6px; }
+  .row .name { font-weight: bold; }
+  .row .time { color: var(--dim); font-size: 11px; }
+  .row .preview { color: var(--dim); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dot { position: absolute; right: -3px; bottom: -3px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--bg); }
+  .dot.attention { background: var(--err); } .dot.unread { background: var(--accent); } .dot.working { background: var(--warn); }
+  .stacked { display: flex; }
+  .stacked .avatar { width: 22px; height: 22px; font-size: 11px; margin-left: -6px; border: 1px solid var(--bg); }
+  .stacked .avatar:first-child { margin-left: 0; }
+  .newbtn { margin-top: 10px; width: 100%; background: var(--panel2); border: 1px dashed var(--line); color: var(--dim); border-radius: 8px; padding: 8px; cursor: pointer; }
+  .settings { margin-top: auto; padding-top: 10px; color: var(--dim); cursor: pointer; }
+
+  .chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .chathead { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  .chathead .members { color: var(--dim); font-size: 12px; }
+  .stream { flex: 1; overflow-y: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 76%; display: flex; gap: 8px; }
+  .msg .avatar { width: 26px; height: 26px; font-size: 13px; }
+  .msg .meta { font-size: 11px; color: var(--dim); margin-bottom: 2px; }
+  .msg .bubble { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; flex-direction: row-reverse; }
+  .msg.user .bubble { background: #23303f; border-color: #2f4257; }
+  .cursor::after { content: "▍"; color: var(--accent); animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .sysline { align-self: center; color: var(--dim); font-size: 11px; padding: 2px 10px; border-top: 1px solid var(--line); width: 60%; text-align: center; }
+  .sysline a { color: var(--accent); cursor: pointer; text-decoration: none; }
+
+  .card { align-self: flex-start; width: min(520px, 92%); border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: hidden; }
+  .card .chead { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+  .card .chead .spacer { flex: 1; }
+  .card .cbody { padding: 8px 12px; font-size: 12px; }
+  .badge { font-size: 11px; border-radius: 10px; padding: 1px 8px; border: 1px solid var(--line); }
+  .badge.working { color: var(--warn); } .badge.done { color: var(--ok); }
+  .badge.failed { color: var(--err); }
+  .tree { color: var(--dim); font-size: 11px; margin-top: 4px; }
+  .actions { display: flex; gap: 8px; padding: 8px 12px; }
+  .actions button { flex: 1; background: var(--panel2); border: 1px solid var(--line); color: var(--fg); border-radius: 8px; padding: 7px; cursor: pointer; font: inherit; }
+  .actions button.primary { border-color: #2f4257; background: #23303f; color: var(--accent); }
+  .actions button.danger { color: var(--err); }
+  .actions button[disabled] { opacity: .4; cursor: default; }
+  .actions button .m3 { font-size: 9px; color: var(--dim); margin-left: 4px; }
+  .budgetcard { border-color: #5a2f2f; }
+  .budgetcard .chead { color: var(--err); }
+  .roombudget { border-color: #6a542f; }
+  .roombudget .chead { color: var(--warn); }
+  .failedcard { border-color: #4a2f2f; }
+  .filechip { display: inline-flex; gap: 6px; align-items: center; background: var(--chip); border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px; font-size: 11px; margin: 2px 4px 2px 0; cursor: pointer; }
+  .filechip:hover { border-color: var(--accent); }
+  .approvecard { border-color: #3b3b5a; }
+
+  .turnbar { display: flex; align-items: center; gap: 14px; padding: 7px 16px; border-top: 1px solid var(--line); background: var(--panel); font-size: 12px; flex-wrap: wrap; }
+  .turnbar .slot { display: flex; align-items: center; gap: 5px; }
+  .turnbar .st { width: 8px; height: 8px; border-radius: 50%; }
+  .st.speaking { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+  .st.working { background: var(--warn); } .st.waiting { background: var(--dim); }
+  .st.lock { background: var(--err); }
+  .turnbar .mode { margin-left: auto; font-size: 11px; color: var(--dim); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; }
+  .turnbar.paused { background: #2a2318; color: var(--warn); }
+  .turnbar .demo { font-size: 10px; color: var(--dim); cursor: pointer; border: 1px dashed var(--line); border-radius: 8px; padding: 1px 8px; }
+  .composer { display: flex; gap: 8px; padding: 10px 14px; }
+  .composer input { flex: 1; background: var(--panel2); border: 1px solid var(--line); color: var(--fg); border-radius: 8px; padding: 9px 12px; font: inherit; }
+  .composer button { background: var(--panel2); border: 1px solid var(--line); color: var(--fg); border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+  .composer .send { color: var(--accent); border-color: #2f4257; }
+  .errbar { display: none; margin: 0 14px; padding: 6px 10px; border: 1px solid #5a2f2f; border-radius: 8px; color: var(--err); font-size: 12px; }
+
+  .context { width: 236px; border-left: 1px solid var(--line); padding: 12px; overflow-y: auto; }
+  .context h3 { font-size: 11px; color: var(--dim); font-weight: normal; letter-spacing: 1px; margin: 10px 0 8px; display: flex; justify-content: space-between; }
+  .context h3:first-child { margin-top: 0; }
+  .context h3 a { color: var(--accent); cursor: pointer; font-size: 10px; }
+  .cslot { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12px; }
+  .work { display: flex; gap: 6px; align-items: baseline; padding: 3px 0; font-size: 12px; color: var(--dim); }
+  .work b { color: var(--fg); font-weight: normal; }
+  .work.fail { color: var(--err); }
+  .meter { margin: 6px 0 10px; }
+  .meter .mrow { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; }
+  .meter .mrow b { font-weight: normal; }
+  .meter .bar { height: 6px; border-radius: 4px; background: var(--chip); overflow: hidden; }
+  .meter .fill { height: 100%; background: var(--accent); }
+  .meter.warn .fill { background: var(--warn); } .meter.err .fill { background: var(--err); }
+  .meter .sub { color: var(--dim); font-size: 10px; margin-top: 2px; }
+  .note { color: var(--dim); font-size: 10px; margin-top: 8px; }
+  .kv { display: flex; justify-content: space-between; font-size: 12px; padding: 3px 0; }
+  .kv span:first-child { color: var(--dim); }
+  .sandbox { font-size: 11px; border-radius: 8px; padding: 2px 8px; border: 1px solid var(--line); }
+  .sandbox.host { color: var(--warn); border-color: #4a422f; }
+  .sandbox.docker { color: var(--ok); }
+  .filepreview { background: var(--chip); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font-size: 11px; white-space: pre-wrap; margin-top: 6px; color: var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1><b>codar</b> <span data-i="appname">· bot team</span></h1>
+  <div class="lang"><button id="lang-en" class="on" onclick="setLang('en')">EN</button><button id="lang-zh" onclick="setLang('zh')">中文</button></div>
+</header>
+<div class="frame">
+  <nav class="roster" id="roster"></nav>
+  <main class="chat">
+    <div class="chathead">
+      <span class="stacked"><span class="avatar">👑</span><span class="avatar">✍</span><span class="avatar">🔬</span></span>
+      <b data-i="roomname">default</b>
+      <span class="members">Chief · Writer · Research</span>
+    </div>
+    <div class="stream" id="stream"></div>
+    <div class="errbar" id="errbar"></div>
+    <div class="turnbar" id="turnbar"></div>
+    <div class="composer" id="composer">
+      <input id="input" />
+      <button class="send" onclick="fakeSend()">➤</button>
+      <button onclick="showErr()">■</button>
+    </div>
+  </main>
+  <aside class="context" id="context"></aside>
+</div>
+<script>
+"use strict";
+const I = {
+  en: {
+    appname: "· bot team", roomname: "default",
+    ph_msg: "@ mention or message…",
+    errbar: "⚠ Writer: provider 429 rate-limited — auto-retry in 12s",
+    r_chief: "reviewing Writer's draft", r_writer: "drafting section 1…",
+    r_research: "waiting for approval", r_room: "Writer finished draft v1",
+    m_you: "you", chief_model: "minimax · M3.1-Flash", writer_model: "zai · glm-5.3",
+    msg1: "Write the weekly report draft. Writer takes the draft, Research verifies numbers.",
+    chief1: "On it. Delegated to Writer (task #w1); I'll review when the draft lands.",
+    chief_stream: "Draft looks solid. I asked Research to spot-check the Q3 retention number before we send it out.",
+    handoff_run: "task #w1 → Writer", handoff_prog: "drafting section 1 — Q3 numbers pulled, writing summary…",
+    tree: "tree: Chief → #w0 ✓ → #w1 ▶",
+    handoff_done: "task #w1 ✓ done → Writer", handoff_done_body: "Draft v1 saved",
+    consumed: "consumed CNY 0.041", result_back: "result returned to room · Chief resumed",
+    writer_reply: "Draft v1 is in ~/shared/weekly-draft.md — 3 sections, numbers spot-checked by Research.",
+    handoff_pend: "task #w2 → Research (queued)", pend_body: "queued — waiting for Research to finish #w1 verification",
+    handoff_fail: "task #w3 ✗ failed → Writer (1:40)",
+    fail_body: "reason: provider 500 ×3 (auto-retry exhausted)",
+    handoff_fail2: "task #w4 ✗ failed → Research", fail2_body: "reason: host-restart (host does not guess state)",
+    b_retry: "Redispatch", b_drop: "Drop",
+    handoff_rej: "task #w5 ⛔ rejected", rej_body: "cycle guard: Writer is waiting on Research's result — delegating back would loop.",
+    budget_head: "⛔ BUDGET STOPPED — Writer", budget_body: "monthly budget exhausted: CNY 20.00 / 20.00",
+    b_adjust: "Adjust budget", b_once: "Continue once", b_keep: "Keep stopped",
+    token_fallback: "token-budget fallback (this provider is unpriced)",
+    roombudget_head: "⛔ ROOM PAUSED — budget exhausted",
+    roombudget_body: "all working members aborted · bots kept alive · DMs unaffected",
+    rb_resume: "Adjust budget to resume", rb_keep: "Keep paused",
+    approve_head: "🔐 Writer requests: write", approve_body: "~/shared/weekly-draft.md · 2.1 KB",
+    a_once: "Allow", a_always: "Always allow", a_deny: "Deny", m3tag: "M3",
+    handoff_sys: "── messages from @Writer and @Research ──",
+    paused_bar: "⏸ paused — bots idle-talked 4 turns in a row, waiting for you",
+    paused_demo: "simulate pause", normal_demo: "back to normal",
+    t_speaking: "speaking", t_working: "working", t_waiting: "waiting", t_locked: "approval",
+    c_turn: "TURN", c_works: "WORKS", c_budget: "BUDGET", c_detail: "BOT DETAIL",
+    c_room: "← room",
+    w_run: "drafting…", w_done: "weekly draft", w_fail: "verify numbers",
+    w_pend: "queued", unpriced: "unpriced",
+    newbot: "+ new bot / room", settings: "⚙ settings",
+    sandbox_docker: "docker", sandbox_host: "host · not-isolated",
+    d_model: "model", d_effort: "effort", d_budget: "budget", d_sandbox: "sandbox",
+    d_session: "session", d_memory: "memory", d_m2: "M2",
+    hover_hint: "hover: token breakdown · turns left · wall-clock",
+    empty_works: "empty state: no active works in this room",
+    host_note: "host: loopback · pi 1.5.0",
+  },
+  zh: {
+    appname: "· Bot 团队", roomname: "default",
+    ph_msg: "@ 提及或输入消息…",
+    errbar: "⚠ Writer：provider 429 限流 — 12 秒后自动重试",
+    r_chief: "审阅 Writer 草稿中", r_writer: "起草第一段中…",
+    r_research: "等待审批", r_room: "Writer 完成草稿 v1",
+    m_you: "你", chief_model: "minimax · M3.1-Flash", writer_model: "zai · glm-5.3",
+    msg1: "写周报草稿。Writer 负责起草，Research 核对数字。",
+    chief1: "收到。已派给 Writer（任务 #w1），草稿回来我审。",
+    chief_stream: "草稿不错。发出去之前我让 Research 抽查一下 Q3 留存数字。",
+    handoff_run: "任务 #w1 → Writer", handoff_prog: "起草第一段 — Q3 数据已拉齐，正在写摘要…",
+    tree: "工作树：Chief → #w0 ✓ → #w1 ▶",
+    handoff_done: "任务 #w1 ✓ 完成 → Writer", handoff_done_body: "草稿 v1 已保存",
+    consumed: "消耗 ¥0.041", result_back: "结果已回群 · Chief 已接续",
+    writer_reply: "草稿 v1 在 ~/shared/weekly-draft.md — 三段，数字已请 Research 抽查。",
+    handoff_pend: "任务 #w2 → Research（排队）", pend_body: "排队中 — 等 Research 完成 #w1 的核对",
+    handoff_fail: "任务 #w3 ✗ 失败 → Writer（1:40）",
+    fail_body: "原因：provider 500 ×3（自动重试耗尽）",
+    handoff_fail2: "任务 #w4 ✗ 失败 → Research", fail2_body: "原因：host-restart（主机重启，不猜状态）",
+    b_retry: "重派", b_drop: "放弃",
+    handoff_rej: "任务 #w5 ⛔ 已拒绝", rej_body: "防环：Writer 正在等 Research 的结果，反向派活会成环。",
+    budget_head: "⛔ 预算停机 — Writer", budget_body: "月度预算已耗尽：¥20.00 / ¥20.00",
+    b_adjust: "调整预算", b_once: "仅本次继续", b_keep: "保持停机",
+    token_fallback: "token 预算兜底（该 provider 未计价）",
+    roombudget_head: "⛔ 群已暂停 — 预算耗尽",
+    roombudget_body: "全体干活成员已中止 · Bot 保留 · 私聊不受影响",
+    rb_resume: "调整预算以恢复", rb_keep: "保持暂停",
+    approve_head: "🔐 Writer 请求：写入", approve_body: "~/shared/weekly-draft.md · 2.1 KB",
+    a_once: "允许", a_always: "总是允许", a_deny: "拒绝", m3tag: "M3",
+    handoff_sys: "── 来自 @Writer 和 @Research 的消息 ──",
+    paused_bar: "⏸ 已暂停 — Bot 们连续空聊 4 轮，等你发话",
+    paused_demo: "模拟暂停", normal_demo: "恢复正常",
+    t_speaking: "发言中", t_working: "干活中", t_waiting: "等待", t_locked: "待审批",
+    c_turn: "回合", c_works: "工作树", c_budget: "预算", c_detail: "BOT 详情",
+    c_room: "← 返回群",
+    w_run: "起草中…", w_done: "周报草稿", w_fail: "核对数字",
+    w_pend: "排队中", unpriced: "未计价",
+    newbot: "+ 新建 Bot / 群", settings: "⚙ 设置",
+    sandbox_docker: "docker", sandbox_host: "host · 未隔离",
+    d_model: "模型", d_effort: "effort", d_budget: "预算", d_sandbox: "沙箱",
+    d_session: "会话", d_memory: "记忆", d_m2: "M2",
+    hover_hint: "悬停：token 明细 · 剩余回合 · 墙钟",
+    empty_works: "空态示意：本群暂无进行中的工作",
+    host_note: "host: loopback · pi 1.5.0",
+  },
+};
+let lang = "en", pausedDemo = false, detailView = null, streamTimer = null, elapsedTimers = [];
+const t = (k) => I[lang][k];
+
+function applyI18n() {
+  document.querySelectorAll("[data-i]").forEach((el) => { el.textContent = t(el.dataset.i); });
+  document.getElementById("errbar").textContent = t("errbar");
+}
+function setLang(l) {
+  lang = l;
+  document.getElementById("lang-en").className = l === "en" ? "on" : "";
+  document.getElementById("lang-zh").className = l === "zh" ? "on" : "";
+  render();
+}
+
+const BOTS = [
+  { id: "chief", emoji: "👑", name: "Chief", time: "14:02", preview: "r_chief", dot: null },
+  { id: "writer", emoji: "✍", name: "Writer", time: "14:04", preview: "r_writer", dot: "working" },
+  { id: "research", emoji: "🔬", name: "Research", time: "14:06", preview: "r_research", dot: "attention" },
+  { id: "room", emoji: "", name: null, time: "14:05", preview: "r_room", dot: "unread", stacked: ["👑", "✍", "🔬"] },
+];
+
+function renderRoster() {
+  const el = document.getElementById("roster");
+  el.innerHTML = "";
+  for (const b of BOTS) {
+    const row = document.createElement("div");
+    row.className = "row" + (b.id === "room" ? " sel" : "");
+    row.onclick = () => { detailView = b.id === "room" ? null : b.id; renderContext(); };
+    row.oncontextmenu = (e) => { e.preventDefault(); detailView = b.id; renderContext(); };
+    const av = b.stacked
+      ? `<span class="stacked">${b.stacked.map((e) => `<span class="avatar">${e}</span>`).join("")}</span>`
+      : `<span class="avatar">${b.emoji}${b.dot ? `<span class="dot ${b.dot}"></span>` : ""}</span>`;
+    row.innerHTML = `${av}<div class="body"><div class="top"><span class="name">${b.name ?? t("roomname") + " 👥"}</span><span class="time">${b.time}</span></div><div class="preview">${t(b.preview)}</div></div>`;
+    el.appendChild(row);
+  }
+  const nb = document.createElement("button");
+  nb.className = "newbtn"; nb.textContent = t("newbot"); el.appendChild(nb);
+  const st = document.createElement("div");
+  st.className = "settings"; st.textContent = t("settings"); el.appendChild(st);
+}
+
+function msg(who, text, cls = "") {
+  const d = document.createElement("div");
+  d.className = `msg ${who === "you" ? "user" : ""}`;
+  const av = who === "you" ? "" : `<span class="avatar">${who.emoji}</span>`;
+  const name = who === "you" ? t("m_you") : who.name;
+  const model = who.modelKey ? ` <span class="model">· ${t(who.modelKey)}</span>` : "";
+  d.innerHTML = `${av}<div><div class="meta">${name}${model}</div><div class="bubble ${cls}"></div></div>`;
+  d.querySelector(".bubble").textContent = text;
+  document.getElementById("stream").appendChild(d);
+  return d;
+}
+function sysline(html) {
+  const d = document.createElement("div");
+  d.className = "sysline"; d.innerHTML = html;
+  document.getElementById("stream").appendChild(d);
+  return d;
+}
+function card(headHtml, bodyHtml, actions = null, cls = "") {
+  const d = document.createElement("div");
+  d.className = `card ${cls}`;
+  d.innerHTML = `<div class="chead">${headHtml}</div><div class="cbody">${bodyHtml}</div>` +
+    (actions ? `<div class="actions">${actions.map((a) => {
+      const [label, clsName, disabled, tag] = a;
+      return `<button class="${clsName ?? ""}" ${disabled ? "disabled" : ""}>${label}${tag ? `<span class="m3">${tag}</span>` : ""}</button>`;
+    }).join("")}</div>` : "");
+  document.getElementById("stream").appendChild(d);
+  return d;
+}
+
+function renderStream() {
+  const s = document.getElementById("stream"); s.innerHTML = "";
+  elapsedTimers.forEach(clearInterval); elapsedTimers = [];
+  if (streamTimer) clearInterval(streamTimer);
+
+  msg("you", t("msg1"));
+  msg({ ...BOTS[0], modelKey: "chief_model" }, t("chief1"));
+  card(`${t("handoff_run")} <span class="spacer"></span><span class="badge working">⏱ <span class="ht">2:14</span></span>`,
+    `${t("handoff_prog")}<div class="tree">${t("tree")}</div>`);
+  const writer = msg({ ...BOTS[1], modelKey: "writer_model" }, t("writer_reply"));
+  const link = sysline(`<a>${t("handoff_sys")}</a>`);
+  link.querySelector("a").onclick = () => writer.scrollIntoView({ block: "center", behavior: "smooth" });
+  card(`${t("handoff_done")} <span class="spacer"></span><span class="badge done">✓ 3:02</span>`,
+    `${t("handoff_done_body")} <span class="filechip">📄 weekly-draft.md · 2.1KB</span><div class="tree">${t("consumed")} · ${t("result_back")}</div>`)
+    .querySelector(".filechip").onclick = () => { detailView = "file"; renderContext(); };
+  card(`${t("handoff_pend")} <span class="spacer"></span><span class="badge">queued</span>`, t("pend_body"));
+  card(`${t("handoff_fail")}`, t("fail_body"), [[t("b_retry"), "primary"], [t("b_drop"), "danger"]], "failedcard");
+  card(`${t("handoff_fail2")}`, t("fail2_body"), null, "failedcard");
+  card(`${t("handoff_rej")}`, t("rej_body"));
+  card(`<span>${t("budget_head")}</span>`, t("budget_body") + `<div class="tree">${t("token_fallback")}</div>`,
+    [[t("b_adjust"), "primary"], [t("b_once")], [t("b_keep"), "danger"]], "budgetcard");
+  card(`<span>${t("roombudget_head")}</span>`, t("roombudget_body"),
+    [[t("rb_resume"), "primary"], [t("rb_keep")]], "roombudget");
+  card(`${t("approve_head")}`, t("approve_body"),
+    [[t("a_once"), "primary"], [t("a_always"), "", true, t("m3tag")], [t("a_deny"), "danger"]], "approvecard");
+  // streaming bubble with live typing (distinct text from chief1)
+  const full = t("chief_stream");
+  const sd = msg({ ...BOTS[0], modelKey: "chief_model" }, "");
+  const bubble = sd.querySelector(".bubble");
+  bubble.classList.add("cursor");
+  let i = 0;
+  streamTimer = setInterval(() => {
+    i = Math.min(full.length, i + 2);
+    bubble.textContent = full.slice(0, i);
+    if (i >= full.length) { clearInterval(streamTimer); bubble.classList.remove("cursor"); }
+  }, 90);
+  // live elapsed for the running card
+  s.querySelectorAll(".ht").forEach((el) => {
+    let sec = 134;
+    const iv = setInterval(() => {
+      sec += 1;
+      if (!document.body.contains(el)) { clearInterval(iv); return; }
+      el.textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+    }, 1000);
+    elapsedTimers.push(iv);
+  });
+}
+
+function renderTurnbar() {
+  const tb = document.getElementById("turnbar");
+  const comp = document.getElementById("composer");
+  const inp = document.getElementById("input");
+  if (pausedDemo) {
+    tb.className = "turnbar paused";
+    tb.innerHTML = `<span>${t("paused_bar")}</span><span class="demo" onclick="togglePause()">${t("normal_demo")}</span>`;
+    comp.style.opacity = "0.5";
+    inp.disabled = true;
+    inp.placeholder = t("ph_msg");
+    return;
+  }
+  comp.style.opacity = "";
+  inp.disabled = false;
+  inp.placeholder = t("ph_msg");
+  const slot = (emoji, name, st, label) =>
+    `<span class="slot"><span class="st ${st}"></span>${emoji} ${name} <span style="color:var(--dim)">· ${label}</span></span>`;
+  tb.className = "turnbar";
+  tb.innerHTML =
+    slot("👑", "Chief", "speaking", t("t_speaking")) +
+    slot("✍", "Writer", "working", t("t_working")) +
+    slot("🔬", "Research", "lock", t("t_locked")) +
+    `<span class="mode">${t("roomname")} · admin-reply</span>` +
+    `<span class="demo" onclick="togglePause()">${t("paused_demo")}</span>`;
+}
+function togglePause() { pausedDemo = !pausedDemo; render(); }
+
+function renderContext() {
+  const c = document.getElementById("context");
+  const cny = (v) => (lang === "zh" ? `¥${v}` : `CNY ${v}`);
+  if (detailView === "file") {
+    c.innerHTML = `<h3>weekly-draft.md <a onclick="detailView=null;renderContext()">${t("c_room")}</a></h3>
+      <div class="filepreview"># Weekly Report — draft v1
+
+## Highlights
+- Q3 revenue up 12% (verified ✓ Research)
+- Retention 94.2% (spot-check pending)
+
+## Risks
+…</div>`;
+    return;
+  }
+  if (detailView === "chief" || detailView === "writer" || detailView === "research") {
+    const b = BOTS.find((x) => x.id === detailView);
+    const docker = b.id === "writer";
+    c.innerHTML = `
+      <h3>${t("c_detail")} <a onclick="detailView=null;renderContext()">${t("c_room")}</a></h3>
+      <div style="text-align:center;margin:6px 0"><span class="avatar" style="width:44px;height:44px;font-size:22px;display:inline-flex">${b.emoji}</span>
+      <div style="font-weight:bold;margin-top:4px">${b.name}</div></div>
+      <div class="kv"><span>${t("d_model")}</span><span>${t(b.id === "chief" ? "chief_model" : "writer_model")}</span></div>
+      <div class="kv"><span>${t("d_effort")}</span><span>low</span></div>
+      <div class="kv"><span>${t("d_sandbox")}</span><span class="sandbox ${docker ? "docker" : "host"}">${t(docker ? "sandbox_docker" : "sandbox_host")}</span></div>
+      <div class="kv"><span>${t("d_session")}</span><span style="color:var(--dim);font-size:10px">pi-conf/${b.id}/…</span></div>
+      <h3>${t("d_memory")} <span style="font-size:9px;color:var(--dim)">${t("d_m2")}</span></h3>
+      <div class="note">entry / main / topics · snapshot frozen</div>
+      <h3>${t("d_budget")}</h3>
+      <div class="meter ${b.id === "writer" ? "warn" : ""}"><div class="mrow"><b>${b.name}</b><span>${cny("14.2 / 20.0")}</span></div><div class="bar"><div class="fill" style="width:${b.id === "writer" ? 84 : 16}%"></div></div><div class="sub">${t("hover_hint")}</div></div>`;
+    return;
+  }
+  const slot = (emoji, name, st, stLabel) =>
+    `<div class="cslot"><span class="st ${st}"></span><span>${emoji} ${name}</span><span style="color:var(--dim)">· ${stLabel}</span></div>`;
+  c.innerHTML = `
+    <h3>${t("c_turn")}</h3>
+    ${slot("👑", "Chief", "speaking", t("t_speaking"))}
+    ${slot("✍", "Writer", "working", t("t_working"))}
+    ${slot("🔬", "Research", "lock", t("t_locked"))}
+    <h3>${t("c_works")}</h3>
+    <div class="work">▶ <b>#w1</b> ${t("w_run")} · ⏱3:12</div>
+    <div class="work">⌛ <b>#w2</b> ${t("w_pend")}</div>
+    <div class="work">✓ <b>#w0</b> ${t("w_done")}</div>
+    <div class="work fail">✗ <b>#w3</b> ${t("w_fail")}</div>
+    <div class="note">${t("empty_works")}</div>
+    <h3>${t("c_budget")}</h3>
+    <div class="meter warn"><div class="mrow"><b>Writer</b><span>${cny("16.8 / 20.0")}</span></div><div class="bar"><div class="fill" style="width:84%"></div></div><div class="sub">84% · ${t("sandbox_docker")}</div></div>
+    <div class="meter"><div class="mrow"><b>Chief</b><span>${cny("3.1 / 20.0")}</span></div><div class="bar"><div class="fill" style="width:16%"></div></div><div class="sub">16%</div></div>
+    <div class="meter"><div class="mrow"><b>Research</b><span>${cny("— / 20.0")}</span></div><div class="bar"><div class="fill" style="width:0%"></div></div><div class="sub">${t("unpriced")} · ${t("token_fallback")}</div></div>
+    <div class="note">${t("host_note")}</div>`;
+}
+
+function fakeSend() {
+  const inp = document.getElementById("input");
+  const v = inp.value.trim() || "@Writer ";
+  msg("you", v);
+  inp.value = "";
+}
+function showErr() {
+  const e = document.getElementById("errbar");
+  e.style.display = "block";
+  setTimeout(() => (e.style.display = "none"), 3000);
+}
+
+function render() {
+  applyI18n();
+  renderRoster();
+  renderStream();
+  renderTurnbar();
+  renderContext();
+}
+render();
+</script>
+</body>
+</html>
