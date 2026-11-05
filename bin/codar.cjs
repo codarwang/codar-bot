@@ -15,9 +15,8 @@ const GREEN = (s) => (IS_TTY ? `\x1b[32m${s}\x1b[0m` : s);
 const RED = (s) => (IS_TTY ? `\x1b[31m${s}\x1b[0m` : s);
 const DIM = (s) => (IS_TTY ? `\x1b[2m${s}\x1b[0m` : s);
 
-// Minimum Node version codar-bot assumes for the preflight. The real floor
-// follows what pi 1.5.0 requires and is pinned during M0; >=18 is the safe
-// interim baseline.
+// Minimum Node version: pi 1.5.0 engines >=22.19 and host node:sqlite both
+// require >=22 — this is the pinned floor (architecture §1).
 const MIN_NODE_MAJOR = 22; // pi 1.5.0 engines >=22.19; node:sqlite needs >=22.5
 
 function run(cmd, timeoutMs = 5000) {

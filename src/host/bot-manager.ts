@@ -49,6 +49,11 @@ interface ManagedBot {
   stopRequested: boolean;
   /** single-flight restart guard (review R1: dual-chain race). */
   restarting: boolean;
+  /** lifecycle generation: bumped by every start(); a recovery chain only
+   *  acts while its snapshot equals the current epoch — a superseded chain
+   *  (manual stop→start, or a newer chain) exits without status writes
+   *  (review R2: stale chain used to mark a live bot "stopped"). */
+  epoch: number;
 }
 
 const MAX_RESTARTS = 3;
@@ -101,7 +106,7 @@ export class BotManager extends EventEmitter {
   private managed(botId: string): ManagedBot {
     let m = this.bots.get(botId);
     if (m === undefined) {
-      m = { botId, client: null, status: "stopped", restarts: 0, lastError: null, stopRequested: false, restarting: false };
+      m = { botId, client: null, status: "stopped", restarts: 0, lastError: null, stopRequested: false, restarting: false, epoch: 0 };
       this.bots.set(botId, m);
     }
     return m;
@@ -119,8 +124,8 @@ export class BotManager extends EventEmitter {
     if (bot === undefined) throw new Error(`no bot ${botId}`);
     const m = this.managed(botId);
     if (m.client !== null) throw new Error(`bot ${botId} already running`);
+    m.epoch += 1; // supersedes any in-flight recovery chain for this bot
     m.stopRequested = false;
-    m.restarting = false;
     this.setStatus(m, "starting");
 
     // Host-controlled dirs must exist before the child starts (the gate's
@@ -142,6 +147,7 @@ export class BotManager extends EventEmitter {
     client.on("event", (e: AgentEvent) => this.onEvent(bot, client, e));
     client.on("error", (e: Error) => void this.onChildFailure(bot, client, String(e)));
     client.on("bot_failed", (f) => {
+      if ((f as { aborted?: boolean }).aborted === true) return; // user abort, not a failure
       const reason = `stopReason=${String((f as { stopReason?: string }).stopReason ?? "?")} ${String((f as { errorMessage?: string }).errorMessage ?? "")}`.trim();
       this.emit("failure", { botId, reason });
       this.audit("bot_failed", { botId, reason });
@@ -172,7 +178,9 @@ export class BotManager extends EventEmitter {
       }
     } catch (error) {
       this.dropClient(m, client);
-      await this.recoverFromFailure(bot, client, String(error));
+      // Recovery runs detached — the caller learns about THIS failure now,
+      // not after the whole backoff ladder (R2: ~90s 500s).
+      void this.recoverFromFailure(bot, client, String(error)).catch(() => undefined);
       throw error;
     }
 
@@ -209,6 +217,7 @@ export class BotManager extends EventEmitter {
     const m = this.bots.get(botId);
     if (m === undefined || m.client === null) throw new Error(`bot ${botId} is not running`);
     if (m.status === "working") throw new Error(`bot ${botId} is already working on a prompt`);
+    if (m.status !== "idle") throw new Error(`bot ${botId} is ${m.status} (wait for idle)`);
     const client = m.client;
     const bot = this.store.bot(botId)!;
     this.setStatus(m, "working");
@@ -245,6 +254,7 @@ export class BotManager extends EventEmitter {
         throw new Error(m.stopRequested ? "bot stopped mid-prompt" : "bot replaced mid-prompt");
       }
     } catch (error) {
+      detach(); // rejected prompts must not linger listeners (R2 P3-1)
       // setStatus("working") inside this function defeats TS's property
       // narrowing — re-widen deliberately.
       if (m.client === client && (m.status as BotStatus) === "working") {
@@ -352,22 +362,25 @@ export class BotManager extends EventEmitter {
       return;
     }
     m.restarting = true;
+    const myEpoch = m.epoch; // superseded chains exit silently (R2 P2)
     try {
-      while (m.restarts < MAX_RESTARTS && !m.stopRequested) {
+      while (m.restarts < MAX_RESTARTS && !m.stopRequested && m.epoch === myEpoch) {
         m.restarts += 1;
         const backoff = RESTART_BASE_MS * 2 ** (m.restarts - 1);
         await new Promise((r) => setTimeout(r, backoff));
-        if (m.stopRequested) break;
+        if (m.stopRequested || m.epoch !== myEpoch) break;
         try {
-          await this.start(bot.id);
-          return; // success — start() reset restarts/restarting
+          await this.start(bot.id); // bumps epoch on success path; owns status
+          return;
         } catch {
-          /* retry loop continues */
+          /* retry loop continues while this chain still owns the lifecycle */
         }
       }
-      if (!m.stopRequested) this.setStatus(m, "stopped", `restart budget exhausted (${reason})`);
+      if (!m.stopRequested && m.epoch === myEpoch && m.client === null) {
+        this.setStatus(m, "stopped", `restart budget exhausted (${reason})`);
+      }
     } finally {
-      m.restarting = false;
+      if (m.epoch === myEpoch) m.restarting = false;
     }
   }
 }

@@ -21,7 +21,7 @@ schema、关键时序、故障域。PRD 回答「做什么/为什么」，本文
 
 ```
                     ┌────────────────────────────────────────────┐
-                    │  codar host daemon（单进程，TS/Node ≥20）    │
+                    │  codar host daemon（单进程，TS/Node ≥22.19） │
                     │                                            │
  Web UI (SPA) ◄─────┤  HTTP API (REST + SSE)   CLI (codar)       │
  浏览器/Tailscale    │  ┌──────────────────────────────────────┐  │
