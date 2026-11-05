@@ -76,7 +76,15 @@ test("bot over token limit: stopped, room broadcast, audit line, sticky", async 
       input: 10, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0,
     });
     assert.ok(events.some((e) => e.startsWith("stop:tokens:")), "stop event fired");
-    // Room log carries the broadcast (§3.2-4 no silent failure).
+    // The room broadcast is async (fires after bots.stop resolves — R2 P3-6
+    // ordering): wait for it.
+    const bDeadline = Date.now() + 5_000;
+    while (
+      !r.rooms.history(r.roomId).some((m) => m.from.kind === "system" && m.text.includes("BUDGET STOPPED")) &&
+      Date.now() < bDeadline
+    ) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
     const hist = r.rooms.history(r.roomId);
     assert.ok(hist.some((m) => m.from.kind === "system" && m.text.includes("BUDGET STOPPED")));
     // Audit line.
@@ -156,8 +164,15 @@ test("M2-C R1: sticky stop — subsequent over-limit writes do not re-broadcast"
       });
     }
     assert.equal(stops.length, 1, "one stop event, sticky afterwards");
+    const bDeadline2 = Date.now() + 5_000;
+    while (
+      r.rooms.history(r.roomId).filter((m) => m.from.kind === "system" && m.text.includes("BUDGET STOPPED")).length < 1 &&
+      Date.now() < bDeadline2
+    ) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
     const sys = r.rooms.history(r.roomId).filter((m) => m.from.kind === "system" && m.text.includes("BUDGET STOPPED"));
-    assert.equal(sys.length, 1, "one broadcast");
+    assert.equal(sys.length, 1, "one broadcast (sticky — no storm)");
   } finally {
     await r.dispose();
   }
@@ -212,5 +227,22 @@ test("M2-C R1: HTTP GET /api/budget/:id reports month usage (route regression)",
     delete process.env.CODAR_BOT_HOME;
     delete process.env.CODAR_BOT_PORT;
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("M2-C R2: start/restart settle is NOT counted as a turn (working→idle only)", async () => {
+  const r = await rig({ maxTurns: 3 });
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId); // starting→idle must not burn a turn
+    await r.rooms.userSay(r.roomId, "Reply with the single word ALPHA."); // turn 1
+    assert.equal(r.bots.status(r.chiefId), "idle", "1 turn < 3 limit, still alive");
+    await r.rooms.userSay(r.roomId, "Reply with the single word BRAVO."); // turn 2
+    assert.equal(r.bots.status(r.chiefId), "idle", "2 turns < 3, still alive");
+    await r.rooms.userSay(r.roomId, "Reply with the single word OK."); // turn 3 = limit
+    assert.equal(r.bots.status(r.chiefId), "stopped", "3rd REAL turn hits maxTurns");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
   }
 });

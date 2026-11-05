@@ -37,6 +37,10 @@ export interface HandoffEvents {
 }
 
 export class Handoff extends EventEmitter {
+  /** Per-task wall cap provider (Budget.wallDeadlineMs); set by Host
+   *  (§6.1a maxWallMs — M2-C R2 P2-4). */
+  deadlineMs: ((botId: string) => number | null) | null = null;
+
   /** Results for busy callers, delivered when the caller goes idle.
    *  Multi-slot per parent: a busy window can produce SEVERAL results —
    *  each gets its own wake prompt, none overwritten (M2-B R2 P2-a). */

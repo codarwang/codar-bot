@@ -394,7 +394,12 @@ export class HttpApi {
         // whole turn (up to replyTimeoutMs × responders); results stream via
         // SSE roommessage/turn/system. Budget-pause still rejects 409.
         if (this.deps.rooms.pausedReason(id) === "budget") {
-          throw new ApiError(409, `room ${id} is budget-paused — adjust the budget to resume`);
+          // Entry-point rollover check (M2-C R2 P2-3): a stale-window pause
+          // lifts itself here; a current-window one still 409s.
+          this.deps.budget.rolloverIfStale(id);
+          if (this.deps.rooms.pausedReason(id) === "budget") {
+            throw new ApiError(409, `room ${id} is budget-paused — adjust the budget to resume`);
+          }
         }
         void this.deps.rooms.userSay(id, body.text).catch((e: unknown) => {
           this.broadcast("system", { roomId: id, text: `turn failed: ${String(e).slice(0, 200)}` });
@@ -457,6 +462,8 @@ export class HttpApi {
           if (room === undefined) throw new ApiError(404, `no room ${id}`);
           const nextBudget = { ...room.budget, ...patch };
           this.deps.store.updateRoom(id, { budget: nextBudget });
+          // A new limit re-arms the window's enforcement (M2-C R2 P2-2).
+          this.deps.budget.rearm("room", id);
           // Resume ONLY when the new limit actually clears this month's usage
           // (M2-C R1 P2: an unconditional resume un-pauses a still-over room).
           if (room.status === "paused" && room.pauseReason === "budget") {
@@ -468,7 +475,11 @@ export class HttpApi {
             }
             const clears =
               (nextBudget.maxTokens <= 0 || tokens < nextBudget.maxTokens) &&
-              (nextBudget.maxCostMicros <= 0 || micros < nextBudget.maxCostMicros);
+              (nextBudget.maxCostMicros <= 0 || micros < nextBudget.maxCostMicros) &&
+              // Turns dimension: this month's settles must sit below the new
+              // limit too (M2-C R2 P2-2 — a turns-paused room with a raised
+              // token limit stays paused otherwise).
+              (nextBudget.maxTurns <= 0 || this.deps.budget.turnsThisMonth("room", id) < nextBudget.maxTurns);
             if (clears) {
               this.deps.rooms.resume(id, "budget adjusted — room resumed");
             }
@@ -479,6 +490,7 @@ export class HttpApi {
         const bot = this.deps.store.bot(id);
         if (bot === undefined) throw new ApiError(404, `no bot ${id}`);
         this.deps.store.updateBot(id, { budget: { ...bot.budget, ...patch } });
+        this.deps.budget.rearm("bot", id);
         this.send(res, 200, this.deps.store.bot(id)!.budget);
         return;
       }
