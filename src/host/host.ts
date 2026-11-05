@@ -8,6 +8,7 @@ import { UsageLedger } from "./usage-ledger.js";
 import { BotManager } from "./bot-manager.js";
 import { HttpApi } from "./http-api.js";
 import { paths, type HostPaths } from "./paths.js";
+import { loadKeys } from "./provider-config.js";
 
 export interface HostOptions {
   dataRoot?: string;
@@ -49,12 +50,13 @@ export class Host {
     }
     const store = Store.openExclusive(p.state, { create: true });
     const ledger = new UsageLedger(p.ledger);
+    const keys = loadKeys(p.keys);
     const bots = new BotManager(store, ledger, p.root, {
       bin: opts.bin,
       sandboxArgv: opts.argv,
       extensionPath: opts.extensionPath,
       env: opts.env,
-    });
+    }, keys);
     const api = new HttpApi({ store, bots, ledger });
     return new Host(opts, store, ledger, bots, api);
   }

@@ -18,6 +18,7 @@ import type { BotRecord } from "./store.js";
 import type { Store } from "./store.js";
 import type { UsageLedger } from "./usage-ledger.js";
 import { botPiConfDir } from "./paths.js";
+import { buildSpawnConfig, materializePiConf, type BotSpawnConfig, type KeysDoc } from "./provider-config.js";
 
 export type BotStatus = "stopped" | "starting" | "idle" | "working" | "crashed";
 
@@ -81,7 +82,9 @@ export class BotManager extends EventEmitter {
     private readonly store: Store,
     private readonly ledger: UsageLedger,
     private readonly dataRoot: string,
-    spawnDefaults: SpawnOptions = {}
+    spawnDefaults: SpawnOptions = {},
+    /** §3.3 provider chain: keys.json → per-bot env + pi-conf/models.json. */
+    private readonly keys: KeysDoc = { providers: {} }
   ) {
     super();
     this.spawnDefaults = spawnDefaults;
@@ -145,6 +148,11 @@ export class BotManager extends EventEmitter {
     this.setStatus(m, "starting");
 
     const spawn = { ...this.spawnDefaults, ...spawnOverride };
+    // §3.3: standard providers inject their env var; custom providers get a
+    // models.json with $CODAR_BOT_KEY interpolation (secret never on disk).
+    const cfg: BotSpawnConfig = buildSpawnConfig(this.keys, this.dataRoot, botId, bot.model.provider);
+    materializePiConf(cfg);
+    spawn.env = { ...cfg.env, ...spawn.env, PI_CODING_AGENT_DIR: cfg.piConfDir };
     // Everything that can fail — including BEFORE the client exists (mkdir
     // ENOENT etc.) — lives inside this try: pre-client failures must re-enter
     // the recovery funnel, not strand a parked baton (R5 P3-2).
@@ -171,6 +179,7 @@ export class BotManager extends EventEmitter {
         this.audit("bot_failed", { botId, reason });
       });
       client.on("exit", () => void this.onChildFailure(bot, client, "rpc child exited"));
+      client.on("aborted", () => this.emit("aborted", { botId }));
 
       const ready = await client.start({
         extensionPath: spawn.extensionPath,
@@ -301,6 +310,28 @@ export class BotManager extends EventEmitter {
     return last.success && typeof (last.data as { text?: unknown } | null)?.text === "string"
       ? (last.data as { text: string }).text
       : "";
+  }
+
+  /** Chat transcript for the UI: the live child's message history. */
+  async messages(botId: string): Promise<Array<{ role: string; text: string }>> {
+    const m = this.bots.get(botId);
+    if (m?.client == null) throw new Error(`bot ${botId} is not running`);
+    const res = await m.client.command({ type: "get_messages" } as Record<string, unknown>);
+    if (!res.success) throw new Error(`get_messages failed: ${res.error}`);
+    const messages = (res.data as { messages?: Array<Record<string, unknown>> } | null)?.messages ?? [];
+    return messages.flatMap((msg) => {
+      const role = typeof msg["role"] === "string" ? msg["role"] : "unknown";
+      const content = msg["content"];
+      if (typeof content === "string") return [{ role, text: content }];
+      if (Array.isArray(content)) {
+        const text = content
+          .filter((c): c is { type?: string; text?: string } => typeof c === "object" && c !== null)
+          .map((c) => (c.type === "text" && typeof c.text === "string" ? c.text : ""))
+          .join("");
+        return text.length > 0 ? [{ role, text }] : [];
+      }
+      return [];
+    });
   }
 
   async interrupt(botId: string): Promise<void> {
