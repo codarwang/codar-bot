@@ -1,19 +1,19 @@
 /**
- * provider-config — the §3.3 key/config chain.
+ * provider-config — the §3.3 key/config chain (v2, unified).
  *
- * keys.json (0600, atomic tmp+rename, independent of state.json) holds
- * provider credentials; the host materializes per-bot pi-conf/models.json
- * with `$ENV` interpolated key references (the S3/S4-proven mechanism: the
- * key never lands in a config file; the child gets it via env).
+ * ONE mechanism: codar-bot's own provider registry (keys.json, 0600, atomic
+ * tmp+rename) → per-bot pi-conf/models.json with `$ENV` interpolated keys
+ * (the pi public config surface; M0-S3/S4-proven). There is deliberately NO
+ * "ride pi's built-in provider" path anymore: pi is version-pinned (A7), so
+ * its bundled catalog never auto-updates — the branch only added confusion
+ * between two credential sources (design decision, Felix 2026-11-05).
  *
- * Branch policy (R1 review):
- *  - standard provider, key only        → inject pi's env var (e.g.
- *    ANTHROPIC_API_KEY); nothing on disk. NOTE: an empty/absent apiKey
- *    injects NOTHING (never shadow a valid host env with an empty string).
- *  - custom provider (baseUrl and/or a models override) → models.json with
- *    apiKey "$CODAR_BOT_KEY" + the key in env. Standard names with overrides
- *    take this branch too — silently DROPPING a models override would be a
- *    dishonest success.
+ * PRESETS carry well-known provider defaults (api protocol + baseUrl); a
+ * keys.json entry overrides any preset field. Providers pi natively knows
+ * (e.g. zai-coding-cn) still merge pi's own catalog beneath our overrides —
+ * unknown providers MUST ship a models array, which the host generates from
+ * the bot's requested modelId (minimal honest entry: no invented prices —
+ * cost stays 0 and the budget layer degrades to token-budget, §4).
  */
 import { readFileSync, openSync, closeSync, writeSync, renameSync, mkdirSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -23,6 +23,8 @@ import { botPiConfDir } from "./paths.js";
 export interface ProviderEntry {
   apiKey?: string;
   baseUrl?: string;
+  /** pi KnownApi protocol; defaults to the preset's, else openai-completions. */
+  api?: string;
   models?: unknown;
 }
 
@@ -30,13 +32,17 @@ export interface KeysDoc {
   providers: Record<string, ProviderEntry>;
 }
 
-/** pi's env var names for its built-in providers. */
-const STANDARD_PROVIDER_ENV: Record<string, string> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  google: "GOOGLE_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  groq: "GROQ_API_KEY",
+/** Well-known provider presets — the only "built-ins" codar has, and they
+ *  live in OUR config layer, not pi's. Entry fields always win. */
+export const PROVIDER_PRESETS: Record<string, { api: string; baseUrl?: string }> = {
+  anthropic: { api: "anthropic-messages", baseUrl: "https://api.anthropic.com" },
+  openai: { api: "openai-completions", baseUrl: "https://api.openai.com/v1" },
+  "openrouter": { api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1" },
+  deepseek: { api: "openai-completions", baseUrl: "https://api.deepseek.com" },
+  "zai-coding-cn": { api: "openai-completions", baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4" },
+  "minimax-anthropic": { api: "anthropic-messages", baseUrl: "https://api.minimax.cn/anthropic" },
+  "minimax-cn": { api: "openai-completions", baseUrl: "https://api.minimaxi.com/v1" },
+  "groq": { api: "openai-completions", baseUrl: "https://api.groq.com/openai/v1" },
 };
 
 function ownEntry(doc: KeysDoc, provider: string): ProviderEntry | undefined {
@@ -72,48 +78,56 @@ export function writeKeys(keysPath: string, doc: KeysDoc): void {
 }
 
 export interface BotSpawnConfig {
-  /** env additions for the child (provider keys). */
+  /** env additions for the child (the provider key). */
   env: Record<string, string>;
-  /** models.json content for the bot's pi-conf dir, or null when pi's
-   *  defaults suffice (standard provider without overrides). */
+  /** models.json content for the bot's pi-conf dir (null only when the
+   *  provider has NO entry in keys.json — an honest bare spawn). */
   modelsJson: string | null;
   piConfDir: string;
 }
 
-/** Resolve a bot's provider spawn config from keys.json (§3.3). */
+/** Resolve a bot's provider spawn config from keys.json (§3.3 unified). */
 export function buildSpawnConfig(
   keys: KeysDoc,
   dataRoot: string,
   botId: string,
-  provider: string
+  provider: string,
+  modelId: string
 ): BotSpawnConfig {
   const piConfDir = botPiConfDir(dataRoot, botId);
   const entry = ownEntry(keys, provider);
   const env: Record<string, string> = {};
   if (entry === undefined) {
-    // No credentials configured for this provider — spawn bare; auth then
-    // fails inside the child and surfaces through bot_failed (honest). A
-    // same-name key in the HOST's own env may still authenticate the child
-    // (children inherit process.env) — keys.json is the tracked source, not
-    // an exclusive gate.
+    // No credentials configured — spawn bare; auth fails inside the child
+    // and surfaces through bot_failed (honest failure, no silent fallback
+    // to some other credential source).
     return { env, modelsJson: null, piConfDir };
   }
-  const hasOverride = entry.baseUrl !== undefined || entry.models !== undefined;
-  const standardEnv = Object.hasOwn(STANDARD_PROVIDER_ENV, provider) ? STANDARD_PROVIDER_ENV[provider] : undefined;
+  const preset = Object.hasOwn(PROVIDER_PRESETS, provider) ? PROVIDER_PRESETS[provider] : undefined;
+  const api = entry.api ?? preset?.api ?? "openai-completions";
+  const baseUrl = entry.baseUrl ?? preset?.baseUrl;
   const keyPresent = typeof entry.apiKey === "string" && entry.apiKey !== "";
-  if (!hasOverride && standardEnv !== undefined) {
-    if (keyPresent) env[standardEnv] = entry.apiKey!;
-    return { env, modelsJson: null, piConfDir };
-  }
-  // Custom provider (or standard name WITH overrides): models.json with
-  // $ENV interpolation — the S3-proven chain; the file never holds secrets.
   if (keyPresent) env.CODAR_BOT_KEY = entry.apiKey!;
   const modelsDoc = {
     providers: {
       [provider]: {
-        ...(entry.baseUrl !== undefined ? { baseUrl: entry.baseUrl } : {}),
+        api,
+        ...(baseUrl !== undefined ? { baseUrl } : {}),
         ...(keyPresent ? { apiKey: "$CODAR_BOT_KEY" } : {}),
-        ...(entry.models !== undefined ? { models: entry.models } : {}),
+        // Explicit models for providers pi does not natively know; for
+        // pi-known providers the entry merges over pi's own catalog.
+        ...(entry.models !== undefined
+          ? { models: entry.models }
+          : { models: [{
+              id: modelId,
+              name: modelId,
+              input: ["text"],
+              contextWindow: 128_000,
+              maxTokens: 8_192,
+              type: "chat",
+              // No cost invented: unpriced models report cost 0 and the
+              // budget layer degrades to token-budget (§4, honest boundary).
+            }] }),
       },
     },
   };

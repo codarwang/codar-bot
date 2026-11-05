@@ -63,7 +63,7 @@ async function main(): Promise<void> {
     const provider = args.get("provider");
     const modelId = args.get("model");
     if (provider === undefined || provider === "" || modelId === undefined || modelId === "") {
-      console.error("usage: codar init --provider <name> --model <modelId> [--base-url <url>] [--thinking <level>]");
+      console.error("usage: codar init --provider <name> --model <modelId> [--base-url <url>] [--api <pi KnownApi>] [--thinking <level>]");
       console.error("       (api key on stdin, or CODAR_INIT_KEY env)");
       process.exitCode = 1;
       return;
@@ -84,6 +84,7 @@ async function main(): Promise<void> {
     const result = initTeam({
       provider, apiKey, modelId,
       baseUrl: args.get("base-url"),
+      api: args.get("api"),
       thinkingLevel: args.get("thinking"),
       dataRoot: process.env.CODAR_BOT_HOME,
     });
