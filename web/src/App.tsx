@@ -314,12 +314,14 @@ function Usage(): JSX.Element {
   useEffect(() => {
     void jsonFetch<UsageRow[]>("/api/usage").then(setRows).catch((e) => setError(String(e)));
   }, []);
-  const micros = (m: number): string => `$${(m / 1e6).toFixed(4)}`;
+  // Catalog-currency micros — the currency is whatever the provider's
+  // price list uses (CNY for our presets); the display stays neutral.
+  const micros = (m: number): string => (m / 1e6).toFixed(4);
   return (
     <section>
       {error !== null && <div className="error">{error}</div>}
       <table>
-        <thead><tr><th>bot</th><th>model</th><th>kind</th><th>input</th><th>output</th><th>cacheRead</th><th>cost</th></tr></thead>
+        <thead><tr><th>bot</th><th>model</th><th>kind</th><th>input</th><th>output</th><th>cacheRead</th><th>cost<span className="dim"> (provider ccy)</span></th></tr></thead>
         <tbody>
           {rows.map((r, i) => (
             <tr key={i}>

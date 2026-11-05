@@ -310,9 +310,11 @@ CREATE TABLE usage (
 - **kind 判定规则**（P2 修复）：用户/admin 消息触发的回合 = `chat`；handoff
   派活触发的回合 = `tool`；memory review 调用 = `memory-review`（M2 起）。
   M1 只有前两类。
-- **cost_micros 换算**：`round(cost_usd × 1e6)`；**已实测（2026-11-05
-  M0-S3）**：pi `Usage.cost` 为 USD 小数（glm-5.3 单条 ~0.0033），换算成立；
-  zai/glm 不报 `cacheWrite1h`（列保留给会报的 provider）。
+- **cost_micros 换算与币种（v0.10a 修正）**：`round(cost × 1e6)`，其中
+  cost 的币种 = 目录作者所用币种（pi 不做换汇）——zai 与 MiniMax 的目录价
+  均为 **CNY/百万 tokens**（M0-S3 曾误标 USD；两行数据数值不变，仅语义
+  修正）。UI 展示币种中性；多币种预算（USD 归一或 per-provider 预算）列
+  M2 backlog。zai/glm 不报 `cacheWrite1h`（列保留给会报的 provider）。
 - **对账闭环**（P2 修复）：每 `agent_settled` 后 driver 缓冲的 usage 事件与
   `get_session_stats` 交叉核对，偏差 > 1% 写 audit 告警事件（闭环 PRD §12
   反指标）；host 崩溃恢复时以 `get_session_stats` 补账——补账前提：**每
