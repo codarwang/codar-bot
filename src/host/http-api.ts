@@ -74,6 +74,7 @@ export class HttpApi {
     const url = new URL(req.url ?? "/", "http://localhost");
     const parts = url.pathname.split("/").filter(Boolean); // ["api", ...]
     void this.route(req, res, url, parts).catch((e) => {
+      if (res.headersSent) return; // late failures after SSE/headers: not res writable
       if (e instanceof ApiError) {
         this.send(res, e.statusCode, { error: String(e.message).slice(0, 400) });
         return;
@@ -139,8 +140,10 @@ export class HttpApi {
         }
         const model = body.model ?? { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" };
         if (typeof model.provider !== "string" || typeof model.modelId !== "string" ||
-            typeof model.thinkingLevel !== "string") {
-          throw new ApiError(400, "model needs string provider/modelId/thinkingLevel");
+            typeof model.thinkingLevel !== "string" ||
+            !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(model.provider) ||
+            !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(model.modelId)) {
+          throw new ApiError(400, "model needs string provider/modelId (safe charset: [A-Za-z0-9._-]) /thinkingLevel");
         }
         const budget = body.budget ?? { maxTokens: 5_000_000, maxCostMicros: 20_000_000, maxTurns: 2_000, maxWallMs: 3_600_000 };
         for (const k of ["maxTokens", "maxCostMicros", "maxTurns", "maxWallMs"] as const) {
@@ -161,7 +164,7 @@ export class HttpApi {
         this.send(res, 201, bot);
         return;
       }
-      if (req.method === "PATCH" && id !== undefined) {
+      if (req.method === "PATCH" && id !== undefined && action === undefined) {
         const body = (await this.readJson(req)) as Record<string, unknown>;
         // Field whitelist: id is immutable; chief flips go through the same
         // invariant as creation (single chief); names must stay unique.
@@ -233,7 +236,7 @@ export class HttpApi {
         this.send(res, 200, { ok: true });
         return;
       }
-      if (req.method === "DELETE" && id !== undefined) {
+      if (req.method === "DELETE" && id !== undefined && action === undefined) {
         await this.deps.bots.stop(id);
         this.deps.store.removeBot(id);
         this.deps.bots.forget(id); // drop the runtime bookkeeping entry too
@@ -327,7 +330,7 @@ export class HttpApi {
       req.on("data", (c: Buffer) => {
         size += c.length;
         if (size > 1_048_576) {
-          reject(new Error("body too large"));
+          reject(new ApiError(400, "body too large"));
           req.destroy();
           return;
         }
@@ -336,8 +339,8 @@ export class HttpApi {
       req.on("end", () => {
         try {
           resolve(chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString("utf8")));
-        } catch (e) {
-          reject(e);
+        } catch {
+          reject(new ApiError(400, "body is not valid JSON"));
         }
       });
     });

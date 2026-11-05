@@ -19,6 +19,7 @@ import type { Store } from "./store.js";
 import type { UsageLedger } from "./usage-ledger.js";
 import { botPiConfDir } from "./paths.js";
 import { buildSpawnConfig, materializePiConf, loadKeys, type BotSpawnConfig } from "./provider-config.js";
+import { ApiError } from "./http-error.js";
 import { paths } from "./paths.js";
 
 export type BotStatus = "stopped" | "starting" | "idle" | "working" | "crashed";
@@ -142,9 +143,9 @@ export class BotManager extends EventEmitter {
     opts: { internal?: boolean } = {}
   ): Promise<void> {
     const bot = this.store.bot(botId);
-    if (bot === undefined) throw new Error(`no bot ${botId}`);
+    if (bot === undefined) throw new ApiError(404, `no bot ${botId}`);
     const m = this.managed(botId);
-    if (m.client !== null) throw new Error(`bot ${botId} already running`);
+    if (m.client !== null) throw new ApiError(409, `bot ${botId} already running`);
     if (opts.internal !== true) m.epoch += 1; // external start supersedes chains
     m.stopRequested = false;
     m.pendingFailure = null;
@@ -264,9 +265,9 @@ export class BotManager extends EventEmitter {
    *  death, stop) — never hangs (R1 P1-1: settled/error/exit race). */
   async prompt(botId: string, message: string, kind: UsageKind = "chat"): Promise<string> {
     const m = this.bots.get(botId);
-    if (m === undefined || m.client === null) throw new Error(`bot ${botId} is not running`);
-    if (m.status === "working") throw new Error(`bot ${botId} is already working on a prompt`);
-    if (m.status !== "idle") throw new Error(`bot ${botId} is ${m.status} (wait for idle)`);
+    if (m === undefined || m.client === null) throw new ApiError(409, `bot ${botId} is not running`);
+    if (m.status === "working") throw new ApiError(409, `bot ${botId} is already working on a prompt`);
+    if (m.status !== "idle") throw new ApiError(409, `bot ${botId} is ${m.status} (wait for idle)`);
     const client = m.client;
     const bot = this.store.bot(botId)!;
     this.setStatus(m, "working");
@@ -333,7 +334,7 @@ export class BotManager extends EventEmitter {
   /** Chat transcript for the UI: the live child's message history. */
   async messages(botId: string): Promise<Array<{ role: string; text: string }>> {
     const m = this.bots.get(botId);
-    if (m?.client == null) throw new Error(`bot ${botId} is not running`);
+    if (m?.client == null) throw new ApiError(409, `bot ${botId} is not running`);
     const res = await m.client.command({ type: "get_messages" } as Record<string, unknown>);
     if (!res.success) throw new Error(`get_messages failed: ${res.error}`);
     const messages = (res.data as { messages?: Array<Record<string, unknown>> } | null)?.messages ?? [];
@@ -354,7 +355,7 @@ export class BotManager extends EventEmitter {
 
   async interrupt(botId: string): Promise<void> {
     const m = this.bots.get(botId);
-    if (m?.client == null) throw new Error(`bot ${botId} is not running`);
+    if (m?.client == null) throw new ApiError(409, `bot ${botId} is not running`);
     await m.client.abort();
   }
 
