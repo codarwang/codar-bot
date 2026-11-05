@@ -45,10 +45,11 @@ async function rig() {
     name: "default", members: [chief.id], admin: chief.id,
     mode: "admin-reply", sharedDir: join(root, "s"), budget: defaultBudget(), goal: null,
   });
-  const rooms = new RoomEngine(store, new BotManager(store, ledger, root, { bin: process.execPath, sandboxArgv: [FAKE_PI], env: {} }), join(root, "rooms"));
+  const bots = new BotManager(store, ledger, root, { bin: process.execPath, sandboxArgv: [FAKE_PI], env: {} });
+  const rooms = new RoomEngine(store, bots, join(root, "rooms"));
   const memory = new MemoryEngine(store, ledger, root, { bin: process.execPath, sandboxArgv: [FAKE_PI], env: {} });
   return {
-    root, store, ledger, rooms, memory, chiefId: chief.id, roomId: room.id,
+    root, store, ledger, bots, rooms, memory, chiefId: chief.id, roomId: room.id,
     async dispose() {
       ledger.close(); store.close();
       rmSync(root, { recursive: true, force: true });
@@ -56,10 +57,19 @@ async function rig() {
   };
 }
 
-async function drain(memory: MemoryEngine, scope: "bot" | "room" | "team", id: string, ms = 10_000): Promise<number> {
+/** Wait until the scope's pending queue drains AND `done()` holds (the
+ *  P1-1 claim-rename makes pendingCount hit 0 the moment a review STARTS —
+ *  pending alone no longer proves the apply landed). */
+async function drain(
+  memory: MemoryEngine,
+  scope: "bot" | "room" | "team",
+  id: string,
+  done: () => boolean = () => true,
+  ms = 10_000
+): Promise<number> {
   const deadline = Date.now() + ms;
   let n = memory.pendingCount(scope, id);
-  while (n > 0 && Date.now() < deadline) {
+  while ((n > 0 || !done()) && Date.now() < deadline) {
     await new Promise((s) => setTimeout(s, 80));
     n = memory.pendingCount(scope, id);
   }
@@ -279,9 +289,18 @@ test("wiring: a real room turn feeds bot+room+team; review lands; next prompt ca
     const before = r.rooms.previewContext(r.roomId, r.chiefId);
     assert.ok(!before.includes("### Memory"), "no memory injected before any review");
     await r.rooms.userSay(r.roomId, "Reply with the single word ALPHA.");
-    // Bot-scope review is scheduled on the settle and drains asynchronously.
-    assert.equal(await drain(r.memory, "bot", r.chiefId), 0, "bot review ran");
-    assert.equal(await drain(r.memory, "room", r.roomId), 0, "room review ran");
+    // Bot-scope review is scheduled on the settle and drains asynchronously;
+    // done() waits for the APPLY (files on disk), not just the claim.
+    assert.equal(
+      await drain(r.memory, "bot", r.chiefId, () => r.memory.files("bot", r.chiefId).length > 0),
+      0,
+      "bot review ran"
+    );
+    assert.equal(
+      await drain(r.memory, "room", r.roomId, () => r.memory.files("room", r.roomId).length > 0),
+      0,
+      "room review ran"
+    );
     // Team batches at 5 — a single turn leaves it pending.
     assert.equal(r.memory.pendingCount("team", "team"), 1, "team waits for its threshold");
     // The NEXT prompt carries the frozen snapshot in its tail (§5.1a).
@@ -347,5 +366,205 @@ test("memory API: GET files/pending, PUT edit, settings reviewModel round-trip",
     delete process.env.CODAR_BOT_HOME;
     delete process.env.CODAR_BOT_PORT;
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// --- M2-D R1 regressions ---------------------------------------------------------
+
+test("R1 P1-1: a turn ingested MID-review is never swallowed by the apply", async () => {
+  const r = await rig();
+  try {
+    process.env.FAKE_PI_MEM_DELAY_MS = "400";
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "turn-A"));
+    const inFlight = r.memory.review("bot", r.chiefId);
+    await new Promise((s2) => setTimeout(s2, 150));
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "turn-B")); // lands mid-review
+    assert.equal(await inFlight, "reviewed");
+    assert.equal(r.memory.pendingCount("bot", r.chiefId), 1, "turn-B survives the apply");
+    assert.equal(await r.memory.review("bot", r.chiefId), "reviewed");
+    assert.equal(r.memory.pendingCount("bot", r.chiefId), 0);
+  } finally {
+    delete process.env.FAKE_PI_MEM_DELAY_MS;
+    await r.dispose();
+  }
+});
+
+test("R1 P1-2: a crashing review child fails the review WITHOUT killing the host", async () => {
+  const r = await rig();
+  try {
+    process.env.FAKE_PI_MEM_REVIEW = "crash";
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "x"));
+    // If RpcClient's zero-listener "error" emit still threw, this await (or
+    // the process) would die before the assertion.
+    assert.equal(await r.memory.review("bot", r.chiefId), "failed");
+    assert.equal(r.memory.pendingCount("bot", r.chiefId), 1, "claimed lines restored");
+    assert.match(readFileSync(join(r.root, "audit.jsonl"), "utf8"), /memory-review-failed/);
+    assert.ok(true, "host process still alive");
+  } finally {
+    delete process.env.FAKE_PI_MEM_REVIEW;
+    await r.dispose();
+  }
+});
+
+test("R1: DELETE marker removes a topic file end-to-end", async () => {
+  const r = await rig();
+  try {
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "x"));
+    assert.equal(await r.memory.review("bot", r.chiefId), "reviewed");
+    assert.ok(r.memory.files("bot", r.chiefId).some((f) => f.path === "topics/style.md"), "style.md exists after ok review");
+    process.env.FAKE_PI_MEM_REVIEW = "delete";
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "y"));
+    assert.equal(await r.memory.review("bot", r.chiefId), "reviewed");
+    assert.ok(!r.memory.files("bot", r.chiefId).some((f) => f.path === "topics/style.md"), "DELETE removed it");
+    assert.ok(r.memory.files("bot", r.chiefId).some((f) => f.path === "entry.md" && f.content.includes("kept.")));
+  } finally {
+    delete process.env.FAKE_PI_MEM_REVIEW;
+    await r.dispose();
+  }
+});
+
+test("R1 P2-2: one pass consumes at most REVIEW_TURNS_MAX; the rest wait", async () => {
+  const r = await rig();
+  try {
+    for (let i = 0; i < 45; i++) r.memory.ingestTurn("bot", r.chiefId, turn("user", `t${i}`));
+    assert.equal(await r.memory.review("bot", r.chiefId), "reviewed");
+    assert.equal(r.memory.pendingCount("bot", r.chiefId), 5, "cap leaves the tail");
+    assert.match(readFileSync(join(r.root, "memory", "bots", r.chiefId, "reviews.log"), "utf8"), /turns=40/);
+  } finally {
+    await r.dispose();
+  }
+});
+
+test("R1 P2-2: a failed review cools the scope down — auto-schedule no-ops", async () => {
+  const r = await rig();
+  try {
+    process.env.FAKE_PI_MEM_REVIEW = "broken";
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "x"));
+    assert.equal(await r.memory.review("bot", r.chiefId), "rejected");
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "y"));
+    r.memory.schedule("bot", r.chiefId);
+    await new Promise((s2) => setTimeout(s2, 300));
+    assert.equal(r.memory.pendingCount("bot", r.chiefId), 2, "cooldown blocks the auto retry");
+  } finally {
+    delete process.env.FAKE_PI_MEM_REVIEW;
+    await r.dispose();
+  }
+});
+
+test("R1: single-flight follow-up drains turns that arrived mid-review", async () => {
+  const r = await rig();
+  try {
+    process.env.FAKE_PI_MEM_DELAY_MS = "300";
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "A"));
+    r.memory.schedule("bot", r.chiefId);
+    await new Promise((s2) => setTimeout(s2, 100));
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "B"));
+    r.memory.schedule("bot", r.chiefId); // in-flight — must be a no-op
+    // totals() aggregates per hour+model+kind: two runs of usage(30,6) land
+    // as ONE row with input 60 — the audit log proves the run count.
+    const rowsOf = () => r.ledger.totals({ botId: r.chiefId, kind: "memory-review" });
+    assert.equal(
+      await drain(r.memory, "bot", r.chiefId, () => rowsOf().reduce((a, x) => a + x.input, 0) === 60),
+      0,
+      "follow-up pass consumed B"
+    );
+    assert.equal(rowsOf().reduce((a, x) => a + x.input, 0), 60, "exactly two review runs (30 input each)");
+    assert.equal(readFileSync(join(r.root, "audit.jsonl"), "utf8").split("\n").filter((l) => l.includes('"kind":"memory-review"')).length, 2);
+  } finally {
+    delete process.env.FAKE_PI_MEM_DELAY_MS;
+    await r.dispose();
+  }
+});
+
+test("R1 P3-2: a manual edit during a running review wins — the apply refuses", async () => {
+  const r = await rig();
+  try {
+    process.env.FAKE_PI_MEM_DELAY_MS = "300";
+    r.memory.ingestTurn("bot", r.chiefId, turn("user", "x"));
+    const inFlight = r.memory.review("bot", r.chiefId);
+    await new Promise((s2) => setTimeout(s2, 100));
+    r.memory.writeFile("bot", r.chiefId, "entry.md", "MANUAL EDIT\n");
+    assert.equal(await inFlight, "rejected", "stale-basis apply refused");
+    assert.match(r.memory.snapshot("bot", r.chiefId), /MANUAL EDIT/, "the edit is intact");
+    assert.equal(r.memory.pendingCount("bot", r.chiefId), 1, "pending restored for retry");
+  } finally {
+    delete process.env.FAKE_PI_MEM_DELAY_MS;
+    await r.dispose();
+  }
+});
+
+test("R1 P3-4: manual edits live under the same 2x size budget", async () => {
+  const r = await rig();
+  try {
+    assert.throws(
+      () => r.memory.writeFile("bot", r.chiefId, "entry.md", "x".repeat(5_000)),
+      /2x budget/
+    );
+  } finally {
+    await r.dispose();
+  }
+});
+
+test("R1 P2-3: room-scoped review spend feeds the room budget window", async () => {
+  const r = await rig();
+  const budget = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+  void budget;
+  try {
+    const room = r.store.room(r.roomId)!;
+    r.store.updateRoom(r.roomId, { budget: { ...room.budget, maxTokens: 100 } });
+    // A room-scoped memory review burns 90 tokens under the room's own id.
+    r.ledger.record({
+      hour: new Date().toISOString().slice(0, 13), botId: r.roomId, model: "fake/f",
+      kind: "memory-review", input: 80, output: 10, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0,
+    });
+    // Any member write re-evaluates the window: 90 (own) + 15 (member) ≥ 100.
+    r.ledger.record({
+      hour: new Date().toISOString().slice(0, 13), botId: r.chiefId, model: "fake/f",
+      kind: "chat", input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0,
+    });
+    const dl = Date.now() + 5_000;
+    while (r.store.room(r.roomId)!.status !== "paused" && Date.now() < dl) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    assert.equal(r.store.room(r.roomId)!.status, "paused", "review spend counts toward the room window");
+    assert.equal(r.store.room(r.roomId)!.pauseReason, "budget");
+  } finally {
+    await r.dispose();
+  }
+});
+
+test("R1: handoff onWorkDone feeds the child bot scope end-to-end", async () => {
+  const r = await fullRig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    const writer = r.store.addBot({
+      name: "Writer", role: "", chief: false,
+      model: { provider: "fake", modelId: "f", thinkingLevel: "low" },
+      workDir: join(r.root, "work"), sessionPath: null,
+      sandbox: { mode: "host-not-isolated" }, budget: defaultBudget(),
+    });
+    r.store.updateRoom(r.roomId, { members: [r.chiefId, writer.id] });
+    await r.bots.start(r.chiefId);
+    await r.bots.start(writer.id);
+    const { workId } = await r.handoff.dispatch({
+      fromBot: r.chiefId, toBot: writer.id,
+      task: "Reply with the single word ALPHA.", requestId: "mem-ho-1", roomId: r.roomId,
+    });
+    const dl = Date.now() + 15_000;
+    while (r.handoff.work(workId)!.status !== "done" && Date.now() < dl) {
+      await new Promise((s2) => setTimeout(s2, 100));
+    }
+    assert.equal(r.handoff.work(workId)!.status, "done");
+    // The child's run (task+result) ingested into ITS bot scope and the
+    // scheduled review drained it.
+    assert.equal(
+      await drain(r.memory, "bot", writer.id, () => r.memory.files("bot", writer.id).length > 0),
+      0,
+      "handoff run reviewed for the child scope"
+    );
+    assert.match(r.memory.snapshot("bot", writer.id), /### Memory — Writer/);
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
   }
 });
