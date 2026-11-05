@@ -186,6 +186,12 @@ export class BotManager extends EventEmitter {
         if (spawn.sandboxArgv !== undefined) {
           throw new Error("sandboxArgv is for the bare-process test shim; docker bots configure sandbox.image");
         }
+        const extraEnv = { ...this.spawnDefaults.env, ...spawnOverride.env };
+        if (Object.keys(extraEnv).length > 0) {
+          // Same honesty as the sandboxArgv guard: a silently-swallowed env
+          // is a debugging trap. Route extra env through keys.json instead.
+          throw new Error("spawn env is not forwarded into docker bots; use keys.json or sandbox.image");
+        }
         const image = spawn.sandboxImage ?? process.env.CODAR_SANDBOX_IMAGE ?? DEFAULT_SANDBOX_IMAGE;
         bin = "docker";
         argvPrefix = buildDockerArgv({
@@ -194,9 +200,18 @@ export class BotManager extends EventEmitter {
           piConfDir: cfg.piConfDir,
           extensionsDir: this.extensionsDir,
           extensionEntry: "codar-gate/codar-gate.ts",
-          env: { ...cfg.env, PI_CODING_AGENT_DIR: "/state/pi-conf" },
+          env: {
+            ...cfg.env,
+            PI_CODING_AGENT_DIR: "/state/pi-conf",
+            // The gate audit path MUST cross the boundary — without it the
+            // gate falls back to a bot-writable cwd file (S4 §3.4 note).
+            CODAR_GATE_AUDIT: "/state/pi-conf/gate-audit.jsonl",
+          },
         });
-        childEnv = {}; // nothing leaks to the docker CLI process env
+        // The docker CLI process still inherits the host env (RpcClient
+        // always merges process.env); it carries no secrets the host lacks.
+        // The container sees ONLY the -e list above.
+        childEnv = {};
       }
       client = new RpcClient({
         bin,
@@ -228,7 +243,7 @@ export class BotManager extends EventEmitter {
       const ready = await client.start({
         extensionPath:
           bot.sandbox.mode === "docker"
-            ? "/opt/codar-ext/codar-gate/codar-gate.ts"
+            ? "/opt/codar-ext/codar-gate/codar-gate.ts" // mirrors sandbox.ts extensionEntry
             : spawn.extensionPath,
         model: `${bot.model.provider}/${bot.model.modelId}`,
         thinking: bot.model.thinkingLevel,
@@ -352,10 +367,16 @@ export class BotManager extends EventEmitter {
     // Persist the session path the child now reports (crash-safe resume).
     try {
       const state = await client.command({ type: "get_state" } as Record<string, unknown>);
-      const sessionFile =
+      const rawSession =
         state.success ? ((state.data as { sessionFile?: unknown } | null)?.sessionFile) : undefined;
-      if (typeof sessionFile === "string" && sessionFile !== bot.sessionPath && sessionFile !== "") {
-        this.store.updateBot(botId, { sessionPath: sessionFile });
+      if (typeof rawSession === "string" && rawSession !== "") {
+        // §3.4 path rule: store keeps HOST-absolute paths — translate the
+        // container-side sessionFile back over the pi-conf mount.
+        const sessionFile =
+          bot.sandbox.mode === "docker" && rawSession.startsWith("/state/pi-conf/")
+            ? join(botPiConfDir(this.dataRoot, botId), rawSession.slice("/state/pi-conf/".length))
+            : rawSession;
+        if (sessionFile !== bot.sessionPath) this.store.updateBot(botId, { sessionPath: sessionFile });
       }
     } catch {
       /* best-effort persistence; next successful prompt retries */

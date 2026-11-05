@@ -92,7 +92,7 @@ test("rooms POST validates members/admin/mode/sharedDir and enforces unique name
   }
 });
 
-test("bot CRUD guards: duplicate name 409, docker mode 501, patch immutables 400", async () => {
+test("bot CRUD guards: duplicate name 409, docker mode honored, patch immutables 400", async () => {
   const t = await boot();
   try {
     const dup = await json(t.port, "/api/bots", {
@@ -105,6 +105,8 @@ test("bot CRUD guards: duplicate name 409, docker mode 501, patch immutables 400
       body: JSON.stringify({ name: "Sandboxed", workDir: "/tmp/x", sandbox: { mode: "docker" } }),
     });
     assert.equal(docker.status, 201); // M1-D: the runner landed, docker mode is valid
+    const dockerBody = (await docker.json()) as { sandbox: { mode: string } };
+    assert.equal(dockerBody.sandbox.mode, "docker", "requested mode must be honored, not downgraded");
     const badMode = await json(t.port, "/api/bots", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ name: "BadMode", workDir: "/tmp/x", sandbox: { mode: "vm" } }),

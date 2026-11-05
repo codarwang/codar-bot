@@ -67,6 +67,8 @@ export function initTeam(input: InitInput): InitResult {
         model,
         workDir: join(p.root, "work"),
         sessionPath: null,
+        // M1 chief runs bare by default; docker-default-on lands M3-3.2
+        // (PRD §6). The choice is explicit here, not silently downgraded.
         sandbox: { mode: "host-not-isolated" },
         budget: defaultBudget(),
       });
