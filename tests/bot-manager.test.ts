@@ -177,3 +177,20 @@ test("host boots, serves overview + prompt over HTTP, shuts down clean", async (
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("chat history endpoint returns the transcript, not the bot record", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    const id = r.store.state.bots[0]!.id;
+    await r.bots.start(id);
+    await r.bots.prompt(id, "Reply with the single word ALPHA.");
+    const msgs = await r.bots.messages(id);
+    assert.ok(Array.isArray(msgs));
+    assert.ok(msgs.some((m) => m.role === "user"));
+    assert.ok(msgs.some((m) => m.role === "assistant"));
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
