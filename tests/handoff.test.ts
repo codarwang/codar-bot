@@ -257,12 +257,16 @@ test("M2-C R3: handoff per-task wall clock interrupts an over-running child", as
     // SLOW settles at ~1.5s; the wall clock must cut it at 600ms. Without
     // the clock the work only goes terminal after the full SLOW run.
     const deadline = Date.now() + 5_000;
-    while (!["done", "failed"].includes(r.handoff.work(workId)!.status) && Date.now() < deadline) {
+    while (r.handoff.work(workId)!.status !== "failed" && Date.now() < deadline) {
       await new Promise((s2) => setTimeout(s2, 50));
     }
-    const status = r.handoff.work(workId)!.status;
-    assert.ok(status === "done" || status === "failed", `work must reach a terminal state, got ${status}`);
+    assert.equal(r.handoff.work(workId)!.status, "failed", "an interrupted run is FAILED, never done");
     assert.ok(Date.now() - t0 < 1_300, "wall clock fired (well under the 1.5s SLOW run)");
+    // Observable cut (§5.3 never-silent): the room records the interruption.
+    assert.ok(
+      r.rooms.history(r.roomId).some((m) => m.from.kind === "system" && m.text.includes("interrupted")),
+      "interruption lands as a room system line"
+    );
     // Interrupted before the reply existed: no late OK may land in the room.
     assert.ok(
       !r.rooms.history(r.roomId).some((m) => m.from.kind === "bot" && m.text.includes("OK")),
@@ -270,6 +274,67 @@ test("M2-C R3: handoff per-task wall clock interrupts an over-running child", as
     );
   } finally {
     delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("M2-C R4: interrupted handoff never delivers the child's PREVIOUS answer as its result", async () => {
+  const r = await rig();
+  const budget = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+  r.handoff.deadlineMs = (botId) => budget.wallDeadlineMs(botId);
+  r.store.updateBot(r.writerId, { budget: { ...defaultBudget(), maxWallMs: 600 } });
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId);
+    await r.bots.start(r.writerId);
+    // Task 1 completes normally → one ALPHA line in the room.
+    const first = await r.handoff.dispatch({
+      fromBot: r.chiefId, toBot: r.writerId,
+      task: "Reply with the single word ALPHA.", requestId: "stale-1", roomId: r.roomId,
+    });
+    const d1 = Date.now() + 15_000;
+    while (r.handoff.work(first.workId)!.status !== "done" && Date.now() < d1) {
+      await new Promise((s2) => setTimeout(s2, 100));
+    }
+    assert.equal(r.handoff.work(first.workId)!.status, "done");
+    // Let the caller's wake turn settle so the writer's LAST text is ALPHA.
+    const d2 = Date.now() + 15_000;
+    while (r.bots.status(r.writerId) !== "idle" && Date.now() < d2) {
+      await new Promise((s2) => setTimeout(s2, 100));
+    }
+    // Task 2 (SLOW) gets wall-clocked at 600ms: pi's harvest then points at
+    // the PREVIOUS turn's ALPHA — the phantom the guard must refuse.
+    const second = await r.handoff.dispatch({
+      fromBot: r.chiefId, toBot: r.writerId,
+      task: "take it SLOW", requestId: "stale-2", roomId: r.roomId,
+    });
+    const d3 = Date.now() + 5_000;
+    while (r.handoff.work(second.workId)!.status !== "failed" && Date.now() < d3) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    assert.equal(r.handoff.work(second.workId)!.status, "failed", "interrupted task must fail");
+    const alphaLines = r.rooms.history(r.roomId)
+      .filter((m) => m.from.kind === "bot" && m.from.id === r.writerId && m.text === "ALPHA");
+    assert.equal(alphaLines.length, 1, "the stale ALPHA must NOT be delivered a second time");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("M2-C R4: dispatch into a budget-paused room's member is rejected honestly", async () => {
+  const r = await rig();
+  try {
+    // Budget-pause the room (reason "budget", the §5.3 gate reads it).
+    r.rooms.pause(r.roomId, "budget", "test pause");
+    await assert.rejects(
+      () => r.handoff.dispatch({
+        fromBot: r.chiefId, toBot: r.writerId, task: "t", requestId: "gate-1", roomId: r.roomId,
+      }),
+      /budget-paused/
+    );
+    assert.equal(r.store.state.works.length, 0, "no work record for a refused dispatch");
+  } finally {
     await r.dispose();
   }
 });

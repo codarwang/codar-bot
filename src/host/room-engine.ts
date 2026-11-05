@@ -122,7 +122,7 @@ export class RoomEngine extends EventEmitter {
     if (room === undefined) throw new Error(`no room ${roomId}`);
     const rt = this.runtime(roomId, room);
     rt.pausedReason = reason;
-    this.store.updateRoom(roomId, { status: "paused", pauseReason: reason });
+    this.store.updateRoom(roomId, { status: "paused", pauseReason: reason, pausedAt: new Date().toISOString() });
     this.systemLine(roomId, rt, note);
   }
 
@@ -131,7 +131,7 @@ export class RoomEngine extends EventEmitter {
     if (room === undefined) throw new Error(`no room ${roomId}`);
     const rt = this.runtime(roomId, room);
     rt.pausedReason = null;
-    this.store.updateRoom(roomId, { status: "active", pauseReason: null });
+    this.store.updateRoom(roomId, { status: "active", pauseReason: null, pausedAt: null });
     this.systemLine(roomId, rt, note);
   }
 
@@ -146,7 +146,7 @@ export class RoomEngine extends EventEmitter {
     if (rt.pausedReason !== null) {
       // ping-pong / manual pause: a user message is the awaited signal.
       rt.pausedReason = null;
-      this.store.updateRoom(roomId, { status: "active", pauseReason: null });
+      this.store.updateRoom(roomId, { status: "active", pauseReason: null, pausedAt: null });
       this.systemLine(roomId, rt, "pause lifted by user message");
     }
 

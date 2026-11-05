@@ -66,6 +66,9 @@ export interface RoomRecord {
   /** Why a paused room is paused (persisted so a restart keeps budget stops
    *  un-liftable by user messages, §5.3). Absent = unknown/none. */
   pauseReason?: "ping-pong" | "budget" | "manual" | null;
+  /** When the current pause started (ISO). Durable month stamp for the
+   *  §5.3 next-month auto-resume — survives host restarts (M2-C R4 P3). */
+  pausedAt?: string | null;
 }
 
 export interface WorkRecord {

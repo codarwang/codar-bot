@@ -471,7 +471,10 @@ export class HttpApi {
           // The sticky stop re-arms under the same rule (M2-C R3 P2): an
           // unconditional re-arm on an insufficient raise re-enables the SAME
           // breach — a phantom second pause ceremony on the next ledger write.
-          const underBudgetStop = room.status === "paused" && room.pauseReason === "budget";
+          // `?? "budget"`: the engine treats an unreasoned paused record as a
+          // budget pause (room-engine pausedReason) — this gate must agree or
+          // such records take the unconditional-rearm branch (M2-C R4 P3).
+          const underBudgetStop = room.status === "paused" && (room.pauseReason ?? "budget") === "budget";
           let clears = true;
           if (underBudgetStop) {
             const sinceHour = monthStartHour();
