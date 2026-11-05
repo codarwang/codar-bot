@@ -51,7 +51,13 @@ async function main(): Promise<void> {
     // API key comes from stdin (one line) or $CODAR_INIT_KEY.
     const args = new Map<string, string>();
     for (let i = 3; i < process.argv.length; i += 2) {
-      args.set(String(process.argv[i]).replace(/^--/, ""), String(process.argv[i + 1] ?? ""));
+      const value = String(process.argv[i + 1] ?? "");
+      if (value === "" || value.startsWith("--")) {
+        console.error(`flag ${process.argv[i]} needs a value`);
+        process.exitCode = 1;
+        return;
+      }
+      args.set(String(process.argv[i]).replace(/^--/, ""), value);
     }
     const provider = args.get("provider");
     const modelId = args.get("model");
@@ -97,8 +103,13 @@ async function main(): Promise<void> {
     } catch {
       alive = false;
     }
-    const res = await fetch(`http://127.0.0.1:${rt.port}/api/overview`);
-    const overview = res.ok ? ((await res.json()) as { bots?: unknown[] }).bots?.length : "?";
+    let overview = "n/a";
+    try {
+      const res = await fetch(`http://127.0.0.1:${rt.port}/api/overview`);
+      if (res.ok) overview = String(((await res.json()) as { bots?: unknown[] }).bots?.length ?? "?");
+    } catch {
+      overview = "unreachable"; // stale host.json: pid gone, API down
+    }
     console.log(`codar host: pid=${rt.pid} port=${rt.port} alive=${alive} bots=${overview}`);
     return;
   }

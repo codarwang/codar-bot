@@ -109,6 +109,10 @@ export class HttpApi {
       return;
     }
 
+    if (parts.length > 4) {
+      this.send(res, 404, { error: "no route (too many path segments)" });
+      return;
+    }
     if (resource === "bots") {
       if (req.method === "GET" && id === undefined) {
         this.send(res, 200, this.deps.store.state.bots);
@@ -264,13 +268,13 @@ export class HttpApi {
         if (!sharedDir.startsWith("/")) {
           return this.send(res, 400, { error: "sharedDir must be an absolute path" });
         }
-        mkdirSync(sharedDir, { recursive: true });
         for (const m of members) {
           if (this.deps.store.bot(m) === undefined) return this.send(res, 400, { error: `unknown member bot ${m}` });
         }
         if (this.deps.store.bot(admin) === undefined) {
           return this.send(res, 400, { error: `unknown admin bot ${admin}` });
         }
+        mkdirSync(sharedDir, { recursive: true }); // AFTER validation: rejects leave nothing behind
         const room = this.deps.store.addRoom({
           name, members, admin,
           mode: body["mode"] === "round-robin" ? "round-robin" : "admin-reply",
