@@ -15,7 +15,7 @@
  * the bot's requested modelId (minimal honest entry: no invented prices —
  * cost stays 0 and the budget layer degrades to token-budget, §4).
  */
-import { readFileSync, openSync, closeSync, writeSync, renameSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, openSync, closeSync, writeSync, renameSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { botPiConfDir } from "./paths.js";
@@ -32,15 +32,37 @@ export interface KeysDoc {
   providers: Record<string, ProviderEntry>;
 }
 
+/** Per-model catalog prices for providers pi does NOT know natively.
+ *  CURRENCY NOTE: pi cost = whatever currency the catalog author uses —
+ *  these are the provider's OWN list prices (CNY per 1M tokens for the
+ *  CN providers below). The ledger records catalog-currency micros; the
+ *  UI must stay currency-neutral (multi-currency budgets are M2 backlog).
+ *  Sources are the providers' pricing pages; verify before relying on
+ *  them for hard budget stops. */
+export interface PresetModelPrice {
+  input: number;
+  output: number;
+  cacheRead: number;
+}
+
 /** Well-known provider presets — the only "built-ins" codar has, and they
  *  live in OUR config layer, not pi's. Entry fields always win. */
-export const PROVIDER_PRESETS: Record<string, { api: string; baseUrl?: string }> = {
+export const PROVIDER_PRESETS: Record<
+  string,
+  { api: string; baseUrl?: string; modelPrices?: Record<string, PresetModelPrice> }
+> = {
   anthropic: { api: "anthropic-messages", baseUrl: "https://api.anthropic.com" },
   openai: { api: "openai-completions", baseUrl: "https://api.openai.com/v1" },
   "openrouter": { api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1" },
   deepseek: { api: "openai-completions", baseUrl: "https://api.deepseek.com" },
   "zai-coding-cn": { api: "openai-completions", baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4" },
-  "minimax-anthropic": { api: "anthropic-messages", baseUrl: "https://api.minimax.cn/anthropic" },
+  "minimax-anthropic": {
+    api: "anthropic-messages",
+    baseUrl: "https://api.minimax.cn/anthropic",
+    // Official pricing page (platform.minimax.cn/docs/pricing/overview),
+    // CNY per 1M tokens, fetched 2026-11-05.
+    modelPrices: { "MiniMax-M3.1-Flash": { input: 1, output: 4, cacheRead: 0.1 } },
+  },
   "minimax-cn": { api: "openai-completions", baseUrl: "https://api.minimaxi.com/v1" },
   "groq": { api: "openai-completions", baseUrl: "https://api.groq.com/openai/v1" },
 };
@@ -125,8 +147,12 @@ export function buildSpawnConfig(
               contextWindow: 128_000,
               maxTokens: 8_192,
               type: "chat",
-              // No cost invented: unpriced models report cost 0 and the
-              // budget layer degrades to token-budget (§4, honest boundary).
+              // Preset price when we have one (provider's own list prices);
+              // otherwise NO cost is invented: unpriced models report cost 0
+              // and the budget layer degrades to token-budget (§4).
+              ...(preset?.modelPrices !== undefined && Object.hasOwn(preset.modelPrices, modelId)
+                ? { cost: preset.modelPrices[modelId] }
+                : {}),
             }] }),
       },
     },
@@ -147,5 +173,15 @@ export function materializePiConf(cfg: BotSpawnConfig): void {
       closeSync(fd);
     }
     renameSync(tmp, target);
+    // pi caches fetched catalogs in models-store.json INSIDE the agent dir;
+    // a stale store (e.g. from an earlier provider on this bot) shadows the
+    // regenerated models.json — "model not found" on the new provider. Our
+    // models.json is the per-spawn source of truth: drop the cache and let
+    // pi rebuild it (found in real dual-provider use, 2026-11-05).
+    try {
+      unlinkSync(join(cfg.piConfDir, "models-store.json"));
+    } catch {
+      /* absent — nothing to invalidate */
+    }
   }
 }

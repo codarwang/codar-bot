@@ -14,6 +14,7 @@ import {
   materializePiConf,
   PROVIDER_PRESETS,
   writeKeys,
+  type PresetModelPrice,
 } from "../src/host/provider-config.js";
 
 function root(): string {
@@ -59,6 +60,11 @@ test("custom anthropic-protocol endpoint: minimax-anthropic preset + entry overr
     assert.equal(doc.providers["minimax-anthropic"].baseUrl, "https://api.minimax.cn/anthropic");
     assert.equal(doc.providers["minimax-anthropic"].apiKey, "$CODAR_BOT_KEY");
     assert.equal(doc.providers["minimax-anthropic"].models[0]!.id, "MiniMax-M3.1-Flash");
+    // Official CNY prices from the preset land in the generated entry.
+    assert.deepEqual(
+      (doc.providers["minimax-anthropic"].models[0] as unknown as { cost?: PresetModelPrice }).cost,
+      { input: 1, output: 4, cacheRead: 0.1 },
+    );
     // entry baseUrl overrides the preset
     const over = buildSpawnConfig(
       { providers: { "minimax-anthropic": { apiKey: "k", baseUrl: "https://proxy.example" } } },
