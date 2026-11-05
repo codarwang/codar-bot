@@ -375,8 +375,16 @@ export class HttpApi {
         }
         const room = this.deps.store.room(id);
         if (room === undefined) throw new ApiError(404, `no room ${id}`);
-        const result = await this.deps.rooms.userSay(id, body.text);
-        this.send(res, 200, { ok: true, responders: result.responders });
+        // Accepted-then-async (R1 P2-5): the HTTP call must not hang for the
+        // whole turn (up to replyTimeoutMs × responders); results stream via
+        // SSE roommessage/turn/system. Budget-pause still rejects 409.
+        if (this.deps.rooms.pausedReason(id) === "budget") {
+          throw new ApiError(409, `room ${id} is budget-paused — adjust the budget to resume`);
+        }
+        void this.deps.rooms.userSay(id, body.text).catch((e: unknown) => {
+          this.broadcast("system", { roomId: id, text: `turn failed: ${String(e).slice(0, 200)}` });
+        });
+        this.send(res, 202, { ok: true, accepted: true });
         return;
       }
     }

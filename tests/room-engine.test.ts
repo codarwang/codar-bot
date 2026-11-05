@@ -217,3 +217,106 @@ test("history(since) filters by seq; runtime rebuilds from disk tail on second e
     await r.dispose();
   }
 });
+
+test("reply timeout: no first token ⇒ slot timed-out, no ping-pong feed, watermark NOT advanced", async () => {
+  const r = await rig({ pingPongN: 2, replyTimeoutMs: 400 });
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId);
+    // SLOW = 1.5s silence, watchdog fires at 400ms.
+    const sys: string[] = [];
+    r.rooms.on("system", (e: { text: string }) => sys.push(e.text));
+    const res = await r.rooms.userSay(r.roomId, "take it SLOW");
+    assert.deepEqual(res.responders, [r.chiefId]);
+    assert.equal(r.rooms.slots(r.roomId)[r.chiefId], "timed-out");
+    assert.ok(sys.some((t) => t.includes("timed out")));
+    // Timeout did NOT feed the guard.
+    assert.equal(r.store.room(r.roomId)!.status, "active");
+    // The timed-out turn's context WAS delivered (prompt accepted) ⇒ the
+    // watermark committed, and the next turn injects ONLY the new message
+    // (no duplication of the delivered SLOW context in the bot session).
+    const ctxs: string[] = [];
+    const orig = r.bots.prompt.bind(r.bots);
+    (r.bots as unknown as { prompt: (id: string, m: string) => Promise<string> }).prompt =
+      async (id: string, m: string) => { ctxs.push(m); return orig(id, m); };
+    await r.rooms.userSay(r.roomId, "Reply with the single word ALPHA.");
+    assert.ok(!ctxs[0]!.includes("[user] take it SLOW"), "delivered context is not re-injected");
+    assert.ok(ctxs[0]!.includes("ALPHA"));
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("round-robin: consecutive userSay rotates chief→writer→chief", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-rr-"));
+  mkdirSync(join(root, "work"), { recursive: true });
+  const store = Store.open(join(root, "state.json"), { create: true });
+  const ledger = new UsageLedger(join(root, "usage.sqlite"));
+  const bots = new BotManager(store, ledger, root, {
+    bin: process.execPath, sandboxArgv: [FAKE_PI], env: {},
+  });
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    const a = store.addBot({ name: "Chief", role: "", chief: true, model: { provider: "fake", modelId: "f", thinkingLevel: "low" }, workDir: join(root, "work"), sessionPath: null, sandbox: { mode: "host-not-isolated" }, budget: defaultBudget() });
+    const b = store.addBot({ name: "Writer", role: "", chief: false, model: { provider: "fake", modelId: "f", thinkingLevel: "low" }, workDir: join(root, "work"), sessionPath: null, sandbox: { mode: "host-not-isolated" }, budget: defaultBudget() });
+    const room = store.addRoom({ name: "rr", members: [a.id, b.id], admin: a.id, mode: "round-robin", sharedDir: join(root, "s"), budget: defaultBudget(), goal: null });
+    const rooms = new RoomEngine(store, bots, join(root, "rooms"));
+    await bots.start(a.id); await bots.start(b.id);
+    const r1 = await rooms.userSay(room.id, "Reply with the single word ALPHA.");
+    const r2 = await rooms.userSay(room.id, "Reply with the single word ALPHA.");
+    const r3 = await rooms.userSay(room.id, "Reply with the single word ALPHA.");
+    assert.deepEqual([r1.responders, r2.responders, r3.responders], [[a.id], [b.id], [a.id]]);
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await bots.stopAll(); ledger.close(); store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("concurrent userSays serialize per room — no message loss, no slot stomp", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId);
+    // Two messages racing: the queue must run them one after the other and
+    // BOTH must reach the bot's context across the two turns.
+    const [res1, res2] = await Promise.all([
+      r.rooms.userSay(r.roomId, "take it SLOW"),           // 1.5s turn
+      (async () => {
+        await new Promise((s) => setTimeout(s, 50));        // lands mid-turn-1
+        return r.rooms.userSay(r.roomId, "Reply with the single word BRAVO.");
+      })(),
+    ]);
+    assert.deepEqual(res1.responders, [r.chiefId]);
+    assert.deepEqual(res2.responders, [r.chiefId]);
+    // The second message's context must contain BOTH user messages
+    // (serialization ⇒ the 409/watermark-stomp window is gone).
+    const hist = r.rooms.history(r.roomId);
+    assert.ok(hist.some((m) => m.from.kind === "user" && m.text.includes("SLOW")));
+    assert.ok(hist.some((m) => m.from.kind === "user" && m.text.includes("BRAVO")));
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("restart keeps a budget pause un-liftable (§5.3 / R1 P1-3)", async () => {
+  const r = await rig();
+  try {
+    r.rooms.pause(r.roomId, "budget", "room budget exhausted");
+    // Simulated restart: a fresh engine over the same store.
+    const rooms2 = new RoomEngine(r.store, r.bots, join(r.root, "rooms"));
+    await assert.rejects(() => rooms2.userSay(r.roomId, "hello"), /budget-paused/);
+    assert.equal(r.store.room(r.roomId)!.status, "paused");
+    // Ping-pong pause persists too, and a user message lifts it.
+    r.rooms.resume(r.roomId, "resume");
+    r.rooms.pause(r.roomId, "ping-pong", "idle talk");
+    const rooms3 = new RoomEngine(r.store, r.bots, join(r.root, "rooms"));
+    const res = await rooms3.userSay(r.roomId, "Reply with the single word OK.");
+    assert.equal(res.responders.length, 1);
+    assert.equal(r.store.room(r.roomId)!.status, "active");
+  } finally {
+    await r.dispose();
+  }
+});
