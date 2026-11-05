@@ -31,11 +31,13 @@ function validateModel(model: unknown): BotRecord["model"] {
 import type { Store, BotRecord } from "./store.js";
 import { defaultBudget } from "./store.js";
 import type { UsageLedger } from "./usage-ledger.js";
+import type { RoomEngine } from "./room-engine.js";
 
 export interface ApiDeps {
   store: Store;
   bots: BotManager;
   ledger: UsageLedger;
+  rooms: RoomEngine;
   /** Built web UI dir (web/dist); absent ⇒ API-only mode. */
   webDir?: string;
 }
@@ -56,6 +58,11 @@ export class HttpApi {
     bots.on("message", (e) => this.broadcast("message", e));
     bots.on("failure", (e) => this.broadcast("failure", e));
     bots.on("aborted", (e) => this.broadcast("aborted", e));
+    const { rooms } = deps;
+    rooms.on("turn", (e) => this.broadcast("turn", e));
+    rooms.on("system", (e) => this.broadcast("system", e));
+    rooms.on("message", (e) => this.broadcast("roommessage", e));
+    bots.on("tool", (e) => this.broadcast("tool", e));
   }
 
   /** Static serving of the built SPA (non-/api GET). Traversal-safe. */
@@ -354,6 +361,22 @@ export class HttpApi {
           goal: null,
         });
         this.send(res, 201, room);
+        return;
+      }
+      if (req.method === "GET" && id !== undefined && action === "messages") {
+        const since = Number(url.searchParams.get("since") ?? "0");
+        this.send(res, 200, { messages: this.deps.rooms.history(id, Number.isFinite(since) ? since : 0) });
+        return;
+      }
+      if (req.method === "POST" && id !== undefined && action === "messages") {
+        const body = (await this.readJson(req)) as { text?: unknown };
+        if (typeof body.text !== "string" || body.text.trim().length === 0) {
+          throw new ApiError(400, "text required");
+        }
+        const room = this.deps.store.room(id);
+        if (room === undefined) throw new ApiError(404, `no room ${id}`);
+        const result = await this.deps.rooms.userSay(id, body.text);
+        this.send(res, 200, { ok: true, responders: result.responders });
         return;
       }
     }
