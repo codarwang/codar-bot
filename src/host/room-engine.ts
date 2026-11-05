@@ -212,9 +212,14 @@ export class RoomEngine extends EventEmitter {
     // get_last_assistant_text pointing at a PREVIOUS turn's text; appending
     // it would phantom-write stale content into the room log.
     let turnErrored = false;
-    const onBotFailed = (e: { botId: string }): void => { if (e.botId === botId) turnErrored = true; };
+    // NOTE: BotManager emits "failure" (its public surface) — NOT the
+    // driver-level "bot_failed"; the wrong name left provider errors feeding
+    // phantom replies through here (review R3 P1).
+    const onFailure = (e: { botId: string; reason: string }): void => {
+      if (e.botId === botId) turnErrored = true;
+    };
     const onAborted = (e: { botId: string }): void => { if (e.botId === botId) turnErrored = true; };
-    this.bots.on("bot_failed", onBotFailed);
+    this.bots.on("failure", onFailure);
     this.bots.on("aborted", onAborted);
 
     // First-token watchdog (§6.1): no delta within replyTimeoutMs ⇒ interrupt
@@ -234,29 +239,33 @@ export class RoomEngine extends EventEmitter {
         void this.bots.interrupt(botId).catch(() => undefined);
       }
     }, guards.replyTimeoutMs);
+    const cleanup = (): void => {
+      clearTimeout(watchdog);
+      this.bots.off("delta", onDelta);
+      this.bots.off("failure", onFailure);
+      this.bots.off("aborted", onAborted);
+    };
 
     let reply: string;
     try {
       reply = await this.bots.prompt(botId, context.text, "chat");
     } catch (error) {
-      clearTimeout(watchdog);
-      this.bots.off("delta", onDelta);
+      cleanup();
       rt.slots[botId] = timedOut ? "timed-out" : "failed";
-      if (!timedOut) {
-        this.systemLine(roomId, rt, `${this.botName(botId)} turn failed: ${String(error).slice(0, 160)}`);
-      } else {
-        this.systemLine(roomId, rt, `${this.botName(botId)} timed out after ${guards.replyTimeoutMs}ms with no first token`);
-      }
+      this.systemLine(
+        roomId,
+        rt,
+        timedOut
+          ? `${this.botName(botId)} timed out after ${guards.replyTimeoutMs}ms with no first token`
+          : `${this.botName(botId)} turn failed: ${String(error).slice(0, 160)}`
+      );
       rt.turnTools.delete(botId);
       this.emitTurn(roomId, room);
       // Watermark untouched: prompt never accepted ⇒ the message stays
       // injectable next turn (review R1 P1-1).
       return;
     }
-    clearTimeout(watchdog);
-    this.bots.off("delta", onDelta);
-    this.bots.off("bot_failed", onBotFailed);
-    this.bots.off("aborted", onAborted);
+    cleanup();
     rt.slots[botId] = timedOut ? "timed-out" : turnErrored ? "failed" : sawFirstToken ? "posted" : "failed";
     if (timedOut) {
       this.systemLine(roomId, rt, `${this.botName(botId)} timed out after ${guards.replyTimeoutMs}ms with no first token`);

@@ -324,3 +324,25 @@ test("restart keeps a budget pause un-liftable (§5.3 / R1 P1-3)", async () => {
     await r.dispose();
   }
 });
+
+test("provider-error turn: NO phantom reply — stale text never lands in the room log (R3 P1)", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId);
+    // Turn 1 succeeds (session now contains "ALPHA" as last assistant text).
+    await r.rooms.userSay(r.roomId, "Reply with the single word ALPHA.");
+    // Turn 2 errors (fake-pi FAIL): get_last_assistant_text would return the
+    // STALE "ALPHA" — the room log must NOT gain a bot line for this turn.
+    const res = await r.rooms.userSay(r.roomId, "please FAIL now");
+    assert.deepEqual(res.responders, [], "errored turn ⇒ nobody spoke");
+    const hist = r.rooms.history(r.roomId);
+    const botLines = hist.filter((m) => m.from.kind === "bot");
+    assert.equal(botLines.length, 1, "exactly one real bot reply (ALPHA) — no phantom");
+    assert.ok(hist.some((m) => m.from.kind === "system" && m.text.includes("errored")));
+    assert.equal(r.rooms.slots(r.roomId)[r.chiefId], "failed");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
