@@ -178,7 +178,7 @@ M1 的 Overview/Chat/Usage 三 Tab 废弃，改为常驻三区（Grok Bot 同构
 
 - `@` 弹 Bot 补全（键盘 1-9 选择）；`@all` 仅 admin 可发（PRD §5）。
 - Enter 发送 / Shift+Enter 换行；流式期间 Enter 询问确认（或直接入队 steer——
-  M2 实现时按 pi steering 语义定，默认入队并显示 queued 徽章）。
+  M2 实现时按 pi steering 语义定，默认入队并显示 pending 徽章）。
 - 右侧按钮组：➤ 发送 | ■ 停止（流式时替换为停止）| 📎 附文件（P2）。
 - composer 上方细错误条（SSE failure 事件落点），自动消失可回放。
 
@@ -247,7 +247,7 @@ M1 的 Overview/Chat/Usage 三 Tab 废弃，改为常驻三区（Grok Bot 同构
 1. 三区布局 + roster 三态行（attention 置顶、unread 实例）+ 群聊堆叠头像
 2. 流式消息（逐字打出 + ■ 停止流式）
 3. Turn 状态条：常态（speaking/working/🔐approval）与乒乓暂停态（按钮切换、暂停禁用 composer）
-4. 派活卡全生命周期：queued → 进行中(计时) → done(消耗/回流) → failed×2(重试耗尽/host-restart) → rejected(防环)
+4. 派活卡全生命周期：pending → 进行中(计时) → done(消耗/回流) → failed×2(重试耗尽/host-restart) → rejected(防环)
 5. 预算停机广播卡（Bot 级 + 群级两形）+ 右栏 meter
 6. 审批卡 M2 简版：Allow/Deny 可点（原型内假 resolve：卡原地变 ✓/⛔、Research 的 attention/🔐 解除），Always allow 置灰 M3 预告
 7. 双语切换 en↔zh 全量生效（金额随 locale）
