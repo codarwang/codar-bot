@@ -14,6 +14,8 @@ export interface InitInput {
   apiKey: string;
   modelId: string;
   baseUrl?: string;
+  /** pi KnownApi override (preset default applies when omitted). */
+  api?: string;
   thinkingLevel?: string;
   /** Non-interactive callers pass workDir; default lives under the data root. */
   dataRoot?: string;
@@ -49,6 +51,7 @@ export function initTeam(input: InitInput): InitResult {
       ...(Object.hasOwn(keys.providers, input.provider) ? keys.providers[input.provider] : {}),
       apiKey: input.apiKey,
       ...(input.baseUrl !== undefined ? { baseUrl: input.baseUrl } : {}),
+      ...(input.api !== undefined ? { api: input.api } : {}),
     };
     writeKeys(p.keys, keys);
 

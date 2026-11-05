@@ -174,7 +174,7 @@ export class BotManager extends EventEmitter {
       // providers inject their env var; custom providers get a models.json
       // with $CODAR_BOT_KEY interpolation (secret never on disk).
       const keys = this.keysPath !== null ? loadKeys(this.keysPath) : { providers: {} };
-      const cfg: BotSpawnConfig = buildSpawnConfig(keys, this.dataRoot, botId, bot.model.provider);
+      const cfg: BotSpawnConfig = buildSpawnConfig(keys, this.dataRoot, botId, bot.model.provider, bot.model.modelId);
       materializePiConf(cfg);
       mkdirSync(bot.workDir, { recursive: true });
       let bin = spawn.bin;
