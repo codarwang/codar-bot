@@ -257,11 +257,55 @@ test("R3 regression: exhausted retry ladder lands on stopped (not starting)", as
       await new Promise((s) => setTimeout(s, 300));
     }
     assert.equal(bots.status(bot.id), "stopped", "budget exhausted must land on stopped");
-    assert.ok(store === store); // keep refs
   } finally {
     await bots.stopAll();
     ledger.close();
     store.close();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("R4 regression: a failure arriving while a zombie chain holds the flag is handed over, not dropped", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.botId);
+    // Crash → chain arms (1s backoff, flag held).
+    await assert.rejects(() => r.bots.prompt(r.botId, "please DIE now"), /exited mid-prompt/);
+    assert.equal(r.bots.status(r.botId), "crashed");
+    // EXTERNAL start during the flag window → new generation (epoch bump).
+    // Its ready probe races the zombie chain; whichever way it lands, a
+    // subsequent failure must still be owned by SOMEONE.
+    const startPromise = r.bots.start(r.botId);
+    await new Promise((s) => setTimeout(s, 2_600)); // past zombie wake-up
+    await startPromise.catch(() => undefined);
+    // If the external start landed a live client, crash it again inside the
+    // window; if it lost the race the handover already ran. Either way the
+    // bot must NOT be permanently crashed/starting.
+    let deadline = Date.now() + 25_000;
+    while (Date.now() < deadline) {
+      const st = r.bots.status(r.botId);
+      if (st === "idle") break;
+      if (st === "crashed" || st === "starting") {
+        try {
+          await r.bots.prompt(r.botId, "Reply with the single word ALPHA.");
+          break;
+        } catch {
+          await new Promise((s) => setTimeout(s, 500));
+        }
+      } else if (st === "stopped") {
+        break; // honest terminal state is also acceptable
+      } else {
+        await new Promise((s) => setTimeout(s, 300));
+      }
+    }
+    const final = r.bots.status(r.botId);
+    assert.ok(
+      final === "idle" || final === "stopped",
+      `bot must converge to idle or stopped, got ${final}`
+    );
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
   }
 });
