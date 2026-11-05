@@ -16,7 +16,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { Store, RoomRecord } from "./store.js";
 import type { BotManager } from "./bot-manager.js";
@@ -89,7 +89,14 @@ export class RoomEngine extends EventEmitter {
   }
 
   pausedReason(roomId: string): RoomRuntime["pausedReason"] {
-    return this.runtimes.get(roomId)?.pausedReason ?? null;
+    const rt = this.runtimes.get(roomId);
+    if (rt !== undefined) return rt.pausedReason;
+    // Cold runtime (post-restart, no turn yet): the persisted store is the
+    // truth — a budget-paused room must 409 on the FIRST post, not after
+    // the queue builds a runtime (R2 P2-3).
+    const room = this.store.room(roomId);
+    if (room === undefined) return null;
+    return room.status === "paused" ? (room.pauseReason ?? "budget") : null;
   }
 
   /** Durable history for the UI (since = exclusive lower seq bound). */
@@ -102,7 +109,7 @@ export class RoomEngine extends EventEmitter {
    * POSTs queue instead of stomping watermarks/slots — review R1 P1-1),
    * appends, lifts a liftable pause, picks responder(s), drives the turn(s).
    */
-  async userSay(roomId: string, text: string): Promise<{ responders: string[] }> {
+  async userSay(roomId: string, text: string): Promise<{ responders: string[]; selected?: string[] }> {
     return this.enqueue(roomId, () => this.userSayInner(roomId, text));
   }
 
@@ -125,7 +132,7 @@ export class RoomEngine extends EventEmitter {
     this.systemLine(roomId, rt, note);
   }
 
-  private async userSayInner(roomId: string, text: string): Promise<{ responders: string[] }> {
+  private async userSayInner(roomId: string, text: string): Promise<{ responders: string[]; selected: string[] }> {
     const room = this.store.room(roomId);
     if (room === undefined) throw new Error(`no room ${roomId}`);
     const rt = this.runtime(roomId, room);
@@ -156,11 +163,14 @@ export class RoomEngine extends EventEmitter {
       { kind: "user" } // @all is user/admin-only (§5); bot senders arrive M2-B
     );
 
+    const spoke: string[] = [];
     for (const botId of decision.responders) {
       if (this.store.bot(botId) === undefined) continue;
       // A pause triggered mid-fan-out (ping-pong) stops the rest (§3.3-1).
       if (rt.pausedReason !== null) break;
       await this.runTurn(roomId, room, rt, botId);
+      const slot = rt.slots[botId];
+      if (slot === "posted") spoke.push(botId);
     }
     if (room.mode === "round-robin" && decision.responders.length > 0) {
       rt.rrPointer = nextRRPointer(
@@ -168,7 +178,7 @@ export class RoomEngine extends EventEmitter {
         rt.rrPointer
       );
     }
-    return { responders: decision.responders };
+    return { responders: spoke, selected: decision.responders };
   }
 
   /** Per-room FIFO: one turn batch at a time. */
@@ -196,6 +206,16 @@ export class RoomEngine extends EventEmitter {
     this.emitTurn(roomId, room);
 
     const context = this.renderContextUncommitted(room, rt, botId);
+
+    // Turn-outcome correlation (R2 P2-2): a settled prompt is not a
+    // successful one — an errored/aborted settle leaves
+    // get_last_assistant_text pointing at a PREVIOUS turn's text; appending
+    // it would phantom-write stale content into the room log.
+    let turnErrored = false;
+    const onBotFailed = (e: { botId: string }): void => { if (e.botId === botId) turnErrored = true; };
+    const onAborted = (e: { botId: string }): void => { if (e.botId === botId) turnErrored = true; };
+    this.bots.on("bot_failed", onBotFailed);
+    this.bots.on("aborted", onAborted);
 
     // First-token watchdog (§6.1): no delta within replyTimeoutMs ⇒ interrupt
     // and mark the slot timed-out (verdict is STICKY for this turn — the
@@ -235,23 +255,28 @@ export class RoomEngine extends EventEmitter {
     }
     clearTimeout(watchdog);
     this.bots.off("delta", onDelta);
-    rt.slots[botId] = timedOut ? "timed-out" : sawFirstToken ? "posted" : "failed";
+    this.bots.off("bot_failed", onBotFailed);
+    this.bots.off("aborted", onAborted);
+    rt.slots[botId] = timedOut ? "timed-out" : turnErrored ? "failed" : sawFirstToken ? "posted" : "failed";
     if (timedOut) {
-      // The interrupt makes prompt RESOLVE (aborted settle) — the timeout
-      // verdict + system line must land on this path too (R1 P1-2).
       this.systemLine(roomId, rt, `${this.botName(botId)} timed out after ${guards.replyTimeoutMs}ms with no first token`);
+    } else if (turnErrored) {
+      this.systemLine(roomId, rt, `${this.botName(botId)} turn errored (provider/abort) — no reply recorded`);
+    } else if (!sawFirstToken) {
+      // P3-2: explain a failed-without-delta settle symmetric to the reject path.
+      this.systemLine(roomId, rt, `${this.botName(botId)} turn produced no output`);
     }
 
-    if (!timedOut && reply.trim().length > 0) {
+    if (!timedOut && !turnErrored && reply.trim().length > 0) {
       this.append(roomId, rt, { kind: "bot", id: botId }, reply);
     }
     // Prompt accepted and settled ⇒ commit the watermark (the injected
     // context is now durably in the bot's session; R1 P1-1).
     rt.watermark.set(botId, context.seq);
 
-    // Ping-pong evaluation ONLY on real completed turns: timed-out turns
-    // produced nothing and must not feed the guard (review R1 P1-2).
-    if (!timedOut) {
+    // Ping-pong evaluation ONLY on real completed turns: timed-out AND
+    // errored turns produced nothing and must not feed the guard.
+    if (!timedOut && !turnErrored) {
       const toolCalls = rt.turnTools.get(botId) ?? 0;
       const verdict = afterBotTurn(guards, rt.pingPong, toolCalls);
       rt.pingPong = verdict.state;
@@ -336,6 +361,7 @@ export class RoomEngine extends EventEmitter {
     const fd = openSync(messagesPath(this.roomsRoot, roomId), "a");
     try {
       writeSync(fd, `${JSON.stringify(msg)}\n`);
+      fsyncSync(fd);
     } finally {
       closeSync(fd);
     }
