@@ -47,6 +47,9 @@ export class Host {
 
   static boot(opts: HostOptions = {}): Host {
     const p = paths(opts.dataRoot);
+    if (p.root.includes(":")) {
+      throw new Error("data root must not contain ':' (breaks docker -v mounts)");
+    }
     for (const dir of [p.root, p.piConfRoot, p.memoryRoot, p.logs]) {
       mkdirSync(dir, { recursive: true });
     }
