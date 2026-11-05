@@ -137,36 +137,36 @@ export class BotManager extends EventEmitter {
     if (opts.internal !== true) m.epoch += 1; // external start supersedes chains
     m.stopRequested = false;
     m.pendingFailure = null;
-
-    // Host-controlled dirs must exist before the child starts (the gate's
-    // audit appendFileSync fails closed on ENOENT). Before "starting" so an
-    // IO failure never leaves a starting residue.
-    mkdirSync(botPiConfDir(this.dataRoot, botId), { recursive: true });
-    mkdirSync(bot.workDir, { recursive: true });
     this.setStatus(m, "starting");
 
     const spawn = { ...this.spawnDefaults, ...spawnOverride };
-    const client = new RpcClient({
-      bin: spawn.bin,
-      argvPrefix: spawn.sandboxArgv,
-      cwd: bot.workDir,
-      env: { ...spawn.env, CODAR_GATE_AUDIT: join(botPiConfDir(this.dataRoot, botId), "gate-audit.jsonl") },
-      idleTimeoutMs: 5 * 60_000,
-      wallTimeoutMs: 24 * 60 * 60_000,
-      onUiRequest: (req) => this.handleUi(client, req),
-    });
-    m.client = client;
-    client.on("event", (e: AgentEvent) => this.onEvent(bot, client, e));
-    client.on("error", (e: Error) => void this.onChildFailure(bot, client, String(e)));
-    client.on("bot_failed", (f) => {
-      if ((f as { aborted?: boolean }).aborted === true) return; // user abort, not a failure
-      const reason = `stopReason=${String((f as { stopReason?: string }).stopReason ?? "?")} ${String((f as { errorMessage?: string }).errorMessage ?? "")}`.trim();
-      this.emit("failure", { botId, reason });
-      this.audit("bot_failed", { botId, reason });
-    });
-    client.on("exit", () => void this.onChildFailure(bot, client, "rpc child exited"));
-
+    // Everything that can fail — including BEFORE the client exists (mkdir
+    // ENOENT etc.) — lives inside this try: pre-client failures must re-enter
+    // the recovery funnel, not strand a parked baton (R5 P3-2).
+    let client: RpcClient;
     try {
+      mkdirSync(botPiConfDir(this.dataRoot, botId), { recursive: true });
+      mkdirSync(bot.workDir, { recursive: true });
+      client = new RpcClient({
+        bin: spawn.bin,
+        argvPrefix: spawn.sandboxArgv,
+        cwd: bot.workDir,
+        env: { ...spawn.env, CODAR_GATE_AUDIT: join(botPiConfDir(this.dataRoot, botId), "gate-audit.jsonl") },
+        idleTimeoutMs: 5 * 60_000,
+        wallTimeoutMs: 24 * 60 * 60_000,
+        onUiRequest: (req) => this.handleUi(client, req),
+      });
+      m.client = client;
+      client.on("event", (e: AgentEvent) => this.onEvent(bot, client, e));
+      client.on("error", (e: Error) => void this.onChildFailure(bot, client, String(e)));
+      client.on("bot_failed", (f) => {
+        if ((f as { aborted?: boolean }).aborted === true) return; // user abort, not a failure
+        const reason = `stopReason=${String((f as { stopReason?: string }).stopReason ?? "?")} ${String((f as { errorMessage?: string }).errorMessage ?? "")}`.trim();
+        this.emit("failure", { botId, reason });
+        this.audit("bot_failed", { botId, reason });
+      });
+      client.on("exit", () => void this.onChildFailure(bot, client, "rpc child exited"));
+
       const ready = await client.start({
         extensionPath: spawn.extensionPath,
         model: `${bot.model.provider}/${bot.model.modelId}`,
@@ -189,10 +189,10 @@ export class BotManager extends EventEmitter {
         }
       }
     } catch (error) {
-      this.dropClient(m, client);
+      if (m.client !== null) this.dropClient(m, m.client);
       // Recovery runs detached — the caller learns about THIS failure now,
       // not after the whole backoff ladder (R2: ~90s 500s).
-      void this.recoverFromFailure(bot, client, String(error)).catch(() => undefined);
+      void this.recoverFromFailure(bot, null, String(error)).catch(() => undefined);
       throw error;
     }
 
@@ -400,7 +400,7 @@ export class BotManager extends EventEmitter {
           /* retry loop continues while this chain still owns the lifecycle */
         }
       }
-      if (!m.stopRequested && m.epoch === myEpoch && m.client === null) {
+      if (!m.stopRequested && m.epoch === myEpoch && m.client === null && m.status !== "stopped") {
         this.setStatus(m, "stopped", `restart budget exhausted (${reason})`);
       }
     } finally {
