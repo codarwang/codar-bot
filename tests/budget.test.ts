@@ -246,3 +246,153 @@ test("M2-C R2: start/restart settle is NOT counted as a turn (working→idle onl
     await r.dispose();
   }
 });
+
+test("M2-C R3: restart (no in-memory state) keeps a budget-paused room paused", async () => {
+  const r = await rig();
+  try {
+    // Tighten the room, cross it, get paused.
+    const room = r.store.room(r.roomId)!;
+    r.store.updateRoom(r.roomId, { budget: { ...room.budget, maxCostMicros: 100 } });
+    r.ledger.record({
+      hour: monthHour(), botId: r.chiefId, model: "fake/f", kind: "chat",
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150,
+    });
+    const pDeadline = Date.now() + 5_000;
+    while (r.store.room(r.roomId)!.status !== "paused" && Date.now() < pDeadline) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    assert.equal(r.store.room(r.roomId)!.status, "paused");
+    // A NEW Budget instance = host restarted (empty scopes map). The old bug
+    // treated "no state" as a rollover and un-paused the still-over room.
+    const reborn = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+    reborn.rolloverIfStale(r.roomId);
+    assert.equal(r.store.room(r.roomId)!.status, "paused", "no-state ≠ rollover — pause survives restart");
+    await assert.rejects(() => r.rooms.userSay(r.roomId, "hello"), /budget-paused/);
+  } finally {
+    await r.dispose();
+  }
+});
+
+test("M2-C R3: PATCH /api/bots/:id budget edit re-arms the sticky stop", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-bud-patch-"));
+  mkdirSync(join(root, "work"), { recursive: true });
+  process.env.CODAR_BOT_HOME = root;
+  process.env.CODAR_BOT_PORT = "0";
+  const { Host } = await import("../src/host/host.js");
+  const host = Host.boot({ dataRoot: root, bin: process.execPath, argv: [FAKE_PI] });
+  try {
+    const port = await host.start();
+    const chief = host.store.addBot({
+      name: "C", role: "", chief: true,
+      model: { provider: "fake", modelId: "f", thinkingLevel: "low" },
+      workDir: join(root, "work"), sessionPath: null,
+      sandbox: { mode: "host-not-isolated" },
+      budget: { ...defaultBudget(), maxTokens: 100 },
+    });
+    const room = host.store.addRoom({
+      name: "d", members: [chief.id], admin: chief.id,
+      mode: "admin-reply", sharedDir: join(root, "s"), goal: null, budget: defaultBudget(),
+    });
+    const sysLines = async (): Promise<number> => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/rooms/${room.id}/messages`);
+      const body = (await res.json()) as { messages: Array<{ from: { kind: string }; text: string }> };
+      return body.messages.filter((m) => m.from.kind === "system" && m.text.includes("BUDGET STOPPED")).length;
+    };
+    const waitLines = async (n: number): Promise<number> => {
+      const dl = Date.now() + 5_000;
+      let c = await sysLines();
+      while (c < n && Date.now() < dl) { await new Promise((s2) => setTimeout(s2, 50)); c = await sysLines(); }
+      return c;
+    };
+    // First breach → stop #1 (sticky within the window). 105/100 crosses
+    // the limit outright (a 95% write would only warn).
+    host.ledger.record({
+      hour: monthHour(), botId: chief.id, model: "fake/f", kind: "chat",
+      input: 90, output: 15, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0,
+    });
+    assert.equal(await waitLines(1), 1, "first stop broadcast");
+    // PATCH the bot budget (full 4-field body) — re-arm via THIS route.
+    const patch = await fetch(`http://127.0.0.1:${port}/api/bots/${chief.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ budget: { maxTokens: 200, maxCostMicros: 20_000_000, maxTurns: 2_000, maxWallMs: 3_600_000 } }),
+    });
+    assert.equal(patch.status, 200);
+    // Sticky without re-arm would swallow this second breach.
+    host.ledger.record({
+      hour: monthHour(), botId: chief.id, model: "fake/f", kind: "chat",
+      input: 250, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0,
+    });
+    assert.equal(await waitLines(2), 2, "re-armed: a fresh breach stops again");
+  } finally {
+    await host.shutdown();
+    delete process.env.CODAR_BOT_HOME;
+    delete process.env.CODAR_BOT_PORT;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("M2-C R3: room budget PUT — insufficient raise keeps the stop sticky; a real clear re-arms + resumes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-bud-put-"));
+  mkdirSync(join(root, "work"), { recursive: true });
+  process.env.CODAR_BOT_HOME = root;
+  process.env.CODAR_BOT_PORT = "0";
+  const { Host } = await import("../src/host/host.js");
+  const host = Host.boot({ dataRoot: root, bin: process.execPath, argv: [FAKE_PI] });
+  try {
+    const port = await host.start();
+    const chief = host.store.addBot({
+      name: "C", role: "", chief: true,
+      model: { provider: "fake", modelId: "f", thinkingLevel: "low" },
+      workDir: join(root, "work"), sessionPath: null,
+      sandbox: { mode: "host-not-isolated" }, budget: defaultBudget(),
+    });
+    const room = host.store.addRoom({
+      name: "d", members: [chief.id], admin: chief.id,
+      mode: "admin-reply", sharedDir: join(root, "s"), goal: null,
+      budget: { ...defaultBudget(), maxCostMicros: 100 },
+    });
+    const pauseLines = async (): Promise<number> => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/rooms/${room.id}/messages`);
+      const body = (await res.json()) as { messages: Array<{ from: { kind: string }; text: string }> };
+      return body.messages.filter((m) => m.from.kind === "system" && m.text.includes("ROOM PAUSED")).length;
+    };
+    host.ledger.record({
+      hour: monthHour(), botId: chief.id, model: "fake/f", kind: "chat",
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150,
+    });
+    const pDeadline = Date.now() + 5_000;
+    while (host.store.room(room.id)!.status !== "paused" && Date.now() < pDeadline) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    assert.equal(host.store.room(room.id)!.status, "paused");
+    assert.equal(await pauseLines(), 1);
+    // Insufficient raise (150 used > 120): stays paused, sticky NOT re-armed.
+    const put1 = await fetch(`http://127.0.0.1:${port}/api/budget/${room.id}`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ maxCostMicros: 120 }),
+    });
+    assert.equal(put1.status, 200);
+    assert.equal(host.store.room(room.id)!.status, "paused", "insufficient raise must not resume");
+    // Another write over the (new) limit: with sticky intact this is a no-op —
+    // no second pause ceremony.
+    host.ledger.record({
+      hour: monthHour(), botId: chief.id, model: "fake/f", kind: "chat",
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 100,
+    });
+    await new Promise((s2) => setTimeout(s2, 500));
+    assert.equal(await pauseLines(), 1, "sticky survives an insufficient raise — no phantom re-stop");
+    // Real clear: resume + re-arm.
+    const put2 = await fetch(`http://127.0.0.1:${port}/api/budget/${room.id}`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ maxCostMicros: 10_000 }),
+    });
+    assert.equal(put2.status, 200);
+    assert.equal(host.store.room(room.id)!.status, "active", "real clear resumes");
+  } finally {
+    await host.shutdown();
+    delete process.env.CODAR_BOT_HOME;
+    delete process.env.CODAR_BOT_PORT;
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -73,6 +73,7 @@ export class Host {
     bots.handoff = handoff; // late bind (M2-B D1 bridge)
     const budget = new Budget(store, ledger, bots, rooms, p.root);
     rooms.deadlineMs = (botId: string) => budget.wallDeadlineMs(botId); // §6.1a
+    handoff.deadlineMs = (botId: string) => budget.wallDeadlineMs(botId); // §6.1a
     const api = new HttpApi({
       store, bots, ledger, rooms, handoff, budget,
       webDir: opts.webDir ?? (existsSync(join(p.root, "web-dist")) ? join(p.root, "web-dist") : undefined),

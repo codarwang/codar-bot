@@ -15,6 +15,7 @@ import { UsageLedger } from "../src/host/usage-ledger.js";
 import { BotManager } from "../src/host/bot-manager.js";
 import { RoomEngine } from "../src/host/room-engine.js";
 import { Handoff } from "../src/host/handoff.js";
+import { Budget } from "../src/host/budget.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FAKE_PI = resolve(HERE, "fixtures/fake-pi.mjs");
@@ -234,6 +235,41 @@ test("M2-B R2: failed work releases its request_id — a retry creates a NEW wor
     assert.notEqual(a.workId, b.workId, "terminal work must not answer duplicate-ok");
     assert.equal(b.duplicate, false);
   } finally {
+    await r.dispose();
+  }
+});
+
+test("M2-C R3: handoff per-task wall clock interrupts an over-running child", async () => {
+  const r = await rig();
+  // Wire exactly as host.ts does: the child's deadline comes from Budget.
+  const budget = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
+  r.handoff.deadlineMs = (botId) => budget.wallDeadlineMs(botId);
+  r.store.updateBot(r.writerId, { budget: { ...defaultBudget(), maxWallMs: 600 } });
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId);
+    await r.bots.start(r.writerId);
+    const t0 = Date.now();
+    const { workId } = await r.handoff.dispatch({
+      fromBot: r.chiefId, toBot: r.writerId,
+      task: "take it SLOW", requestId: "wall-1", roomId: r.roomId,
+    });
+    // SLOW settles at ~1.5s; the wall clock must cut it at 600ms. Without
+    // the clock the work only goes terminal after the full SLOW run.
+    const deadline = Date.now() + 5_000;
+    while (!["done", "failed"].includes(r.handoff.work(workId)!.status) && Date.now() < deadline) {
+      await new Promise((s2) => setTimeout(s2, 50));
+    }
+    const status = r.handoff.work(workId)!.status;
+    assert.ok(status === "done" || status === "failed", `work must reach a terminal state, got ${status}`);
+    assert.ok(Date.now() - t0 < 1_300, "wall clock fired (well under the 1.5s SLOW run)");
+    // Interrupted before the reply existed: no late OK may land in the room.
+    assert.ok(
+      !r.rooms.history(r.roomId).some((m) => m.from.kind === "bot" && m.text.includes("OK")),
+      "aborted child must not deliver its late reply"
+    );
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
     await r.dispose();
   }
 });

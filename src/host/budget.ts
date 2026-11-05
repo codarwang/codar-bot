@@ -99,18 +99,26 @@ export class Budget extends EventEmitter {
   private scope(key: string): ScopeState {
     const month = monthKey();
     let st = this.scopes.get(key);
-    if (st === undefined || st.month !== month) {
-      // Month rollover: fresh window resets counters AND the sticky stop
-      // (§5.3 "次月自动恢复") and re-arms the warn line.
+    if (st === undefined) {
+      // No in-memory state (host restarted or first touch): create fresh
+      // WITHOUT the rollover resume — after a restart a budget-paused room
+      // stays paused (honest; the user resumes via PUT). Conflating "no
+      // state" with "rolled over" used to un-pause still-over rooms
+      // (M2-C R3 P2).
       st = { turns: 0, stopped: false, month };
       this.scopes.set(key, st);
-      // Re-arm warns whose scope matches this key.
+      return st;
+    }
+    if (st.month !== month) {
+      // REAL month rollover: reset counters, clear the sticky stop, re-arm
+      // warns, resume a budget-paused room (§5.3 次月自动恢复).
+      st = { turns: 0, stopped: false, month };
+      this.scopes.set(key, st);
       const [scopePart, idPart] = key.split(":");
       for (const w of [...this.warned]) {
         const parts = w.split(":");
         if (parts[1] === scopePart && parts[2] === idPart) this.warned.delete(w);
       }
-      // Resume a budget-paused room on rollover.
       if (key.startsWith("room:")) {
         const roomId = key.slice(5);
         const room = this.store.room(roomId);
@@ -149,8 +157,10 @@ export class Budget extends EventEmitter {
   rolloverIfStale(roomId: string): void {
     const room = this.store.room(roomId);
     if (room?.status !== "paused" || room.pauseReason !== "budget") return;
+    // Only a RECORDED old-month state proves a rollover; a missing state
+    // after restart keeps the pause (M2-C R3 P2).
     const st = this.scopes.get(`room:${roomId}`);
-    if (st === undefined || st.month !== monthKey()) {
+    if (st !== undefined && st.month !== monthKey()) {
       this.scope(`room:${roomId}`); // performs the rollover (reset + resume)
     }
   }

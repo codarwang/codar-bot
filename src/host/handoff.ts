@@ -174,13 +174,24 @@ export class Handoff extends EventEmitter {
       this.emit("progress", { workId: work.id, botId: work.child, oneLiner: lastProgress.oneLiner, status: "working" });
     };
     this.bots.on("tool", onTool);
+    // Per-task wall clock (§6.1a maxWallMs — M2-C R3 P2-4, actually wired
+    // this time: handoff runs are the most task-like surface there is).
+    const wallMs = this.deadlineMs?.(work.child) ?? null;
+    let wallClock: NodeJS.Timeout | null = null;
+    if (wallMs !== null && wallMs > 0) {
+      wallClock = setTimeout(() => {
+        void this.bots.interrupt(work.child).catch(() => undefined);
+      }, wallMs);
+    }
     try {
       const result = await this.bots.prompt(work.child, injected, "tool");
+      if (wallClock !== null) clearTimeout(wallClock);
       this.store.updateWork(work.id, { status: "done" });
       this.emit("work", { workId: work.id, status: "done", parent: work.parent, child: work.child });
       // Result flows back: room line (if room-scoped) + caller wake prompt.
       await this.returnResult(work, result, lastProgress.oneLiner);
     } catch (error) {
+      if (wallClock !== null) clearTimeout(wallClock);
       // Best-effort failure bookkeeping: the host may be shutting down (store
       // closed, dirs removed) — a throwing catch-path would surface as an
       // unhandled rejection (suite-level test failure), so guard each step.
