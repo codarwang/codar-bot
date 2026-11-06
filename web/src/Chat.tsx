@@ -99,17 +99,20 @@ export function Chat(p: Props): JSX.Element {
   };
 
   // @-mention popup: matches the fragment after the last "@".
-  const mentionMatches = useMemo(() => {
+  // MEMBERS ONLY (dogfood D1): the popup used to suggest every bot in the
+  // store — @-ing a non-member silently routes to nobody. Computed plain
+  // per render (no memo): roster-scale bot lists make memoizing pointless,
+  // and a missed dep once left a stale popup after an in-page membership
+  // PATCH.
+  const mentionMatches = (() => {
     const at = p.draft.lastIndexOf("@");
     if (at < 0) return [];
     const frag = p.draft.slice(at + 1);
     if (frag.includes(" ")) return [];
-    // MEMBERS ONLY (dogfood D1): the popup used to suggest every bot in the
-    // store — @-ing a non-member silently routes to nobody.
     return bots
       .filter((b) => roomMembers.includes(b.id) && b.name.toLowerCase().includes(frag.toLowerCase()))
       .slice(0, 9);
-  }, [p.draft, bots, roomMembers]);
+  })();
   useEffect(() => {
     setMentionOpen(mentionMatches.length > 0);
   }, [mentionMatches.length]);
