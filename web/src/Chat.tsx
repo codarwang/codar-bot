@@ -507,6 +507,26 @@ function ActivityLine(props: {
     // line cannot masquerade as live truth (D2 R2 P3; heals on the next
     // turn event).
     if (secs <= 300) {
+      // No-first-token visibility (dogfood D3): a model fed a bloated
+      // context sat silent for 2 minutes with the UI just ticking — show
+      // the seconds WITHOUT a first token, warn at 30s, offer abort.
+      const noTool = props.toolAt[busyThinking] === undefined;
+      if (noTool) {
+        return (
+          <div className={`activityLine ${secs >= 30 ? "stuck" : ""}`}>
+            {props.t.noFirstToken(secs)}
+            {secs >= 30 && (
+              <>
+                <span className="dim"> · {props.t.possiblyStuck}</span>
+                <button
+                  className="mini danger"
+                  onClick={() => { void post(`/api/bots/${busyThinking}/abort`).catch(() => undefined); }}
+                >■</button>
+              </>
+            )}
+          </div>
+        );
+      }
       return (
         <div className="activityLine">
           {props.t.thinkingFor(props.botName(busyThinking), secs)}

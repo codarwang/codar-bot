@@ -305,6 +305,11 @@ export class HttpApi {
         this.send(res, 200, updated);
         return;
       }
+      if (req.method === "POST" && id !== undefined && action === "reset-session") {
+        await this.deps.bots.resetSession(id);
+        this.send(res, 200, { ok: true });
+        return;
+      }
       if (req.method === "POST" && id !== undefined && action === "start") {
         await this.deps.bots.start(id);
         this.send(res, 200, { ok: true });

@@ -286,3 +286,27 @@ test("M2-E R3: parked approvals go stale when the client dies and can never reso
     await r.dispose();
   }
 });
+
+test("dogfood D3: reset-session drops the bloated session and the bot restarts fresh", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    const botId = r.store.state.bots[0]!.id;
+    await r.bots.start(botId);
+    const reply = await r.bots.prompt(botId, "Reply with the single word ALPHA.");
+    assert.equal(reply, "ALPHA");
+    // A session path got persisted during the prompt.
+    assert.notEqual(r.store.bot(botId)!.sessionPath, null, "session path persisted after a turn");
+    await r.bots.resetSession(botId);
+    assert.equal(r.store.bot(botId)!.sessionPath, null, "reset drops the session path");
+    assert.equal(r.bots.status(botId), "stopped", "reset stops the bot");
+    // Fresh start works and re-persists a NEW session.
+    await r.bots.start(botId);
+    const reply2 = await r.bots.prompt(botId, "Reply with the single word BRAVO.");
+    assert.equal(reply2, "BRAVO");
+    assert.notEqual(r.store.bot(botId)!.sessionPath, null);
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});

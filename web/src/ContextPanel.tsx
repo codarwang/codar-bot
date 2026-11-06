@@ -3,9 +3,9 @@
  * panels, and BOT DETAIL as the second view (model, budget 4-dim, sandbox
  * honesty badge, session, memory management — PRD 2.3).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { money, type Lang } from "./i18n";
-import { jsonFetch, put, type BudgetRow, type Overview, type RoomRecord, type TurnEvent } from "./api";
+import { jsonFetch, post, put, type BudgetRow, type Overview, type RoomRecord, type TurnEvent } from "./api";
 import type { WorkView } from "./App";
 
 type T = ReturnType<typeof import("./i18n").makeT>;
@@ -174,6 +174,10 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
         status={props.statuses[bot.id] ?? "stopped"}
         streaming={props.streaming[bot.id] ?? ""}
         tool={props.toolAt[bot.id]}
+        onResetSession={async () => {
+          await post(`/api/bots/${bot.id}/reset-session`);
+          await props.onRefresh();
+        }}
       />
       <section className="panel">
         <h3>{t.ctxDetail}</h3>
@@ -248,6 +252,7 @@ function WorkLog(props: {
   status: string;
   streaming: string;
   tool?: { name: string; args: string; ts: number; step: number };
+  onResetSession: () => Promise<void>;
 }): JSX.Element {
   const { t } = props;
   const [now, setNow] = useState(Date.now());
@@ -272,17 +277,37 @@ function WorkLog(props: {
     return () => { cancelled = true; };
   }, [props.botId, props.status]);
   const toolSecs = props.tool !== undefined ? Math.max(0, Math.round((now - props.tool.ts) / 1000)) : 0;
+  // Turn age: since the bot went working (status prop flips) — we do not
+  // have turn slots here, so track the working-since moment locally.
+  const workingSince = useRef<number | null>(null);
+  if (props.status === "working" && workingSince.current === null) workingSince.current = Date.now();
+  if (props.status !== "working") workingSince.current = null;
+  const noTokenSecs =
+    props.status === "working" && props.tool === undefined && props.streaming === "" && workingSince.current !== null
+      ? Math.max(0, Math.round((now - workingSince.current) / 1000))
+      : 0;
   const live =
     props.tool !== undefined
       ? `#${props.tool.step} ⚙ ${props.tool.name} … ${toolSecs}s${props.tool.args !== "" ? ` · ${props.tool.args}` : ""}`
       : props.streaming !== ""
         ? t.liveOutput
-        : null;
+        : noTokenSecs > 0
+          ? `${t.noFirstToken(noTokenSecs)}${noTokenSecs >= 30 ? ` · ${t.possiblyStuck}` : ""}`
+          : null;
   return (
     <section className="panel">
       <h3>{t.workLog} · {props.botName}</h3>
+      <div className="worklog-actions">
+        <button
+          className="mini"
+          title={t.resetSessionHint}
+          disabled={props.status === "working"}
+          onClick={() => void props.onResetSession()}
+        >↻ {t.resetSession}</button>
+        <span className="dim">{t.resetSessionHint}</span>
+      </div>
       {live !== null ? (
-        <div className="worklog-live">
+        <div className={`worklog-live ${noTokenSecs >= 30 ? "stuck" : ""}`}>
           {live}
           {props.streaming !== "" && (
             <div className="worklog-stream">{props.streaming.slice(-240)}▍</div>

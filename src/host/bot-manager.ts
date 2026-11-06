@@ -496,6 +496,20 @@ export class BotManager extends EventEmitter {
     return text ?? "";
   }
 
+  /** Start over with a FRESH pi session (dogfood D3): stop the bot, drop
+   *  sessionPath. The room watermarks stay at the tail (no backlog
+   *  re-injection), and the frozen memory snapshot is still injected every
+   *  turn — durable knowledge survives, the accumulated tool-result bloat
+   *  does not. A dispatcher session that grew to 165K input tokens took
+   *  2+ minutes to first token. */
+  async resetSession(botId: string): Promise<void> {
+    const bot = this.store.bot(botId);
+    if (bot === undefined) throw new ApiError(404, `no bot ${botId}`);
+    await this.stop(botId);
+    this.store.updateBot(botId, { sessionPath: null });
+    this.forget(botId);
+  }
+
   /** Chat transcript for the UI: the live child's message history. */
   async messages(botId: string): Promise<Array<{ role: string; text: string }>> {
     if (this.store.bot(botId) === undefined) throw new ApiError(404, `no bot ${botId}`);
