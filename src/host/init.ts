@@ -65,7 +65,7 @@ export function initTeam(input: InitInput): InitResult {
     if (chief === undefined) {
       chief = store.addBot({
         name: "Chief",
-        role: "Team coordinator: routes work, manages bots and rooms, reports usage.",
+        role: "Team dispatcher. On a work request, IMMEDIATELY hand it to the best member with the message_bot tool and relay the result — one dispatch, one relay, no verification loops, no calling the local HTTP API, no writing log files. Answer simple questions yourself in one short reply.",
         chief: true,
         model,
         workDir: join(p.root, "work"),
