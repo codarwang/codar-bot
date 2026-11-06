@@ -405,3 +405,36 @@ test("dogfood D1: a member PATCHed in while no runtime exists sees the full back
     await r.dispose();
   }
 });
+
+test("dogfood D3 R2: the header-only skip fires even with a memory tail (pendingCount, not substring)", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    // Memory tail injects "\\n\\n" into EVERY prompt — the old substring
+    // heuristic could never fire (R2 verdict).
+    r.rooms.memoryTail = () => "### Memory — team\\n#### entry\\nsome durable fact";
+    await r.bots.start(r.chiefId);
+    await r.bots.start(r.writerId);
+    // Batch A: @all fan-out. Mid-batch, send Y (accept-phase appends it).
+    const batchA = r.rooms.userSay(r.roomId, "@all reply with the single word ALPHA.");
+    await new Promise((s2) => setTimeout(s2, 150));
+    void r.rooms.userSay(r.roomId, "@Writer also reply BRAVO").catch(() => "queued");
+    await batchA;
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const hist = r.rooms.history(r.roomId);
+      const botLines = hist.filter((m) => m.from.kind === "bot");
+      // Batch A gives ≤2 replies; the header-only no-op would add a third
+      // "OK"/memory-only reply for Writer with nothing to answer.
+      if (botLines.length >= 2) { await new Promise((s2) => setTimeout(s2, 800)); break; }
+      await new Promise((s2) => setTimeout(s2, 100));
+    }
+    const hist = r.rooms.history(r.roomId);
+    const botLines = hist.filter((m) => m.from.kind === "bot");
+    assert.ok(botLines.length <= 3, `no unbounded no-op turns (got ${botLines.length})`);
+    assert.ok(!botLines.some((m) => m.text === "OK" && botLines.filter((x) => x.text === "OK").length > 1), "no metered memory-only OK turn");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});

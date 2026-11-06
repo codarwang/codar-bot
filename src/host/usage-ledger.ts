@@ -66,13 +66,21 @@ export class UsageLedger {
     // the same hour×bot×model×kind splits per room. SQLite cannot ALTER a
     // PRIMARY KEY — rebuild the table; legacy rows carry NULL room_id
     // (unattributed: bot budgets still count them, room budgets do not).
-    const pk = (this.db.prepare("PRAGMA table_info(usage)").all() as Array<{ name: string }>).map((c) => c.name);
-    if (!pk.includes("room_id")) {
+    const cols = this.db.prepare("PRAGMA table_info(usage)").all() as Array<{ name: string; notnull: number }>;
+    const roomCol = cols.find((c) => c.name === "room_id");
+    // Guard on presence AND nullability: a ledger migrated by the first
+    // (nullable) revision keeps NULL rows forever and splits new
+    // unattributed writes into a separate '' bucket (R2 verdict P3) —
+    // rebuild it too.
+    if (roomCol === undefined || roomCol.notnull === 0) {
+      // Fresh v0 table OR v1 nullable-migrated table: rebuild under a temp
+      // name (v0's CREATE IF NOT EXISTS already made `usage`; rename works
+      // for both) — NULL room_id rows land in the '' sentinel bucket.
       this.db.exec("ALTER TABLE usage RENAME TO usage_v1");
       this.db.exec(SCHEMA);
       this.db.exec(
         "INSERT INTO usage (hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, room_id) " +
-        "SELECT hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, '' FROM usage_v1"
+        "SELECT hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, COALESCE(room_id, '') FROM usage_v1"
       );
       this.db.exec("DROP TABLE usage_v1");
     }

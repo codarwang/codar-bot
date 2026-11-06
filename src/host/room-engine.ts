@@ -214,14 +214,13 @@ export class RoomEngine extends EventEmitter {
       // Header-only turns (D3 review P2-2): the accept-phase split means a
       // mid-batch message can be consumed by an EARLIER responder's render
       // (watermark committed past it) — running this responder against an
-      // empty dialogue is a metered no-op turn. Skip honestly.
-      {
-        const ctx = this.renderContextUncommitted(room, rt, botId);
-        const hasDialogue = ctx.text.includes("\n\n");
-        if (!hasDialogue) {
-          rt.slots[botId] = "passed";
-          continue;
-        }
+      // empty dialogue is a metered no-op turn. Skip honestly. NOTE: branch
+      // on pendingCount, NOT a "\n\n" substring — the memory tail separator
+      // reproduces that sequence verbatim in EVERY memory-carrying prompt
+      // (R2 verdict: the skip could never fire in production).
+      if (this.renderContextUncommitted(room, rt, botId).pendingCount === 0) {
+        rt.slots[botId] = "passed";
+        continue;
       }
       // A pause triggered mid-fan-out (ping-pong) stops the rest (§3.3-1).
       if (rt.pausedReason !== null) break;
@@ -387,7 +386,7 @@ export class RoomEngine extends EventEmitter {
    * the caller commits `seq` only after the prompt was accepted and settled
    * (a rejected prompt leaves the messages injectable next turn — R1 P1-1).
    */
-  private renderContextUncommitted(room: RoomRecord, rt: RoomRuntime, botId: string): { text: string; seq: number } {
+  private renderContextUncommitted(room: RoomRecord, rt: RoomRuntime, botId: string): { text: string; seq: number; pendingCount: number } {
     const members = room.members
       .map((id) => this.store.bot(id)?.name ?? id)
       .join(", ");
@@ -417,6 +416,7 @@ export class RoomEngine extends EventEmitter {
     return {
       text: dialogue.length > 0 ? `${head}\n\n${dialogue}` : head,
       seq: rt.lastSeq,
+      pendingCount: pending.length,
     };
   }
 

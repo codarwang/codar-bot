@@ -76,3 +76,34 @@ test("dogfood D3 review P3-1: unattributed rows MERGE into one bucket (NULL PK h
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("dogfood D3 R2: a v1 nullable-room_id ledger RE-MIGRATES to the sentinel schema", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-ul-v1-"));
+  const dbPath = join(root, "usage.sqlite");
+  try {
+    // Hand-build the v1 (nullable) shape exactly as the first migration left it.
+    const { DatabaseSync } = await import("node:sqlite");
+    const raw = new DatabaseSync(dbPath);
+    raw.exec(`CREATE TABLE usage (
+      hour TEXT NOT NULL, bot_id TEXT NOT NULL, model TEXT NOT NULL, kind TEXT NOT NULL,
+      input INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0,
+      cache_read INTEGER NOT NULL DEFAULT 0, cache_write INTEGER NOT NULL DEFAULT 0,
+      cache_write_1h INTEGER NOT NULL DEFAULT 0, cost_micros INTEGER NOT NULL DEFAULT 0,
+      room_id TEXT,
+      PRIMARY KEY (hour, bot_id, model, kind, room_id))`);
+    raw.prepare("INSERT INTO usage (hour, bot_id, model, kind, input) VALUES ('2026-11-06T09','b','m','chat',7)").run();
+    raw.close();
+    // Opening with UsageLedger must rebuild to NOT NULL '' and fold the NULL row in.
+    const ledger = new UsageLedger(dbPath);
+    const notnull = (ledger as unknown as { db: { prepare(q: string): { all(): Array<{ notnull: number }> } } })
+      .db.prepare("PRAGMA table_info(usage)").all().find((c) => (c as { name: string }).name === "room_id");
+    void notnull;
+    assert.equal(ledger.totals({ botId: "b" })[0]!.input, 7, "data survives the re-migration");
+    // New unattributed writes MERGE with the migrated NULL row (both in '').
+    ledger.record({ hour: "2026-11-06T09", botId: "b", model: "m", kind: "chat", input: 3, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0, roomId: null });
+    assert.equal(ledger.totals({ botId: "b" })[0]!.input, 10, "NULL-legacy and ''-new rows share one bucket");
+    ledger.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
