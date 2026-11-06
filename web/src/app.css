@@ -296,4 +296,16 @@ button.mini.danger { color: var(--stop); }
 .badge-sandbox { font-size: 12px; }
 .badge-sandbox.warn { color: var(--warn); }
 .mem-path { font-family: ui-monospace, monospace; font-size: 12px; }
+.worklog-live {
+  background: #eef1fe; color: var(--accent); border-radius: var(--radius);
+  padding: 6px 10px; font-size: 12px; white-space: nowrap; overflow-x: auto;
+}
+.worklog-stream {
+  margin-top: 4px; white-space: pre-wrap; word-break: break-all; color: var(--ink);
+  max-height: 100px; overflow-y: auto; font-size: 12px;
+}
+.worklog-tail { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+.worklog-row { display: flex; gap: 6px; font-size: 12px; align-items: baseline; }
+.worklog-role { width: 64px; flex-shrink: 0; text-align: right; }
+.worklog-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mem-edit { margin-top: 6px; }

@@ -467,6 +467,9 @@ export function App(): JSX.Element {
           turn={turn}
           works={roomWorks}
           budgetRows={budgetRows}
+          streaming={streaming}
+          toolAt={toolAt}
+          statuses={statuses}
           detailBotId={detailBotId}
           onBack={() => setDetailBotId(null)}
           onRefresh={refreshOverview}

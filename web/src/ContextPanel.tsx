@@ -18,6 +18,9 @@ interface Props {
   turn: TurnEvent | null;
   works: WorkView[];
   budgetRows: BudgetRow[];
+  streaming: Record<string, string>;
+  toolAt: Record<string, { name: string; args: string; ts: number; step: number }>;
+  statuses: Record<string, string>;
   detailBotId: string | null;
   onBack: () => void;
   onRefresh: () => Promise<void>;
@@ -164,6 +167,14 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
   return (
     <aside className="ctx detail">
       <button className="ghost" onClick={props.onBack}>{t.backToRoom}</button>
+      <WorkLog
+        t={t}
+        botId={bot.id}
+        botName={bot.name}
+        status={props.statuses[bot.id] ?? "stopped"}
+        streaming={props.streaming[bot.id] ?? ""}
+        tool={props.toolAt[bot.id]}
+      />
       <section className="panel">
         <h3>{t.ctxDetail}</h3>
         <div className="kv"><span>{t.nameLabel}</span><b>{bot.name}{bot.chief ? " ★" : ""}</b></div>
@@ -223,5 +234,73 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
         )}
       </section>
     </aside>
+  );
+}
+
+/** Live work log (dogfood D3): what the bot is doing RIGHT NOW — current
+ *  tool with args + step, live streaming output, and the session tail
+ *  (its own recent turns/tool results). The static config below answers
+ *  "what is this bot"; this answers "what is it doing". */
+function WorkLog(props: {
+  t: T;
+  botId: string;
+  botName: string;
+  status: string;
+  streaming: string;
+  tool?: { name: string; args: string; ts: number; step: number };
+}): JSX.Element {
+  const { t } = props;
+  const [now, setNow] = useState(Date.now());
+  const [tail, setTail] = useState<Array<{ role: string; text: string }>>([]);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  // Session tail: fetch while the bot runs (poll 2s), once when idle.
+  useEffect(() => {
+    let cancelled = false;
+    const load = (): void => {
+      void jsonFetch<{ messages: Array<{ role: string; text: string }> }>(`/api/bots/${props.botId}/messages`)
+        .then((r) => { if (!cancelled) setTail(r.messages.slice(-8)); })
+        .catch(() => undefined);
+    };
+    load();
+    if (props.status === "working") {
+      const timer = setInterval(load, 2000);
+      return () => { cancelled = true; clearInterval(timer); };
+    }
+    return () => { cancelled = true; };
+  }, [props.botId, props.status]);
+  const toolSecs = props.tool !== undefined ? Math.max(0, Math.round((now - props.tool.ts) / 1000)) : 0;
+  const live =
+    props.tool !== undefined
+      ? `#${props.tool.step} ⚙ ${props.tool.name} … ${toolSecs}s${props.tool.args !== "" ? ` · ${props.tool.args}` : ""}`
+      : props.streaming !== ""
+        ? t.liveOutput
+        : null;
+  return (
+    <section className="panel">
+      <h3>{t.workLog} · {props.botName}</h3>
+      {live !== null ? (
+        <div className="worklog-live">
+          {live}
+          {props.streaming !== "" && (
+            <div className="worklog-stream">{props.streaming.slice(-240)}▍</div>
+          )}
+        </div>
+      ) : (
+        <div className="dim">{t.workLogIdle}</div>
+      )}
+      {tail.length > 0 && (
+        <div className="worklog-tail">
+          {tail.map((m, i) => (
+            <div key={i} className="worklog-row">
+              <span className="worklog-role dim">{m.role}</span>
+              <span className="worklog-text">{m.text.slice(0, 90).replace(/\n/g, " ")}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
