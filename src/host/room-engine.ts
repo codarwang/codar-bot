@@ -121,7 +121,38 @@ export class RoomEngine extends EventEmitter {
    * appends, lifts a liftable pause, picks responder(s), drives the turn(s).
    */
   async userSay(roomId: string, text: string): Promise<{ responders: string[]; selected?: string[] }> {
-    return this.enqueue(roomId, () => this.userSayInner(roomId, text));
+    // ACCEPT PHASE (synchronous, outside the FIFO): budget-pause rejects,
+    // liftable pauses lift, the user line lands in the log NOW. A message
+    // accepted while another turn batch runs used to sit INVISIBLE inside
+    // the queue for the whole batch — the user saw the composer clear and
+    // nothing else (dogfood QA ISSUE-001). Only the TURN part queues.
+    const room = this.store.room(roomId);
+    if (room === undefined) throw new Error(`no room ${roomId}`);
+    const rt = this.runtime(roomId, room);
+    if (rt.pausedReason === "budget") {
+      throw new Error(`room ${roomId} is budget-paused (§5.3) — adjust the budget to resume`);
+    }
+    if (rt.pausedReason !== null) {
+      rt.pausedReason = null;
+      this.store.updateRoom(roomId, { status: "active", pauseReason: null, pausedAt: null });
+      this.systemLine(roomId, rt, "pause lifted by user message");
+    }
+    rt.pingPong = onUserTurn();
+    this.append(roomId, rt, { kind: "user" }, text);
+    // Mention honesty ALSO at accept time — the second parse against all
+    // bots does not depend on the queued turn (moved from userSayInner).
+    {
+      const members = room.members.map((id) => ({ id, name: this.store.bot(id)?.name ?? id }));
+      const mentions = parseMentions(text, members);
+      const allBots = this.store.state.bots.map((b) => ({ id: b.id, name: b.name }));
+      const anyMentions = parseMentions(text, allBots);
+      const nonMembers = anyMentions.botIds.filter((id) => !room.members.includes(id));
+      if (nonMembers.length > 0) {
+        const names = nonMembers.map((id) => this.botName(id)).join(", ");
+        this.systemLine(roomId, rt, `@${names} is not a member of this room — not pinged (add them via the room header)`);
+      }
+    }
+    return this.enqueue(roomId, () => this.userSayTurns(roomId, text));
   }
 
   /** Membership changed via PATCH: when a runtime already exists the
@@ -155,23 +186,12 @@ export class RoomEngine extends EventEmitter {
     this.systemLine(roomId, rt, note);
   }
 
-  private async userSayInner(roomId: string, text: string): Promise<{ responders: string[]; selected: string[] }> {
+  private async userSayTurns(roomId: string, text: string): Promise<{ responders: string[]; selected: string[] }> {
+    // TURN PHASE (queued): responder selection + turns. The user line and
+    // pause handling already landed at accept time (userSay).
     const room = this.store.room(roomId);
     if (room === undefined) throw new Error(`no room ${roomId}`);
     const rt = this.runtime(roomId, room);
-
-    if (rt.pausedReason === "budget") {
-      throw new Error(`room ${roomId} is budget-paused (§5.3) — adjust the budget to resume`);
-    }
-    if (rt.pausedReason !== null) {
-      // ping-pong / manual pause: a user message is the awaited signal.
-      rt.pausedReason = null;
-      this.store.updateRoom(roomId, { status: "active", pauseReason: null, pausedAt: null });
-      this.systemLine(roomId, rt, "pause lifted by user message");
-    }
-
-    rt.pingPong = onUserTurn();
-    this.append(roomId, rt, { kind: "user" }, text);
 
     const members = room.members.map((id) => ({
       id,
@@ -186,18 +206,7 @@ export class RoomEngine extends EventEmitter {
       { kind: "user" } // @all is user/admin-only (§5); bot senders arrive M2-B
     );
 
-    // A mention that resolved to nobody must not be a silent no-op (dogfood
-    // D1). NOTE: parseMentions is fed room.members, so member-less mentions
-    // resolve to NOTHING in mentions.botIds — detecting them needs a SECOND
-    // parse against ALL bots (typos and a@b.com still stay silent because
-    // they match no bot name).
-    const allBots = this.store.state.bots.map((b) => ({ id: b.id, name: b.name }));
-    const anyMentions = parseMentions(text, allBots);
-    const nonMembers = anyMentions.botIds.filter((id) => !room.members.includes(id));
-    if (nonMembers.length > 0) {
-      const names = nonMembers.map((id) => this.botName(id)).join(", ");
-      this.systemLine(roomId, rt, `@${names} is not a member of this room — not pinged (add them via the room header)`);
-    }
+    // (Non-member mention honesty moved to the accept phase — userSay.)
 
     const spoke: string[] = [];
     for (const botId of decision.responders) {
