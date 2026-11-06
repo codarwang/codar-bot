@@ -22,7 +22,7 @@ interface Props {
   messages: RoomMessage[];
   works: WorkView[];
   streaming: Record<string, string>;
-  toolAt: Record<string, { name: string; ts: number }>;
+  toolAt: Record<string, { name: string; args: string; ts: number; step: number }>;
   statuses: Record<string, string>;
   failures: Record<string, string>;
   approvals: Array<ApprovalEvent & { resolved?: boolean; outcome?: boolean; stale?: boolean }>;
@@ -461,7 +461,7 @@ function ActivityLine(props: {
   turn: TurnEvent | null;
   members: string[];
   streaming: Record<string, string>;
-  toolAt: Record<string, { name: string; ts: number }>;
+  toolAt: Record<string, { name: string; args: string; ts: number; step: number }>;
   botName: (id?: string) => string;
   now: number;
 }): JSX.Element | null {
@@ -488,7 +488,8 @@ function ActivityLine(props: {
     if (secs <= 300) {
       return (
         <div className="activityLine">
-          {props.t.runningTool(tool.name, secs)}
+          #{tool.step} {props.t.runningTool(tool.name, secs)}
+          {tool.args !== "" && <span className="dim"> · {tool.args}</span>}
           <span className="dim"> · {props.botName(busyTool)}</span>
         </div>
       );

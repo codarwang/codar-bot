@@ -663,7 +663,19 @@ export class BotManager extends EventEmitter {
   private onEvent(bot: BotRecord, client: RpcClient, e: AgentEvent): void {
     if (e.type === "tool_execution_start") {
       const toolName = String((e as { toolName?: unknown }).toolName ?? "?");
-      this.emit("tool", { botId: bot.id, toolName });
+      // Args preview (dogfood D3): "⚙ bash" alone tells the user nothing
+      // about WHAT is running — surface the command/path gist so a
+      // minute-long agent loop reads as progress instead of a hang.
+      const rawArgs = (e as { args?: unknown }).args;
+      let argsPreview = "";
+      if (typeof rawArgs === "string") {
+        argsPreview = rawArgs;
+      } else if (rawArgs !== null && typeof rawArgs === "object") {
+        const a = rawArgs as Record<string, unknown>;
+        argsPreview = String(a.command ?? a.cmd ?? a.path ?? a.file_path ?? a.pattern ?? a.query ?? a.input ?? "");
+      }
+      argsPreview = argsPreview.replace(/\s+/g, " ").trim().slice(0, 80);
+      this.emit("tool", { botId: bot.id, toolName, argsPreview });
       return;
     }
     if (e.type === "message_update") {

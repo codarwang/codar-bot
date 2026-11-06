@@ -50,7 +50,7 @@ export function App(): JSX.Element {
   const [budgetRows, setBudgetRows] = useState<BudgetRow[]>([]);
   const [approvals, setApprovals] = useState<Array<ApprovalEvent & { resolved?: boolean; outcome?: boolean; stale?: boolean }>>([]);
   const [streaming, setStreaming] = useState<Record<string, string>>({});
-  const [toolAt, setToolAt] = useState<Record<string, { name: string; ts: number }>>({});
+  const [toolAt, setToolAt] = useState<Record<string, { name: string; args: string; ts: number; step: number }>>({});
   const [statuses, setStatuses] = useState<Record<string, string>>({});
   const [failures, setFailures] = useState<Record<string, string>>({});
   const [sse, setSse] = useState<"connecting" | "live" | "reconnecting">("connecting");
@@ -237,6 +237,7 @@ export function App(): JSX.Element {
           delete next[s.botId];
           return next;
         });
+        setStreaming((prev) => { void prev; return prev; });
       }
       // A later transition clears the failure flag — one transient provider
       // blip must not brand the bot red forever (R1 P2-3).
@@ -257,8 +258,13 @@ export function App(): JSX.Element {
     on("tool", (d) => {
       // Live tool activity (dogfood D2): Chief-class agents run multi-step
       // tool loops for 1-2 minutes BETWEEN deltas — silence looked dead.
-      const e = d as { botId: string; toolName: string };
-      setToolAt((prev) => ({ ...prev, [e.botId]: { name: e.toolName, ts: Date.now() } }));
+      // D3: carry the args gist + a per-turn step counter so the loop reads
+      // as PROGRESS ("step 4: bash cat poem.txt") not a hang.
+      const e = d as { botId: string; toolName: string; argsPreview?: string };
+      setToolAt((prev) => {
+        const cur = prev[e.botId];
+        return { ...prev, [e.botId]: { name: e.toolName, args: e.argsPreview ?? "", ts: Date.now(), step: (cur?.step ?? 0) + 1 } };
+      });
     });
     on("message", (d) => {
       // assistant message_end = authoritative final (streaming bubble drops)
