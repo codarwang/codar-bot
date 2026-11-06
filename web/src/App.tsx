@@ -429,6 +429,7 @@ export function App(): JSX.Element {
           failures={failures}
           approvals={approvals}
           approvalErrors={approvalErrors}
+          budgetRows={budgetRows}
           draft={drafts[roomId] ?? ""}
           onDraft={setDraft}
           onResolveApproval={resolveApproval}

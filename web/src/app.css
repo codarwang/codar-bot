@@ -185,6 +185,12 @@ textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
 .card-budget .card-head { background: var(--stop-bg); color: var(--stop); }
 .card-budget.room .card-head { background: var(--warn-bg); color: var(--warn); }
 
+.budgetBar {
+  margin: 4px 16px 0; padding: 5px 12px; border-radius: var(--radius); font-size: 13px;
+  background: var(--warn-bg); color: var(--warn); flex-shrink: 0; white-space: nowrap;
+  overflow-x: auto;
+}
+.budgetBar.over { background: var(--stop-bg); color: var(--stop); }
 .turnstrip {
   display: flex; align-items: center; gap: 10px; padding: 5px 12px;
   border-top: 1px solid var(--line); background: var(--panel);

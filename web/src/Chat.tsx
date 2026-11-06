@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { elapsed, money, timeStr, type Lang } from "./i18n";
-import { jsonFetch, patchRoom, post, put, type ApprovalEvent, type Budget4, type Overview, type RoomMessage, type RoomRecord, type TurnEvent } from "./api";
+import { jsonFetch, patchRoom, post, put, type ApprovalEvent, type Budget4, type BudgetRow, type Overview, type RoomMessage, type RoomRecord, type TurnEvent } from "./api";
 import type { WorkView } from "./App";
 
 type T = ReturnType<typeof import("./i18n").makeT>;
@@ -26,6 +26,7 @@ interface Props {
   failures: Record<string, string>;
   approvals: Array<ApprovalEvent & { resolved?: boolean; outcome?: boolean; stale?: boolean }>;
   approvalErrors: Record<string, string>;
+  budgetRows: BudgetRow[];
   draft: string;
   onDraft: (text: string) => void;
   onResolveApproval: (id: string, confirmed: boolean) => Promise<void>;
@@ -206,6 +207,8 @@ export function Chat(p: Props): JSX.Element {
               ))}
             {p.messages.length === 0 && p.works.length === 0 && streamCount === 0 && <div className="empty">{t.emptyRoom}</div>}
           </div>
+
+          <BudgetWarnBar t={t} lang={lang} room={room} budgetRows={p.budgetRows} botName={botName} />
 
           <TurnStrip t={t} turn={p.turn} room={room} botName={botName} />
 
@@ -501,4 +504,43 @@ function MembersAdd(props: {
       <button className="mini ghost" onClick={() => setOpen(false)}>×</button>
     </span>
   );
+}
+
+/** Persistent budget warning above the composer (dogfood D2): the timeline
+ *  system line gets scrolled away by traffic — an 80%+ warn must stay
+ *  visible for as long as it is true. Same dimension preference as the
+ *  context-panel meter. */
+function BudgetWarnBar(props: {
+  t: T;
+  lang: Lang;
+  room: RoomRecord;
+  budgetRows: BudgetRow[];
+  botName: (id?: string) => string;
+}): JSX.Element | null {
+  const { t, room } = props;
+  const relevant = props.budgetRows.filter(
+    (r) => r.id === room.id || room.members.includes(r.id)
+  );
+  let worst: { pct: number; label: string } | null = null;
+  for (const r of relevant) {
+    const pct =
+      r.budget.maxCostMicros > 0
+        ? Math.round((r.costMicros / r.budget.maxCostMicros) * 100)
+        : r.budget.maxTokens > 0
+          ? Math.round((r.tokens / r.budget.maxTokens) * 100)
+          : r.budget.maxTurns > 0 && r.turns !== undefined
+            ? Math.round((r.turns / r.budget.maxTurns) * 100)
+            : 0;
+    if (pct < 80) continue;
+    const dim =
+      r.budget.maxCostMicros > 0
+        ? `${money(props.lang, r.costMicros)} / ${money(props.lang, r.budget.maxCostMicros)}`
+        : r.budget.maxTokens > 0
+          ? t.tokensDim(r.tokens, r.budget.maxTokens)
+          : t.budgetTurnsUsed(r.turns ?? 0, r.budget.maxTurns);
+    const label = `${r.scope === "room" ? `◎ ${room.name}` : props.botName(r.id)} · ${t.budgetWarn(pct, dim)}`;
+    if (worst === null || pct > worst.pct) worst = { pct, label };
+  }
+  if (worst === null) return null;
+  return <div className={`budgetBar ${worst.pct >= 100 ? "over" : ""}`}>⚠ {worst.label}</div>;
 }
