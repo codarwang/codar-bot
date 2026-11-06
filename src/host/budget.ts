@@ -228,16 +228,20 @@ export class Budget extends EventEmitter {
     const room = this.store.room(roomId);
     if (room === undefined) return;
     const month = monthKey();
+    // Room window = spend ATTRIBUTED to this room (dogfood D3): turns and
+    // handoff runs recorded with room_id = this room, plus the room's own
+    // memory-review rows (billed under the room id, §4 台账 — they must
+    // feed the window they can exhaust, M2-D R1 P2-3). A member's spend in
+    // OTHER rooms no longer counts here — the old member-sum semantics
+    // made any new room with a hot member born over-limit and double-counted
+    // shared members across rooms.
     let tokens = 0; let micros = 0;
-    for (const m of room.members) {
-      const totals = this.ledger.totals({ botId: m, sinceHour: `${month}-01T00` });
-      for (const r of totals) { tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros; }
+    for (const r of this.ledger.totals({ roomId, sinceHour: `${month}-01T00` })) {
+      tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros;
     }
-    // Room-scoped memory reviews bill under the room's own id (§4 台账) —
-    // they must feed the SAME window they can exhaust (M2-D R1 P2-3), or
-    // review spend escapes the room budget entirely.
-    const ownRows = this.ledger.totals({ botId: roomId, sinceHour: `${month}-01T00` });
-    for (const r of ownRows) { tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros; }
+    for (const r of this.ledger.totals({ botId: roomId, sinceHour: `${month}-01T00` })) {
+      tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros;
+    }
     this.evaluate("room", roomId, room.budget, tokens, micros);
   }
 

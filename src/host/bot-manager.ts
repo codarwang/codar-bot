@@ -402,7 +402,7 @@ export class BotManager extends EventEmitter {
   /** Prompt a bot; resolves with the final assistant text when it settles.
    *  Rejections carry honest reasons (handled/queued disposition, child
    *  death, stop) — never hangs (R1 P1-1: settled/error/exit race). */
-  async prompt(botId: string, message: string, kind: UsageKind = "chat"): Promise<string> {
+  async prompt(botId: string, message: string, kind: UsageKind = "chat", roomId: string | null = null): Promise<string> {
     if (this.store.bot(botId) === undefined) throw new ApiError(404, `no bot ${botId}`);
     const m = this.bots.get(botId);
     if (m === undefined || m.client === null) throw new ApiError(409, `bot ${botId} is not running`);
@@ -412,6 +412,9 @@ export class BotManager extends EventEmitter {
     const bot = this.store.bot(botId)!;
     this.setStatus(m, "working");
     (client as unknown as { __usageKind?: UsageKind }).__usageKind = kind;
+    // Room attribution (dogfood D3): the ROOM budget meters spend that
+    // happened IN the room — not the member's global month total.
+    (client as unknown as { __usageRoom?: string | null }).__usageRoom = roomId;
 
     // settle race: settled vs error vs exit — first wins, listeners detach
     // on settlement (no leak across rejected prompts; R1 P1-1).
@@ -677,12 +680,14 @@ export class BotManager extends EventEmitter {
         // excluded from the ledger by the stopReason guard plus the all-zero
         // natural no-op.
         const kind = (client as unknown as { __usageKind?: UsageKind }).__usageKind ?? "chat";
+        const roomId = (client as unknown as { __usageRoom?: string | null }).__usageRoom ?? null;
         const u = message.usage;
         this.ledger.record({
           hour: hourNow(),
           botId: bot.id,
           model: `${bot.model.provider}/${bot.model.modelId}`,
           kind,
+          roomId,
           input: num(u.input), output: num(u.output),
           cacheRead: num(u.cacheRead), cacheWrite: num(u.cacheWrite),
           cacheWrite1h: num(u.cacheWrite1h),

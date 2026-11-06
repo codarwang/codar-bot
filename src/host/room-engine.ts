@@ -307,7 +307,7 @@ export class RoomEngine extends EventEmitter {
     }
     let reply: string;
     try {
-      reply = await this.bots.prompt(botId, context.text, "chat");
+      reply = await this.bots.prompt(botId, context.text, "chat", roomId);
     } catch (error) {
       cleanup();
       rt.slots[botId] = timedOut ? "timed-out" : "failed";

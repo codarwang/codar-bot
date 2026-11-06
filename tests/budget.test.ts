@@ -119,7 +119,7 @@ test("room over cost limit: paused via rooms.pause (un-liftable by user msg)", a
     const budget = new Budget(store, ledger, bots, rooms, root);
     ledger.record({
       hour: monthHour(), botId: chief.id, model: "fake/f", kind: "chat",
-      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 1500,
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 1500, roomId: room.id,
     });
     assert.equal(store.room(room.id)!.status, "paused");
     assert.equal(store.room(room.id)!.pauseReason, "budget");
@@ -138,7 +138,7 @@ test("limit raise resumes a budget-paused room (§5.3 recovery)", async () => {
     r.store.updateRoom(r.roomId, { budget: { ...room.budget, maxCostMicros: 100 } });
     r.ledger.record({
       hour: monthHour(), botId: r.chiefId, model: "fake/f", kind: "chat",
-      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150,
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150, roomId: r.roomId,
     });
     assert.equal(r.store.room(r.roomId)!.status, "paused");
     // Raise the limit (the recovery path the API PUT exercises).
@@ -255,7 +255,7 @@ test("M2-C R3: restart (no in-memory state) keeps a budget-paused room paused", 
     r.store.updateRoom(r.roomId, { budget: { ...room.budget, maxCostMicros: 100 } });
     r.ledger.record({
       hour: monthHour(), botId: r.chiefId, model: "fake/f", kind: "chat",
-      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150,
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150, roomId: r.roomId,
     });
     const pDeadline = Date.now() + 5_000;
     while (r.store.room(r.roomId)!.status !== "paused" && Date.now() < pDeadline) {
@@ -359,7 +359,7 @@ test("M2-C R3: room budget PUT — insufficient raise keeps the stop sticky; a r
     };
     host.ledger.record({
       hour: monthHour(), botId: chief.id, model: "fake/f", kind: "chat",
-      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150,
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150, roomId: room.id,
     });
     const pDeadline = Date.now() + 5_000;
     while (host.store.room(room.id)!.status !== "paused" && Date.now() < pDeadline) {
@@ -378,7 +378,7 @@ test("M2-C R3: room budget PUT — insufficient raise keeps the stop sticky; a r
     // no second pause ceremony.
     host.ledger.record({
       hour: monthHour(), botId: chief.id, model: "fake/f", kind: "chat",
-      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 100,
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 100, roomId: room.id,
     });
     await new Promise((s2) => setTimeout(s2, 500));
     assert.equal(await pauseLines(), 1, "sticky survives an insufficient raise — no phantom re-stop");
@@ -404,7 +404,7 @@ test("M2-C R4: pausedAt month stamp makes next-month auto-resume durable across 
     r.store.updateRoom(r.roomId, { budget: { ...room.budget, maxCostMicros: 100 } });
     r.ledger.record({
       hour: monthHour(), botId: r.chiefId, model: "fake/f", kind: "chat",
-      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150,
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150, roomId: r.roomId,
     });
     const pDeadline = Date.now() + 5_000;
     while (r.store.room(r.roomId)!.status !== "paused" && Date.now() < pDeadline) {
@@ -436,7 +436,7 @@ test("M2-C R5: a post-restart scope touch must not wedge the durable next-month 
     r.store.updateRoom(r.roomId, { budget: { ...room.budget, maxCostMicros: 100 } });
     r.ledger.record({
       hour: monthHour(), botId: r.chiefId, model: "fake/f", kind: "chat",
-      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150,
+      input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 150, roomId: r.roomId,
     });
     const pDeadline = Date.now() + 5_000;
     while (r.store.room(r.roomId)!.status !== "paused" && Date.now() < pDeadline) {
@@ -461,6 +461,37 @@ test("M2-C R5: a post-restart scope touch must not wedge the durable next-month 
     const reborn2 = new Budget(r.store, r.ledger, r.bots, r.rooms, r.root);
     reborn2.rolloverIfStale(r.roomId);
     assert.equal(r.store.room(r.roomId)!.status, "paused", "corrupt stamp falls back conservatively");
+  } finally {
+    await r.dispose();
+  }
+});
+
+test("dogfood D3: a new room with a hot member is NOT born over-limit (room-attributed windows)", async () => {
+  const r = await rig();
+  try {
+    // Chief burned 900K tokens this month — but in ANOTHER room (no roomId
+    // attribution to THIS room; historically direct prompts, here rows for
+    // a different room id).
+    r.ledger.record({
+      hour: monthHour(), botId: r.chiefId, model: "fake/f", kind: "chat",
+      input: 900_000, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0, roomId: "room_elsewhere",
+    });
+    // A NEW room with Chief as member and a small budget.
+    const fresh = r.store.addRoom({
+      name: "fresh", members: [r.chiefId], admin: r.chiefId,
+      mode: "admin-reply", sharedDir: join(r.root, "s2"), budget: { ...defaultBudget(), maxTokens: 1_000 }, goal: null,
+    });
+    // The old member-sum semantics paused this room at creation (900K > 1K).
+    await r.budget.checkRoom(fresh.id);
+    assert.equal(r.store.room(fresh.id)!.status, "active", "member spend in OTHER rooms does not count here");
+    // A turn IN the room (room-attributed) does count.
+    r.ledger.record({
+      hour: monthHour(), botId: r.chiefId, model: "fake/f", kind: "chat",
+      input: 1_100, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0, roomId: fresh.id,
+    });
+    await r.budget.checkRoom(fresh.id);
+    assert.equal(r.store.room(fresh.id)!.status, "paused", "in-room spend enforces the window");
+    assert.equal(r.store.room(fresh.id)!.pauseReason, "budget");
   } finally {
     await r.dispose();
   }

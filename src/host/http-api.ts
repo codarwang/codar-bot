@@ -569,10 +569,10 @@ export class HttpApi {
           scopes.push(this.budgetRow("bot", b.id, totals, b.budget));
         }
         for (const r of this.deps.store.state.rooms) {
+          // Room-attributed window (dogfood D3) — same shape as checkRoom.
           let tokens = 0; let micros = 0;
-          for (const m of r.members) {
-            const totals = this.deps.ledger.totals({ botId: m, sinceHour });
-            for (const row of totals) { tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros; }
+          for (const row of this.deps.ledger.totals({ roomId: r.id, sinceHour })) {
+            tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros;
           }
           // The room's own memory-review rows feed the enforced window
           // (Budget.checkRoom) — the meter must agree (M2-E R1 P2-9).
@@ -587,12 +587,13 @@ export class HttpApi {
       if (req.method === "GET" && id !== undefined && action === undefined) {
         const scope = id.startsWith("room_") ? "room" : "bot";
         const sinceHour = monthStartHour();
-        const memberIds = scope === "room" ? (this.deps.store.room(id)?.members ?? []) : [id];
+        // Room-attributed window (dogfood D3): turns/handoff rows recorded
+        // with room_id = this room + the room's own memory-review rows.
         let tokens = 0; let micros = 0;
-        for (const m of memberIds) {
-          const totals = this.deps.ledger.totals({ botId: m, sinceHour });
-          for (const r of totals) { tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros; }
-        }
+        const detailRows = scope === "room"
+          ? [...this.deps.ledger.totals({ roomId: id, sinceHour }), ...this.deps.ledger.totals({ botId: id, sinceHour })]
+          : this.deps.ledger.totals({ botId: id, sinceHour });
+        for (const r of detailRows) { tokens += r.input + r.output + r.cacheRead + r.cacheWrite; micros += r.costMicros; }
         const limit = scope === "bot"
           ? this.deps.store.bot(id)?.budget
           : this.deps.store.room(id)?.budget;
@@ -640,13 +641,11 @@ export class HttpApi {
           let clears = true;
           if (underBudgetStop) {
             const sinceHour = monthStartHour();
+            // Room-attributed window (dogfood D3) — same shape as checkRoom.
             let micros = 0; let tokens = 0;
-            for (const m of room.members) {
-              const totals = this.deps.ledger.totals({ botId: m, sinceHour });
-              for (const row of totals) { tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros; }
+            for (const row of this.deps.ledger.totals({ roomId: id, sinceHour })) {
+              tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros;
             }
-            // Same window as Budget.checkRoom (M2-D R1 P2-3): the room's own
-            // memory-review rows count toward its budget.
             for (const row of this.deps.ledger.totals({ botId: id, sinceHour })) {
               tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros;
             }

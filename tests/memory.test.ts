@@ -519,10 +519,11 @@ test("R1 P2-3: room-scoped review spend feeds the room budget window", async () 
       hour: new Date().toISOString().slice(0, 13), botId: r.roomId, model: "fake/f",
       kind: "memory-review", input: 80, output: 10, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0,
     });
-    // Any member write re-evaluates the window: 90 (own) + 15 (member) ≥ 100.
+    // Any member write re-evaluates the window: 90 (own) + 15 (member turn,
+    // room-attributed per dogfood D3) ≥ 100.
     r.ledger.record({
       hour: new Date().toISOString().slice(0, 13), botId: r.chiefId, model: "fake/f",
-      kind: "chat", input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0,
+      kind: "chat", input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0, roomId: r.roomId,
     });
     const dl = Date.now() + 5_000;
     while (r.store.room(r.roomId)!.status !== "paused" && Date.now() < dl) {

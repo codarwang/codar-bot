@@ -264,7 +264,7 @@ export class Handoff extends EventEmitter {
           void this.bots.interrupt(work.child).catch(() => undefined);
         }, wallMs);
       }
-      const result = await this.bots.prompt(work.child, injected, "tool");
+      const result = await this.bots.prompt(work.child, injected, "tool", work.roomId);
       if (turnInterrupted) {
         // Interrupted ⇒ failed, NEVER a silent "done": the cut lands where
         // it is observable (§5.3), and NO stale result is delivered.
