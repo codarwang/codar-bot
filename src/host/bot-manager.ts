@@ -38,6 +38,11 @@ export interface BotManagerEvents {
 
 export type UsageKind = "chat" | "tool" | "memory-review";
 
+/** Session bloat ceiling: above this, start fresh (pi auto-compaction is
+ *  the primary control; this is the belt for sessions that pre-date it or
+ *  grew during a single long turn). ~1MB JSONL ≈ 100K+ prompt tokens. */
+const SESSION_MAX_BYTES = 1_200_000;
+
 export interface SpawnOptions {
   /** bare mode: the pi binary (tests point this at the fake-pi fixture). */
   bin?: string;
@@ -284,6 +289,31 @@ export class BotManager extends EventEmitter {
       client.on("exit", () => void this.onChildFailure(bot, client, "rpc child exited"));
       client.on("aborted", () => this.emit("aborted", { botId }));
 
+      // Auto-compaction (dogfood D3 investigation): pi can compact its own
+      // session when the context grows — without it, tool-result
+      // accumulation re-feeds ~186K tokens per call and first-token latency
+      // grows linearly (94s measured, 4.5s after a manual reset).
+      try {
+        await client.command({ type: "set_auto_compaction", enabled: true } as Record<string, unknown>);
+      } catch {
+        /* older pi without the toggle: manual reset-session remains the lever */
+      }
+      // Session-size guard: a pre-existing session over SESSION_MAX_BYTES
+      // starts FRESH instead of dragging its bloat into every call (the
+      // memory snapshot preserves durable knowledge — the session is
+      // working memory, not the record).
+      if (bot.sessionPath !== null) {
+        try {
+          const { statSync } = await import("node:fs");
+          if (statSync(bot.sessionPath).size > SESSION_MAX_BYTES) {
+            this.store.updateBot(botId, { sessionPath: null });
+            bot.sessionPath = null;
+            this.audit("session-auto-reset", { botId, reason: `session ${(statSync(bot.sessionPath ?? "").size / 1e6).toFixed(1)}MB > ${SESSION_MAX_BYTES / 1e6}MB` });
+          }
+        } catch {
+          /* stat race — the switch_session path below reports honestly */
+        }
+      }
       const ready = await client.start({
         extensionPath:
           bot.sandbox.mode === "docker"

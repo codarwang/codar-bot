@@ -310,3 +310,27 @@ test("dogfood D3: reset-session drops the bloated session and the bot restarts f
     await r.dispose();
   }
 });
+
+test("dogfood D3 investigation: an oversized session auto-resets at start (fresh, fast, memory intact)", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    const botId = r.store.state.bots[0]!.id;
+    await r.bots.start(botId);
+    await r.bots.prompt(botId, "Reply with the single word ALPHA.");
+    const sp = r.store.bot(botId)!.sessionPath!;
+    // Pad the session past the ceiling.
+    const { appendFileSync, statSync } = await import("node:fs");
+    appendFileSync(sp, JSON.stringify({ pad: "x".repeat(1_300_000) }) + "\n", "utf8");
+    const size = statSync(sp).size;
+    assert.ok(size > 1_200_000, `padded to ${size}`);
+    await r.bots.stop(botId);
+    await r.bots.start(botId);
+    assert.equal(r.store.bot(botId)!.sessionPath, null, "bloat dropped at start");
+    const reply = await r.bots.prompt(botId, "Reply with the single word BRAVO.");
+    assert.equal(reply, "BRAVO", "fresh session answers correctly");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
