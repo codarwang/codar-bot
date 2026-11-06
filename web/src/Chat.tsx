@@ -213,6 +213,7 @@ export function Chat(p: Props): JSX.Element {
 
           <ActivityLine
             t={t}
+            turn={p.turn}
             members={roomMembers}
             streaming={p.streaming}
             toolAt={p.toolAt}
@@ -220,7 +221,7 @@ export function Chat(p: Props): JSX.Element {
             now={now}
           />
 
-          <TurnStrip t={t} turn={p.turn} room={room} botName={botName} now={now} />
+          <TurnStrip t={t} turn={p.turn} room={room} botName={botName} />
 
           {room.status === "paused" && (
             <PauseCard
@@ -457,25 +458,48 @@ function PauseCard(props: {
  *  progress. */
 function ActivityLine(props: {
   t: T;
+  turn: TurnEvent | null;
   members: string[];
   streaming: Record<string, string>;
   toolAt: Record<string, { name: string; ts: number }>;
   botName: (id?: string) => string;
   now: number;
 }): JSX.Element | null {
-  const busy = props.members.find(
+  // live-since: when a slot first went speaking/working — the anchor for
+  // the pre-first-tool thinking timer (the tool timer anchors on toolAt).
+  const liveSince = useRef<Record<string, number>>({});
+  const slots = props.turn?.slots ?? {};
+  for (const m of props.members) {
+    const live = slots[m] === "speaking" || slots[m] === "working";
+    if (live && liveSince.current[m] === undefined) liveSince.current[m] = Date.now();
+    if (!live) delete liveSince.current[m];
+  }
+  const busyTool = props.members.find(
     (m) => (props.streaming[m] === undefined || props.streaming[m] === "") && props.toolAt[m] !== undefined
   );
-  if (busy === undefined) return null;
-  const tool = props.toolAt[busy]!;
-  // Math.max: the 1s `now` ticker can lag a just-arrived tool event — a
-  // negative elapsed read as broken (dogfood D2 test).
-  return (
-    <div className="activityLine">
-      {props.t.runningTool(tool.name, Math.max(0, Math.round((props.now - tool.ts) / 1000)))}
-      <span className="dim"> · {props.botName(busy)}</span>
-    </div>
+  if (busyTool !== undefined) {
+    const tool = props.toolAt[busyTool]!;
+    // Math.max: the 1s `now` ticker can lag a just-arrived tool event — a
+    // negative elapsed read as broken (dogfood D2 test).
+    return (
+      <div className="activityLine">
+        {props.t.runningTool(tool.name, Math.max(0, Math.round((props.now - tool.ts) / 1000)))}
+        <span className="dim"> · {props.botName(busyTool)}</span>
+      </div>
+    );
+  }
+  const busyThinking = props.members.find(
+    (m) => liveSince.current[m] !== undefined && (props.streaming[m] === undefined || props.streaming[m] === "")
   );
+  if (busyThinking !== undefined) {
+    const since = liveSince.current[busyThinking]!;
+    return (
+      <div className="activityLine">
+        {props.t.thinkingFor(props.botName(busyThinking), Math.max(0, Math.round((props.now - since) / 1000)))}
+      </div>
+    );
+  }
+  return null;
 }
 
 function TurnStrip(props: {
@@ -483,7 +507,6 @@ function TurnStrip(props: {
   turn: TurnEvent | null;
   room: RoomRecord;
   botName: (id?: string) => string;
-  now: number;
 }): JSX.Element {
   const { t, turn, room } = props;
   // §3.2: single-member rooms hide the strip.
@@ -562,8 +585,12 @@ function BudgetWarnBar(props: {
   );
   let worst: { pct: number; label: string } | null = null;
   for (const r of relevant) {
+    // Unpriced providers report cost 0 forever while a cost LIMIT exists —
+    // fall through to tokens when the cost dimension has never moved
+    // (dogfood D2 review: token warnings never reached the bar otherwise).
+    const costLive = r.costMicros > 0;
     const pct =
-      r.budget.maxCostMicros > 0
+      r.budget.maxCostMicros > 0 && costLive
         ? Math.round((r.costMicros / r.budget.maxCostMicros) * 100)
         : r.budget.maxTokens > 0
           ? Math.round((r.tokens / r.budget.maxTokens) * 100)
@@ -572,7 +599,7 @@ function BudgetWarnBar(props: {
             : 0;
     if (pct < 80) continue;
     const dim =
-      r.budget.maxCostMicros > 0
+      r.budget.maxCostMicros > 0 && costLive
         ? `${money(props.lang, r.costMicros)} / ${money(props.lang, r.budget.maxCostMicros)}`
         : r.budget.maxTokens > 0
           ? t.tokensDim(r.tokens, r.budget.maxTokens)

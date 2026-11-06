@@ -76,7 +76,10 @@ const TEAM_REVIEW_THRESHOLD = 5;
  *  dogfood month-budget in one hour (4.5M review tokens vs 2.6M chat) —
  *  batch at N settles. Override with CODAR_MEMORY_REVIEW_EVERY=1 for the
  *  original per-turn semantics. */
-const REVIEW_EVERY_SETTLES = Math.max(1, Number(process.env.CODAR_MEMORY_REVIEW_EVERY ?? 3));
+const REVIEW_EVERY_SETTLES = (() => {
+  const n = Number(process.env.CODAR_MEMORY_REVIEW_EVERY ?? 3);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 3;
+})();
 
 /** Review child wall clock: a review that cannot finish in 3 minutes is
  *  aborted and retried on the next settle (pending is kept). */
@@ -284,7 +287,6 @@ export class MemoryEngine {
     if (cool !== undefined && Date.now() < cool) return;
     if (scope === "team" && this.pendingCount(scope, id) < TEAM_REVIEW_THRESHOLD) return;
     if (scope !== "team" && this.pendingCount(scope, id) < REVIEW_EVERY_SETTLES) return;
-    if (this.pendingCount(scope, id) === 0) return;
     this.reviewing.add(key);
     void this.review(scope, id)
       .catch(() => undefined) // review() audits its own failures

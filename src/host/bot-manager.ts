@@ -199,11 +199,15 @@ export class BotManager extends EventEmitter {
       let childEnv: Record<string, string> = { ...spawn.env, ...cfg.env, PI_CODING_AGENT_DIR: cfg.piConfDir };
       if (bot.sandbox.mode === "docker") {
         // §3.4 sandboxed spawn: env rides explicit -e flags (containers do
-        // not inherit spawn env), the entrypoint is pi itself.
-        if (spawn.sandboxArgv !== undefined) {
+        // not inherit spawn env), the entrypoint is pi itself. The shim
+        // guards test the PER-CALL override, NOT the merged defaults: a
+        // host-level extensionPath default (the repo gate, dogfood D2 P1)
+        // is legitimate — docker bots ignore the host path and load the
+        // in-container copy below.
+        if (spawnOverride.sandboxArgv !== undefined) {
           throw new Error("sandboxArgv is for the bare-process test shim; docker bots configure sandbox.image");
         }
-        if (spawn.bin !== undefined || spawn.extensionPath !== undefined) {
+        if (spawnOverride.bin !== undefined || spawnOverride.extensionPath !== undefined) {
           throw new Error("spawn bin/extensionPath are bare-process shims; docker bots run the sandbox image entrypoint");
         }
         const extraEnv = { ...this.spawnDefaults.env, ...spawnOverride.env };

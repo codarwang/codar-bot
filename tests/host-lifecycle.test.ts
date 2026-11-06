@@ -363,3 +363,40 @@ test("session path translation is bidirectional: store keeps host paths, the chi
     await r.dispose();
   }
 });
+
+test("dogfood D2 P1 regression: docker bots survive a host-level extensionPath default", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-d2-docker-"));
+  mkdirSync(join(root, "work"), { recursive: true });
+  const store = Store.open(join(root, "state.json"), { create: true });
+  const ledger = new UsageLedger(join(root, "usage.sqlite"));
+  // Host-level defaults WITH the repo gate (what codar start passes now).
+  const bots = new BotManager(store, ledger, root, {
+    bin: process.execPath,
+    sandboxArgv: undefined,
+    extensionPath: resolve(HERE, "../../extensions/codar-gate/codar-gate.ts"),
+    env: {},
+  });
+  const bot = store.addBot({
+    name: "DockerBot", role: "", chief: true,
+    model: { provider: "fake", modelId: "f", thinkingLevel: "low" },
+    workDir: join(root, "work"), sessionPath: null,
+    sandbox: { mode: "docker" }, budget: defaultBudget(),
+  });
+  try {
+    await assert.rejects(
+      () => bots.start(bot.id),
+      (e: Error) => {
+        // Docker may be unavailable in this environment — the START may
+        // fail on the image, but it must NOT fail on the bare-process shim
+        // guard (the D2 P1 brick).
+        assert.ok(!e.message.includes("bare-process shims"), `guard fired: ${e.message}`);
+        return true;
+      }
+    );
+  } finally {
+    await bots.stopAll();
+    ledger.close();
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
