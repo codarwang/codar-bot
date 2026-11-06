@@ -441,6 +441,25 @@ test("dogfood D3 R2: the header-only skip fires even with a memory tail (pending
     }
     const botLines = r.rooms.history(r.roomId).filter((m) => m.from.kind === "bot");
     assert.ok(botLines.length <= 3, `bounded replies (got ${botLines.length})`);
+    // Teeth (R4): the skip branch itself, via the REAL mid-batch path.
+    // SLOW turns (1.5s) make the race deterministic: @all starts batch A
+    // (Chief then Writer), the mid-batch @Writer message lands during
+    // Chief's turn, Writer's batch-A render consumes M1+M2+Chief's reply
+    // and commits the watermark past ALL of it — batch B's Writer turn
+    // then renders ZERO pending and must SKIP (with the memory tail
+    // present, the substring-era code ran it instead).
+    {
+      const before = prompts.length;
+      const slowA = r.rooms.userSay(r.roomId, "@all please take it SLOW and reply OK");
+      await new Promise((s2) => setTimeout(s2, 300)); // mid Chief's SLOW turn
+      void r.rooms.userSay(r.roomId, "@Writer also take it SLOW").catch(() => undefined);
+      await slowA;
+      await new Promise((s2) => setTimeout(s2, 3_500)); // Writer's SLOW batch-A turn
+      const ran = prompts.slice(before);
+      // Exactly TWO prompts ran (Chief A + Writer A); the header-only
+      // batch-B prompt never fired.
+      assert.equal(ran.length, 2, `batch B skipped (${ran.length} prompts ran)`);
+    }
   } finally {
     delete process.env.CODAR_M1_AUTOAPPROVE;
     await r.dispose();

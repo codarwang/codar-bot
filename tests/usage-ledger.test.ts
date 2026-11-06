@@ -92,6 +92,10 @@ test("dogfood D3 R2: a v1 nullable-room_id ledger RE-MIGRATES to the sentinel sc
       room_id TEXT,
       PRIMARY KEY (hour, bot_id, model, kind, room_id))`);
     raw.prepare("INSERT INTO usage (hour, bot_id, model, kind, input) VALUES ('2026-11-06T09','b','m','chat',7)").run();
+    // Collision shape (R4 teeth): NULL-PK quirk allows MULTIPLE NULL rows
+    // in one bucket — the raw INSERT path pre-fix crashed on UNIQUE here.
+    raw.prepare("INSERT INTO usage (hour, bot_id, model, kind, input, room_id) VALUES ('2026-11-06T09','b','m','chat',5,NULL)").run();
+    raw.prepare("INSERT INTO usage (hour, bot_id, model, kind, input, room_id) VALUES ('2026-11-06T09','b','m','chat',3,'')").run();
     raw.close();
     // Opening with UsageLedger must rebuild to NOT NULL '' and fold the NULL row in.
     const ledger = new UsageLedger(dbPath);
@@ -106,10 +110,10 @@ test("dogfood D3 R2: a v1 nullable-room_id ledger RE-MIGRATES to the sentinel sc
     const rawRows = (ledger as unknown as { db: { prepare(q: string): { get(): unknown } } })
       .db.prepare("SELECT COUNT(*) AS n FROM usage").get();
     assert.equal(Number((rawRows as { n: number }).n), 1, "one bucket row (merged, not duplicated)");
-    assert.equal(ledger.totals({ botId: "b" })[0]!.input, 7, "data survives the re-migration");
+    assert.equal(ledger.totals({ botId: "b" })[0]!.input, 15, "NULL and '' rows fold into one bucket (7+5+3)");
     // New unattributed writes MERGE with the migrated NULL row (both in '').
     ledger.record({ hour: "2026-11-06T09", botId: "b", model: "m", kind: "chat", input: 3, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0, roomId: null });
-    assert.equal(ledger.totals({ botId: "b" })[0]!.input, 10, "NULL-legacy and ''-new rows share one bucket");
+    assert.equal(ledger.totals({ botId: "b" })[0]!.input, 18, "NULL-legacy and ''-new rows share one bucket");
     ledger.close();
   } finally {
     rmSync(root, { recursive: true, force: true });

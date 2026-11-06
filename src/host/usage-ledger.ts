@@ -66,6 +66,14 @@ export class UsageLedger {
     // the same hour×bot×model×kind splits per room. SQLite cannot ALTER a
     // PRIMARY KEY — rebuild the table; legacy rows carry NULL room_id
     // (unattributed: bot budgets still count them, room budgets do not).
+    // Residue recovery (D3 R4 P3-1): a crash under the R3-era migration
+    // could leave data stranded in usage_v1 (new empty `usage` beside it —
+    // silently empty reports) or a stray usage_v1 next to a v0 table
+    // (RENAME collision at startup). Adopt any stranded table first.
+    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='usage_v1'").all() as Array<{ name: string }>;
+    if (tables.length > 0) {
+      this.adoptStranded();
+    }
     const cols = this.db.prepare("PRAGMA table_info(usage)").all() as Array<{ name: string; notnull: number }>;
     const roomCol = cols.find((c) => c.name === "room_id");
     // Guard on presence AND nullability: a ledger migrated by the first
@@ -94,9 +102,54 @@ export class UsageLedger {
         this.db.exec("DROP TABLE usage_v1");
         this.db.exec("COMMIT");
       } catch (error) {
-        this.db.exec("ROLLBACK");
+        // ROLLBACK itself throws "no transaction is active" when SQLite
+        // already auto-rolled-back (BUSY/IO) — never mask the original
+        // error (D3 R4 P3-3).
+        try { this.db.exec("ROLLBACK"); } catch { /* already rolled back */ }
         throw error;
       }
+    }
+  }
+
+  /** Fold a stranded usage_v1 (crash residue) back into `usage`.
+   *  Runs inside the caller's migration transaction flow — here we are
+   *  pre-transaction, so wrap our own. */
+  private adoptStranded(): void {
+    const mainCols = (this.db.prepare("PRAGMA table_info(usage)").all() as Array<{ name: string }>).map((c) => c.name);
+    const hasRoom = mainCols.includes("room_id");
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (!hasRoom) {
+        // v0 main table: data in v1 is NEWER — swap them so the normal
+        // v0 path migrates the union.
+        this.db.exec("ALTER TABLE usage RENAME TO usage_old_v0");
+        this.db.exec("ALTER TABLE usage_v1 RENAME TO usage");
+        this.db.exec(SCHEMA.replace(/usage/g, "usage_merge"));
+        // Prefer stranded v1 data; v0 buckets merge alongside.
+        const roomExprV1 = "COALESCE(room_id, '')";
+        this.db.exec(
+          "INSERT INTO usage_merge (hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, room_id) " +
+          `SELECT hour, bot_id, model, kind, SUM(input), SUM(output), SUM(cache_read), SUM(cache_write), SUM(cache_write_1h), SUM(cost_micros), ${roomExprV1} FROM usage GROUP BY hour, bot_id, model, kind, ${roomExprV1}`
+        );
+        this.db.exec(
+          "INSERT INTO usage_merge (hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, room_id) " +
+          "SELECT hour, bot_id, model, kind, SUM(input), SUM(output), SUM(cache_read), SUM(cache_write), SUM(cache_write_1h), SUM(cost_micros), '' FROM usage_old_v0 GROUP BY hour, bot_id, model, kind"
+        );
+        this.db.exec("DROP TABLE usage");
+        this.db.exec("DROP TABLE usage_old_v0");
+        this.db.exec("ALTER TABLE usage_merge RENAME TO usage");
+      } else {
+        // Sentinel-era main table: merge the stranded rows in.
+        this.db.exec(
+          "INSERT INTO usage (hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, room_id) " +
+          "SELECT hour, bot_id, model, kind, SUM(input), SUM(output), SUM(cache_read), SUM(cache_write), SUM(cache_write_1h), SUM(cost_micros), COALESCE(room_id, '') FROM usage_v1 GROUP BY hour, bot_id, model, kind, COALESCE(room_id, '')"
+        );
+        this.db.exec("DROP TABLE usage_v1");
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try { this.db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+      throw error;
     }
   }
 
