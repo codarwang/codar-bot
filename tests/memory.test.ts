@@ -218,10 +218,10 @@ test("budget-paused room does not review; resume unblocks", async () => {
   const r = await rig();
   try {
     r.rooms.pause(r.roomId, "budget", "paused for test");
-    r.memory.ingestTurn("room", r.roomId, turn("user", "x"));
+    for (let i = 0; i < 3; i++) r.memory.ingestTurn("room", r.roomId, turn("user", `x${i}`));
     r.memory.schedule("room", r.roomId);
     await new Promise((s) => setTimeout(s, 300));
-    assert.equal(r.memory.pendingCount("room", r.roomId), 1, "no spend while §5.3-held");
+    assert.equal(r.memory.pendingCount("room", r.roomId), 3, "no spend while §5.3-held");
     r.rooms.resume(r.roomId, "resumed");
     r.memory.schedule("room", r.roomId);
     assert.equal(await drain(r.memory, "room", r.roomId), 0);
@@ -288,7 +288,9 @@ test("wiring: a real room turn feeds bot+room+team; review lands; next prompt ca
     await r.bots.start(r.chiefId);
     const before = r.rooms.previewContext(r.roomId, r.chiefId);
     assert.ok(!before.includes("### Memory"), "no memory injected before any review");
-    await r.rooms.userSay(r.roomId, "Reply with the single word ALPHA.");
+    for (let i = 0; i < 3; i++) {
+      await r.rooms.userSay(r.roomId, `Reply with the single word ALPHA. (${i})`);
+    }
     // Bot-scope review is scheduled on the settle and drains asynchronously;
     // done() waits for the APPLY (files on disk), not just the claim.
     assert.equal(
@@ -302,7 +304,7 @@ test("wiring: a real room turn feeds bot+room+team; review lands; next prompt ca
       "room review ran"
     );
     // Team batches at 5 — a single turn leaves it pending.
-    assert.equal(r.memory.pendingCount("team", "team"), 1, "team waits for its threshold");
+    assert.equal(r.memory.pendingCount("team", "team"), 3, "team waits for its threshold");
     // The NEXT prompt carries the frozen snapshot in its tail (§5.1a).
     const after = r.rooms.previewContext(r.roomId, r.chiefId);
     assert.match(after, /### Memory — Chief/);
@@ -455,10 +457,10 @@ test("R1: single-flight follow-up drains turns that arrived mid-review", async (
   const r = await rig();
   try {
     process.env.FAKE_PI_MEM_DELAY_MS = "300";
-    r.memory.ingestTurn("bot", r.chiefId, turn("user", "A"));
+    for (const txt of ["A1", "A2", "A3"]) r.memory.ingestTurn("bot", r.chiefId, turn("user", txt));
     r.memory.schedule("bot", r.chiefId);
     await new Promise((s2) => setTimeout(s2, 100));
-    r.memory.ingestTurn("bot", r.chiefId, turn("user", "B"));
+    for (const txt of ["B1", "B2", "B3"]) r.memory.ingestTurn("bot", r.chiefId, turn("user", txt));
     r.memory.schedule("bot", r.chiefId); // in-flight — must be a no-op
     // totals() aggregates per hour+model+kind: two runs of usage(30,6) land
     // as ONE row with input 60 — the audit log proves the run count.
@@ -546,15 +548,19 @@ test("R1: handoff onWorkDone feeds the child bot scope end-to-end", async () => 
     r.store.updateRoom(r.roomId, { members: [r.chiefId, writer.id] });
     await r.bots.start(r.chiefId);
     await r.bots.start(writer.id);
-    const { workId } = await r.handoff.dispatch({
-      fromBot: r.chiefId, toBot: writer.id,
-      task: "Reply with the single word ALPHA.", requestId: "mem-ho-1", roomId: r.roomId,
-    });
-    const dl = Date.now() + 15_000;
-    while (r.handoff.work(workId)!.status !== "done" && Date.now() < dl) {
+    const workIds: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const { workId } = await r.handoff.dispatch({
+        fromBot: r.chiefId, toBot: writer.id,
+        task: `Reply with the single word ALPHA. (${i})`, requestId: `mem-ho-${i}`, roomId: r.roomId,
+      });
+      workIds.push(workId);
+    }
+    const dl = Date.now() + 20_000;
+    while (workIds.some((w) => r.handoff.work(w)!.status !== "done") && Date.now() < dl) {
       await new Promise((s2) => setTimeout(s2, 100));
     }
-    assert.equal(r.handoff.work(workId)!.status, "done");
+    assert.ok(workIds.every((w) => r.handoff.work(w)!.status === "done"));
     // The child's run (task+result) ingested into ITS bot scope and the
     // scheduled review drained it.
     assert.equal(

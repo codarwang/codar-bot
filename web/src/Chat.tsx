@@ -22,6 +22,7 @@ interface Props {
   messages: RoomMessage[];
   works: WorkView[];
   streaming: Record<string, string>;
+  toolAt: Record<string, { name: string; ts: number }>;
   statuses: Record<string, string>;
   failures: Record<string, string>;
   approvals: Array<ApprovalEvent & { resolved?: boolean; outcome?: boolean; stale?: boolean }>;
@@ -210,7 +211,16 @@ export function Chat(p: Props): JSX.Element {
 
           <BudgetWarnBar t={t} lang={lang} room={room} budgetRows={p.budgetRows} botName={botName} />
 
-          <TurnStrip t={t} turn={p.turn} room={room} botName={botName} />
+          <ActivityLine
+            t={t}
+            members={roomMembers}
+            streaming={p.streaming}
+            toolAt={p.toolAt}
+            botName={botName}
+            now={now}
+          />
+
+          <TurnStrip t={t} turn={p.turn} room={room} botName={botName} now={now} />
 
           {room.status === "paused" && (
             <PauseCard
@@ -441,11 +451,37 @@ function PauseCard(props: {
   );
 }
 
+/** Live progress above the composer (dogfood D2): a member mid-turn with no
+ *  streamed text yet shows what it is doing — the current tool, or a
+ *  ticking thinking timer. Turns 1-2 minute agent silences into visible
+ *  progress. */
+function ActivityLine(props: {
+  t: T;
+  members: string[];
+  streaming: Record<string, string>;
+  toolAt: Record<string, { name: string; ts: number }>;
+  botName: (id?: string) => string;
+  now: number;
+}): JSX.Element | null {
+  const busy = props.members.find(
+    (m) => (props.streaming[m] === undefined || props.streaming[m] === "") && props.toolAt[m] !== undefined
+  );
+  if (busy === undefined) return null;
+  const tool = props.toolAt[busy]!;
+  return (
+    <div className="activityLine">
+      {props.t.runningTool(tool.name, Math.round((props.now - tool.ts) / 1000))}
+      <span className="dim"> · {props.botName(busy)}</span>
+    </div>
+  );
+}
+
 function TurnStrip(props: {
   t: T;
   turn: TurnEvent | null;
   room: RoomRecord;
   botName: (id?: string) => string;
+  now: number;
 }): JSX.Element {
   const { t, turn, room } = props;
   // §3.2: single-member rooms hide the strip.
@@ -457,8 +493,9 @@ function TurnStrip(props: {
       <div className="turn-slots">
         {room.members.map((m) => {
           const slot = turn?.slots[m] ?? "waiting";
+          const live = slot === "speaking" || slot === "working";
           return (
-            <span key={m} className={`slot slot-${slot}`}>
+            <span key={m} className={`slot slot-${slot}${live ? " live" : ""}`}>
               {SLOT_LABEL[slot] ?? "○"} {props.botName(m)}
             </span>
           );

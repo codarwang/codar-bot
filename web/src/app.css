@@ -191,6 +191,13 @@ textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
   overflow-x: auto;
 }
 .budgetBar.over { background: var(--stop-bg); color: var(--stop); }
+.activityLine {
+  margin: 4px 16px 0; padding: 4px 12px; border-radius: var(--radius); font-size: 12px;
+  background: #eef1fe; color: var(--accent); flex-shrink: 0; white-space: nowrap;
+  overflow-x: auto;
+}
+.slot.live { animation: slotpulse 1.6s ease-in-out infinite; }
+@keyframes slotpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 .turnstrip {
   display: flex; align-items: center; gap: 10px; padding: 5px 12px;
   border-top: 1px solid var(--line); background: var(--panel);

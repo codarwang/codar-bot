@@ -72,6 +72,12 @@ const LIMITS = {
  *  the team review fires only when this many turns are pending. */
 const TEAM_REVIEW_THRESHOLD = 5;
 
+/** Bot/room review cadence (dogfood D2): per-settle reviews burned 63% of a
+ *  dogfood month-budget in one hour (4.5M review tokens vs 2.6M chat) —
+ *  batch at N settles. Override with CODAR_MEMORY_REVIEW_EVERY=1 for the
+ *  original per-turn semantics. */
+const REVIEW_EVERY_SETTLES = Math.max(1, Number(process.env.CODAR_MEMORY_REVIEW_EVERY ?? 3));
+
 /** Review child wall clock: a review that cannot finish in 3 minutes is
  *  aborted and retried on the next settle (pending is kept). */
 const REVIEW_WALL_MS = 3 * 60_000;
@@ -277,6 +283,7 @@ export class MemoryEngine {
     const cool = this.cooldownUntil.get(key);
     if (cool !== undefined && Date.now() < cool) return;
     if (scope === "team" && this.pendingCount(scope, id) < TEAM_REVIEW_THRESHOLD) return;
+    if (scope !== "team" && this.pendingCount(scope, id) < REVIEW_EVERY_SETTLES) return;
     if (this.pendingCount(scope, id) === 0) return;
     this.reviewing.add(key);
     void this.review(scope, id)
@@ -600,7 +607,10 @@ export class MemoryEngine {
       });
       await client.start({
         model: `${model.provider}/${model.modelId}`,
-        thinking: model.thinkingLevel,
+        // Reviews are summarization: LOW thinking regardless of the owner
+        // model's level — a max-thinking reviewer burned up to 1.1M tokens
+        // per pass in dogfood (D2).
+        thinking: "low",
         noSession: true,
       });
       const res = await client.command({ type: "prompt", message: prompt } as Record<string, unknown>);

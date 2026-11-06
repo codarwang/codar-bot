@@ -50,6 +50,7 @@ export function App(): JSX.Element {
   const [budgetRows, setBudgetRows] = useState<BudgetRow[]>([]);
   const [approvals, setApprovals] = useState<Array<ApprovalEvent & { resolved?: boolean; outcome?: boolean; stale?: boolean }>>([]);
   const [streaming, setStreaming] = useState<Record<string, string>>({});
+  const [toolAt, setToolAt] = useState<Record<string, { name: string; ts: number }>>({});
   const [statuses, setStatuses] = useState<Record<string, string>>({});
   const [failures, setFailures] = useState<Record<string, string>>({});
   const [sse, setSse] = useState<"connecting" | "live" | "reconnecting">("connecting");
@@ -229,6 +230,14 @@ export function App(): JSX.Element {
           return next;
         });
       }
+      if (s.status === "idle" || s.status === "stopped" || s.status === "crashed") {
+        setToolAt((prev) => {
+          if (prev[s.botId] === undefined) return prev;
+          const next = { ...prev };
+          delete next[s.botId];
+          return next;
+        });
+      }
       // A later transition clears the failure flag — one transient provider
       // blip must not brand the bot red forever (R1 P2-3).
       if (s.status === "idle" || s.status === "working" || s.status === "starting") {
@@ -244,6 +253,12 @@ export function App(): JSX.Element {
     on("delta", (d) => {
       const s = d as { botId: string; text: string };
       setStreaming((prev) => ({ ...prev, [s.botId]: (prev[s.botId] ?? "") + s.text }));
+    });
+    on("tool", (d) => {
+      // Live tool activity (dogfood D2): Chief-class agents run multi-step
+      // tool loops for 1-2 minutes BETWEEN deltas — silence looked dead.
+      const e = d as { botId: string; toolName: string };
+      setToolAt((prev) => ({ ...prev, [e.botId]: { name: e.toolName, ts: Date.now() } }));
     });
     on("message", (d) => {
       // assistant message_end = authoritative final (streaming bubble drops)
@@ -425,6 +440,7 @@ export function App(): JSX.Element {
           messages={messages}
           works={roomWorks}
           streaming={streaming}
+          toolAt={toolAt}
           statuses={statuses}
           failures={failures}
           approvals={approvals}
