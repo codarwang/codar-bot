@@ -493,11 +493,18 @@ function ActivityLine(props: {
   );
   if (busyThinking !== undefined) {
     const since = liveSince.current[busyThinking]!;
-    return (
-      <div className="activityLine">
-        {props.t.thinkingFor(props.botName(busyThinking), Math.max(0, Math.round((props.now - since) / 1000)))}
-      </div>
-    );
+    const secs = Math.max(0, Math.round((props.now - since) / 1000));
+    // A turn that settled during an SSE drop leaves the slot live with no
+    // further events — cap the timer at the first-token timeout horizon so
+    // a stale "thinking … 40000s" line cannot masquerade as live truth
+    // (D2 R2 P3; heals on the next turn event).
+    if (secs <= 300) {
+      return (
+        <div className="activityLine">
+          {props.t.thinkingFor(props.botName(busyThinking), secs)}
+        </div>
+      );
+    }
   }
   return null;
 }

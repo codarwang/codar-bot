@@ -365,17 +365,37 @@ test("session path translation is bidirectional: store keeps host paths, the chi
 });
 
 test("dogfood D2 P1 regression: docker bots survive a host-level extensionPath default", async () => {
+  // Argv-level only: never spawn a real container or registry-pull (the
+  // sibling docker test owns the gated live path).
+  const { buildDockerArgv } = await import("../src/host/sandbox.js");
+  const argv = buildDockerArgv({
+    image: "codar-bot-sandbox:test",
+    workDir: "/w",
+    piConfDir: "/c",
+    extensionsDir: "/ext",
+    extensionEntry: "codar-gate/codar-gate.ts",
+    env: {},
+  });
+  assert.ok(argv.some((a) => String(a).includes("/opt/codar-ext")));
+  assert.ok(argv.some((a) => String(a).includes("/ext:/opt/codar-ext:ro")));
   const root = mkdtempSync(join(tmpdir(), "codar-d2-docker-"));
   mkdirSync(join(root, "work"), { recursive: true });
   const store = Store.open(join(root, "state.json"), { create: true });
   const ledger = new UsageLedger(join(root, "usage.sqlite"));
   // Host-level defaults WITH the repo gate (what codar start passes now).
-  const bots = new BotManager(store, ledger, root, {
-    bin: process.execPath,
-    sandboxArgv: undefined,
-    extensionPath: resolve(HERE, "../../extensions/codar-gate/codar-gate.ts"),
-    env: {},
-  });
+  const emptyExtDir = join(root, "extensions");
+  mkdirSync(emptyExtDir, { recursive: true });
+  // extensionsDir is the 7th ctor arg (docker mount source), not a
+  // SpawnOptions field.
+  const bots = new BotManager(
+    store, ledger, root,
+    // Host defaults as codar start passes them: extensionPath only (bin is
+    // the OFFLINE fixture knob — merged bin on a docker bot is rightly
+    // rejected by the tightened guard).
+    { extensionPath: resolve(HERE, "../../extensions/codar-gate/codar-gate.ts"), env: {} },
+    join(root, "keys.json"),
+    emptyExtDir
+  );
   const bot = store.addBot({
     name: "DockerBot", role: "", chief: true,
     model: { provider: "fake", modelId: "f", thinkingLevel: "low" },
@@ -386,10 +406,12 @@ test("dogfood D2 P1 regression: docker bots survive a host-level extensionPath d
     await assert.rejects(
       () => bots.start(bot.id),
       (e: Error) => {
-        // Docker may be unavailable in this environment — the START may
-        // fail on the image, but it must NOT fail on the bare-process shim
-        // guard (the D2 P1 brick).
-        assert.ok(!e.message.includes("bare-process shims"), `guard fired: ${e.message}`);
+        // Must fail LOUDLY on the missing in-container gate entry — never
+        // on the bare-process shim guard (the D2 P1 brick), and never as an
+        // opaque early-exit after a real container start.
+        assert.ok(e.message.includes("codar-gate/codar-gate.ts"), e.message);
+        assert.ok(e.message.includes("CODAR_EXTENSIONS_DIR"), e.message);
+        assert.ok(!e.message.includes("bare-process shims"), e.message);
         return true;
       }
     );

@@ -204,11 +204,30 @@ export class BotManager extends EventEmitter {
         // host-level extensionPath default (the repo gate, dogfood D2 P1)
         // is legitimate — docker bots ignore the host path and load the
         // in-container copy below.
-        if (spawnOverride.sandboxArgv !== undefined) {
+        // bin/sandboxArgv test the MERGED values (host defaults like
+        // CODAR_PI_BIN must not leak a real container into an offline run);
+        // extensionPath tests the PER-CALL override only — the repo-gate
+        // host default is legitimate and docker ignores the host path.
+        if (spawn.sandboxArgv !== undefined) {
           throw new Error("sandboxArgv is for the bare-process test shim; docker bots configure sandbox.image");
         }
-        if (spawnOverride.bin !== undefined || spawnOverride.extensionPath !== undefined) {
-          throw new Error("spawn bin/extensionPath are bare-process shims; docker bots run the sandbox image entrypoint");
+        if (spawn.bin !== undefined) {
+          throw new Error("spawn bin is a bare-process shim; docker bots run the sandbox image entrypoint");
+        }
+        if (spawnOverride.extensionPath !== undefined) {
+          throw new Error("spawn extensionPath is a bare-process shim; docker bots load the in-container extension");
+        }
+        // Loud pre-spawn validation (D2 R2 P1): a missing gate entry inside
+        // extensionsDir surfaces as an opaque "rpc child exited early" after
+        // the container start — name it BEFORE spawning.
+        {
+          const { existsSync: exists } = await import("node:fs");
+          const entry = join(this.extensionsDir, "codar-gate", "codar-gate.ts");
+          if (!exists(entry)) {
+            throw new Error(
+              `docker bot needs the gate extension at ${entry} (mounted at /opt/codar-ext) — set CODAR_EXTENSIONS_DIR to a directory containing codar-gate/codar-gate.ts`
+            );
+          }
         }
         const extraEnv = { ...this.spawnDefaults.env, ...spawnOverride.env };
         if (Object.keys(extraEnv).length > 0) {

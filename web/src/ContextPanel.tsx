@@ -97,7 +97,11 @@ function BudgetMeter(props: { t: T; lang: Lang; row: BudgetRow | undefined; labe
   if (row === undefined) return <div className="meter-row dim">{props.label} · …</div>;
   // Dimension preference: cost > tokens > turns — mirrors what can actually
   // stop the scope; a fully-unlimited scope shows no meter (R1 P2-9).
-  const used = row.budget.maxCostMicros > 0
+  // costLive: unpriced providers report cost 0 forever while a cost limit
+  // exists — fall through to tokens so the meter agrees with the warn bar
+  // (D2 R2 P3).
+  const costLive = row.costMicros > 0;
+  const used = row.budget.maxCostMicros > 0 && costLive
     ? { pct: Math.min(100, Math.round((row.costMicros / row.budget.maxCostMicros) * 100)), display: `${money(props.lang, row.costMicros)} ${t.budgetOf} ${money(props.lang, row.budget.maxCostMicros)}` }
     : row.budget.maxTokens > 0
       ? { pct: Math.min(100, Math.round((row.tokens / row.budget.maxTokens) * 100)), display: `${row.tokens.toLocaleString()} ${t.budgetOf} ${row.budget.maxTokens.toLocaleString()}${row.costMicros === 0 ? ` · ${t.tokenFallback}` : ""}` }

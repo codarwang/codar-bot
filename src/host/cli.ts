@@ -39,19 +39,21 @@ async function main(): Promise<void> {
     // never loaded — bots ran extension-less (no message_bot channel, no
     // approval gate, no audit), and Chief improvised dispatch over the raw
     // HTTP API as the USER. Default to the checkout's codar-gate.
-    const repoGate = resolve(
-      dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-      "extensions",
-      "codar-gate",
-      "codar-gate.ts"
-    );
+    const repoRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+    const repoGate = resolve(repoRoot, "extensions", "codar-gate", "codar-gate.ts");
+    // Docker bots mount <extensionsDir> at /opt/codar-ext — defaulting it to
+    // <dataRoot>/extensions (bot-manager) mounts an EMPTY dir and the
+    // container dies on "extension path does not exist" (D2 R2 P1). Same
+    // repo-defaults class as the gate itself.
+    const repoExtensions = resolve(repoRoot, "extensions");
     const host = Host.boot({
       dataRoot: process.env.CODAR_BOT_HOME,
       webDir: existsSync(join(repoWebDist, "index.html")) ? repoWebDist : undefined,
       bin: process.env.CODAR_PI_BIN,
       argv: argvTail !== undefined && argvTail !== "" ? [argvTail] : undefined,
       extensionPath: process.env.CODAR_EXT_PATH ?? (existsSync(repoGate) ? repoGate : undefined),
-      extensionsDir: process.env.CODAR_EXTENSIONS_DIR,
+      extensionsDir:
+        process.env.CODAR_EXTENSIONS_DIR ?? (existsSync(repoExtensions) ? repoExtensions : undefined),
     });
     const port = await host.start();
     const webNote = existsSync(join(repoWebDist, "index.html"))
