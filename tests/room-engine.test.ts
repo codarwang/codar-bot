@@ -410,29 +410,37 @@ test("dogfood D3 R2: the header-only skip fires even with a memory tail (pending
   const r = await rig();
   try {
     process.env.CODAR_M1_AUTOAPPROVE = "1";
-    // Memory tail injects "\\n\\n" into EVERY prompt — the old substring
+    // Memory tail injects "\n\n" into EVERY prompt — the old substring
     // heuristic could never fire (R2 verdict).
-    r.rooms.memoryTail = () => "### Memory — team\\n#### entry\\nsome durable fact";
+    r.rooms.memoryTail = () => "### Memory — team\n#### entry\nsome durable fact";
+    // Spy the prompt surface: the header-only no-op would be a prompt whose
+    // rendered text carries NO [user]/[system] dialogue line. The
+    // substring-era assertions passed on old code — dialogue-presence per
+    // prompt is the teeth (R3 P3).
+    const prompts: string[] = [];
+    const origPrompt = r.bots.prompt.bind(r.bots);
+    (r.bots as { prompt: (id: string, msg: string, k?: "chat" | "tool" | "memory-review", r2?: string | null) => Promise<string> }).prompt =
+      (id: string, msg: string, k?: "chat" | "tool" | "memory-review", r2?: string | null) => { prompts.push(msg); return origPrompt(id, msg, k, r2); };
     await r.bots.start(r.chiefId);
     await r.bots.start(r.writerId);
-    // Batch A: @all fan-out. Mid-batch, send Y (accept-phase appends it).
     const batchA = r.rooms.userSay(r.roomId, "@all reply with the single word ALPHA.");
     await new Promise((s2) => setTimeout(s2, 150));
     void r.rooms.userSay(r.roomId, "@Writer also reply BRAVO").catch(() => "queued");
     await batchA;
     const deadline = Date.now() + 15_000;
-    while (Date.now() < deadline) {
-      const hist = r.rooms.history(r.roomId);
-      const botLines = hist.filter((m) => m.from.kind === "bot");
-      // Batch A gives ≤2 replies; the header-only no-op would add a third
-      // "OK"/memory-only reply for Writer with nothing to answer.
-      if (botLines.length >= 2) { await new Promise((s2) => setTimeout(s2, 800)); break; }
+    while (prompts.length < 3 && Date.now() < deadline) {
       await new Promise((s2) => setTimeout(s2, 100));
     }
-    const hist = r.rooms.history(r.roomId);
-    const botLines = hist.filter((m) => m.from.kind === "bot");
-    assert.ok(botLines.length <= 3, `no unbounded no-op turns (got ${botLines.length})`);
-    assert.ok(!botLines.some((m) => m.text === "OK" && botLines.filter((x) => x.text === "OK").length > 1), "no metered memory-only OK turn");
+    await new Promise((s2) => setTimeout(s2, 500));
+    assert.ok(prompts.length >= 3, `flow produced ${prompts.length} prompts (2 @all + BRAVO)`);
+    for (const p2 of prompts) {
+      assert.ok(
+        p2.includes("[user]") || p2.includes("[system]"),
+        `every RAN prompt carries dialogue (got header-only: ${p2.slice(0, 80)}...)`
+      );
+    }
+    const botLines = r.rooms.history(r.roomId).filter((m) => m.from.kind === "bot");
+    assert.ok(botLines.length <= 3, `bounded replies (got ${botLines.length})`);
   } finally {
     delete process.env.CODAR_M1_AUTOAPPROVE;
     await r.dispose();

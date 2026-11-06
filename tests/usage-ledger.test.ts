@@ -95,13 +95,48 @@ test("dogfood D3 R2: a v1 nullable-room_id ledger RE-MIGRATES to the sentinel sc
     raw.close();
     // Opening with UsageLedger must rebuild to NOT NULL '' and fold the NULL row in.
     const ledger = new UsageLedger(dbPath);
-    const notnull = (ledger as unknown as { db: { prepare(q: string): { all(): Array<{ notnull: number }> } } })
-      .db.prepare("PRAGMA table_info(usage)").all().find((c) => (c as { name: string }).name === "room_id");
-    void notnull;
+    const cols = (ledger as unknown as { db: { prepare(q: string): { all(): Array<Record<string, number | string>> } } })
+      .db.prepare("PRAGMA table_info(usage)").all();
+    const roomCol = cols.find((c) => c.name === "room_id");
+    assert.ok(roomCol !== undefined, "room_id column exists");
+    assert.equal(Number(roomCol!.notnull), 1, "room_id is NOT NULL (the re-migration actually ran)");
+    const nullRows = (ledger as unknown as { db: { prepare(q: string): { get(): unknown } } })
+      .db.prepare("SELECT COUNT(*) AS n FROM usage WHERE room_id IS NULL").get();
+    assert.equal(Number((nullRows as { n: number }).n), 0, "no NULL room_id rows survive");
+    const rawRows = (ledger as unknown as { db: { prepare(q: string): { get(): unknown } } })
+      .db.prepare("SELECT COUNT(*) AS n FROM usage").get();
+    assert.equal(Number((rawRows as { n: number }).n), 1, "one bucket row (merged, not duplicated)");
     assert.equal(ledger.totals({ botId: "b" })[0]!.input, 7, "data survives the re-migration");
     // New unattributed writes MERGE with the migrated NULL row (both in '').
     ledger.record({ hour: "2026-11-06T09", botId: "b", model: "m", kind: "chat", input: 3, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0, roomId: null });
     assert.equal(ledger.totals({ botId: "b" })[0]!.input, 10, "NULL-legacy and ''-new rows share one bucket");
+    ledger.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dogfood D3 R3: a v0 ledger (no room_id column) migrates without crashing and keeps data", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-ul-v0-"));
+  const dbPath = join(root, "usage.sqlite");
+  try {
+    const { DatabaseSync } = await import("node:sqlite");
+    const raw = new DatabaseSync(dbPath);
+    raw.exec(`CREATE TABLE usage (
+      hour TEXT NOT NULL, bot_id TEXT NOT NULL, model TEXT NOT NULL, kind TEXT NOT NULL,
+      input INTEGER NOT NULL DEFAULT 0, output INTEGER NOT NULL DEFAULT 0,
+      cache_read INTEGER NOT NULL DEFAULT 0, cache_write INTEGER NOT NULL DEFAULT 0,
+      cache_write_1h INTEGER NOT NULL DEFAULT 0, cost_micros INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (hour, bot_id, model, kind))`);
+    raw.prepare("INSERT INTO usage (hour, bot_id, model, kind, input) VALUES ('2026-11-06T09','b','m','chat',42)").run();
+    raw.close();
+    // v0 COALESCE regression: the SELECT referenced room_id on a table that
+    // lacks the column — constructor threw, half-migrated state, second
+    // open silently emptied the ledger (R3 P2).
+    const ledger = new UsageLedger(dbPath);
+    assert.equal(ledger.totals({ botId: "b" })[0]!.input, 42, "v0 data survives");
+    ledger.record({ hour: "2026-11-06T09", botId: "b", model: "m", kind: "chat", input: 1, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0, costMicros: 0, roomId: null });
+    assert.equal(ledger.totals({ botId: "b" })[0]!.input, 43, "merges into the sentinel bucket");
     ledger.close();
   } finally {
     rmSync(root, { recursive: true, force: true });

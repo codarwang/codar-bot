@@ -74,15 +74,29 @@ export class UsageLedger {
     // rebuild it too.
     if (roomCol === undefined || roomCol.notnull === 0) {
       // Fresh v0 table OR v1 nullable-migrated table: rebuild under a temp
-      // name (v0's CREATE IF NOT EXISTS already made `usage`; rename works
-      // for both) — NULL room_id rows land in the '' sentinel bucket.
-      this.db.exec("ALTER TABLE usage RENAME TO usage_v1");
-      this.db.exec(SCHEMA);
-      this.db.exec(
-        "INSERT INTO usage (hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, room_id) " +
-        "SELECT hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, COALESCE(room_id, '') FROM usage_v1"
-      );
-      this.db.exec("DROP TABLE usage_v1");
+      // name. The whole rebuild rides ONE transaction — a mid-flight crash
+      // must not leave an empty new table plus the data stranded in
+      // usage_v1 (the second open then saw NOT NULL, skipped the migration,
+      // and silently reported an empty ledger — R3 P2).
+      const roomExpr = roomCol === undefined ? "''" : "COALESCE(room_id, '')";
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db.exec("ALTER TABLE usage RENAME TO usage_v1");
+        this.db.exec(SCHEMA);
+        // v1 NULL rows and any '' rows written by the interim build can
+        // share a bucket after COALESCE — aggregate instead of raw-copy so
+        // the UNIQUE PK never collides.
+        this.db.exec(
+          "INSERT INTO usage (hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, room_id) " +
+          `SELECT hour, bot_id, model, kind, SUM(input), SUM(output), SUM(cache_read), SUM(cache_write), SUM(cache_write_1h), SUM(cost_micros), ${roomExpr} ` +
+          "FROM usage_v1 GROUP BY hour, bot_id, model, kind, " + roomExpr
+        );
+        this.db.exec("DROP TABLE usage_v1");
+        this.db.exec("COMMIT");
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
     }
   }
 
