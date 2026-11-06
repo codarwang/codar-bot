@@ -45,6 +45,8 @@ export interface SpawnOptions {
   sandboxArgv?: string[];
   env?: Record<string, string>;
   extensionPath?: string;
+  /** rpc idle-watchdog override (tests shrink the 5-minute default). */
+  idleTimeoutMs?: number;
   /** docker sandbox image override (§3.4; default codar-bot-sandbox:0.1). */
   sandboxImage?: string;
 }
@@ -266,7 +268,7 @@ export class BotManager extends EventEmitter {
               ? "/state/pi-conf/gate-audit.jsonl"
               : join(botPiConfDir(this.dataRoot, botId), "gate-audit.jsonl"),
         },
-        idleTimeoutMs: 5 * 60_000,
+        idleTimeoutMs: spawn.idleTimeoutMs ?? 5 * 60_000,
         wallTimeoutMs: 24 * 60 * 60_000,
         onUiRequest: (req) => this.handleUi(client, req),
       });

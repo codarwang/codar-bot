@@ -187,6 +187,11 @@ export class RpcClient extends EventEmitter {
   private exited = false;
   private dying = false;
   private streamError: Error | null = null;
+  /** Agent runs started (prompt disposition=started) but not yet settled —
+   *  a provider stall inside the child produces NO records while the run
+   *  is live; the work guard must cover it (dogfood QA ISSUE-003). */
+  private activeRuns = 0;
+
   /** Unanswered extension_ui_request ids — while non-empty the child is
    *  parked on a human-scale approval/bridge wait BY DESIGN and stays silent;
    *  the idle watchdog must not kill it for that silence. */
@@ -293,6 +298,10 @@ export class RpcClient extends EventEmitter {
         if (byId) {
           clearTimeout(byId.timer);
           this.pending.delete(record.id!);
+          // Re-evaluate AFTER the delete: the top-of-handler armIdle ran
+          // while this entry was still pending and re-armed a watchdog that
+          // then murdered an idle bot (work-guard race, dogfood QA R1).
+          this.armIdle();
           byId.resolve(record);
         } else if (!record.success) {
           this.emit("unmatched_error_response", record);
@@ -328,6 +337,8 @@ export class RpcClient extends EventEmitter {
       }
       this.emit("event", event);
       if (event.type === "agent_settled") {
+        if (this.activeRuns > 0) this.activeRuns--;
+        this.armIdle(); // run finished: re-evaluate the work guard
         this.emit("settled", event);
         // Error mapping (§2.3-3): a settled run whose last assistant message
         // errored (e.g. provider 402 budget_exhausted), or an aborted run,
@@ -363,10 +374,13 @@ export class RpcClient extends EventEmitter {
         reject(new Error(`rpc command "${String(body.type)}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       this.pending.set(id, { command: String(body.type), resolve, reject, timer });
+      this.armIdle(); // work-guard: armed at submit — a command whose
+      // response never produces a single record must still time out
       this.proc!.stdin!.write(bytes, (err) => {
         if (err) {
           clearTimeout(timer);
           this.pending.delete(id);
+          this.armIdle(); // disarms when this was the only outstanding work
           reject(new Error(`rpc stdin write failed: ${String(err)}`));
         }
       });
@@ -379,10 +393,21 @@ export class RpcClient extends EventEmitter {
     if (bytes > PROMPT_MAX_BYTES) {
       return Promise.reject(new Error(`prompt exceeds PROMPT_MAX_BYTES=${PROMPT_MAX_BYTES}`));
     }
+    // Track STARTED runs as outstanding work: the command resolves at
+    // disposition "started" but a stalled provider then produces no records
+    // and no settle — without this the work guard would disarm and the run
+    // would hang to the 24h wall (dogfood QA ISSUE-003, live ZaiWriter).
     return this.command({
       type: "prompt",
       message,
       ...(options.streamingBehavior ? { streamingBehavior: options.streamingBehavior } : {}),
+    }).then((res) => {
+      const disposition = (res.data as { disposition?: string } | null)?.disposition;
+      if (res.success && disposition === "started") {
+        this.activeRuns++;
+        this.armIdle();
+      }
+      return res;
     });
   }
 
@@ -441,6 +466,16 @@ export class RpcClient extends EventEmitter {
   }
 
   private armIdle(): void {
+    // WORK-GUARD semantics (dogfood QA ISSUE-003): only armed while
+    // commands are outstanding. A quietly idle bot produces no rpc records
+    // BY DESIGN — arming at start() crash-looped every idle bot every
+    // idleTimeoutMs (38 crashes in one dogfood day). Process liveness is
+    // the exit event + the 24h wall watchdog, not this timer.
+    if (this.pending.size === 0 && this.activeRuns === 0 && this.openUiRequests.size === 0) {
+      if (this.idleTimer) clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+      return;
+    }
     if (this.idleDeadline || this.dying || this.exited) return;
     // ALWAYS clear first: a stale timer armed before a park began would
     // otherwise fire mid-park (the round-2 ordering bug). Re-arm only when

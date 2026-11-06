@@ -87,6 +87,18 @@ async function runPrompt(id, message) {
     return;
   }
 
+  if (message.includes("HANG")) {
+    // Started → silence forever: the rpc idle watchdog must fire and the
+    // room must still land its honest failure line (dogfood QA ISSUE-002).
+    transcript.push({ role: "user", content: message });
+    respond(id, "prompt", { disposition: "started" });
+    out({ type: "agent_start" });
+    out({ type: "turn_start" });
+    out({ type: "message_start", message: { role: "system", content: "" } });
+    out({ type: "message_end", message: { role: "system", content: "" } });
+    return; // never settles, never exits
+  }
+
   if (message.includes("SLOW")) {
     // Deterministic long run: started → 1.5s of silence → settle with OK.
     transcript.push({ role: "user", content: message });
