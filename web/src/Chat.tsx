@@ -468,9 +468,11 @@ function ActivityLine(props: {
   );
   if (busy === undefined) return null;
   const tool = props.toolAt[busy]!;
+  // Math.max: the 1s `now` ticker can lag a just-arrived tool event — a
+  // negative elapsed read as broken (dogfood D2 test).
   return (
     <div className="activityLine">
-      {props.t.runningTool(tool.name, Math.round((props.now - tool.ts) / 1000))}
+      {props.t.runningTool(tool.name, Math.max(0, Math.round((props.now - tool.ts) / 1000)))}
       <span className="dim"> · {props.botName(busy)}</span>
     </div>
   );

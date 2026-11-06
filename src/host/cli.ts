@@ -35,12 +35,22 @@ async function main(): Promise<void> {
       "web",
       "dist"
     );
+    // Repo-run defaults (dogfood D2 P1): without CODAR_EXT_PATH the gate
+    // never loaded — bots ran extension-less (no message_bot channel, no
+    // approval gate, no audit), and Chief improvised dispatch over the raw
+    // HTTP API as the USER. Default to the checkout's codar-gate.
+    const repoGate = resolve(
+      dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+      "extensions",
+      "codar-gate",
+      "codar-gate.ts"
+    );
     const host = Host.boot({
       dataRoot: process.env.CODAR_BOT_HOME,
       webDir: existsSync(join(repoWebDist, "index.html")) ? repoWebDist : undefined,
       bin: process.env.CODAR_PI_BIN,
       argv: argvTail !== undefined && argvTail !== "" ? [argvTail] : undefined,
-      extensionPath: process.env.CODAR_EXT_PATH,
+      extensionPath: process.env.CODAR_EXT_PATH ?? (existsSync(repoGate) ? repoGate : undefined),
       extensionsDir: process.env.CODAR_EXTENSIONS_DIR,
     });
     const port = await host.start();
