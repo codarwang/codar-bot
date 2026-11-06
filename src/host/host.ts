@@ -69,6 +69,22 @@ export class Host {
       extensionPath: opts.extensionPath,
       env: opts.env,
     }, p.keys, opts.extensionsDir);
+    // Legacy ghost sweep (dogfood-D1 R2 P3): rooms persisted before the
+    // DELETE sweep may reference deleted bots — drop those ids, promote an
+    // orphaned admin, drop rooms left empty. Heals dogfood-era state at
+    // every boot; a no-op on clean stores.
+    for (const room of [...store.state.rooms]) {
+      const members = room.members.filter((m) => store.bot(m) !== undefined);
+      if (members.length === room.members.length) continue;
+      if (members.length === 0) {
+        store.removeRoom(room.id);
+        continue;
+      }
+      store.updateRoom(room.id, {
+        members,
+        admin: store.bot(room.admin) === undefined ? members[0]! : room.admin,
+      });
+    }
     const rooms = new RoomEngine(store, bots, p.roomsRoot);
     const handoff = new Handoff(store, bots, rooms);
     bots.handoff = handoff; // late bind (M2-B D1 bridge)

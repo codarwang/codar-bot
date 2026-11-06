@@ -335,7 +335,16 @@ export class HttpApi {
         return;
       }
       if (req.method === "DELETE" && id !== undefined && action === undefined) {
+        if (this.deps.store.bot(id) === undefined) throw new ApiError(404, `no bot ${id}`);
         await this.deps.bots.stop(id);
+        // Zombie works: pending/works targeting the deleted child fail now
+        // (they would sit pending forever — the restart sweep only runs at
+        // boot, dogfood-D1 R2 P3).
+        for (const w of this.deps.store.state.works) {
+          if (w.child === id && (w.status === "pending" || w.status === "working")) {
+            this.deps.store.updateWork(w.id, { status: "failed" });
+          }
+        }
         this.deps.store.removeBot(id);
         this.deps.bots.forget(id); // drop the runtime bookkeeping entry too
         // Ghost sweep (dogfood D1 review P3): a deleted bot left stale ids
@@ -376,9 +385,11 @@ export class HttpApi {
         // to ever join — Chief could promise "正式入房" and nothing could
         // land it. members/name editable; admin must stay a member; the
         // room keeps at least one member; names stay unique.
+        const body = (await this.readJson(req)) as { members?: unknown; name?: unknown };
+        // Read AFTER the body await: reading before widened the lost-update
+        // window for overlapping PATCHes (dogfood-D1 R2 P3).
         const room = this.deps.store.room(id);
         if (room === undefined) throw new ApiError(404, `no room ${id}`);
-        const body = (await this.readJson(req)) as { members?: unknown; name?: unknown };
         if (body.members === undefined && body.name === undefined) {
           throw new ApiError(400, "need {members: botId[]} and/or {name}");
         }
@@ -417,6 +428,7 @@ export class HttpApi {
           patch.zeroMark = [...new Set([...(room.zeroMark ?? []), ...added])];
         }
         const updated = this.deps.store.updateRoom(id, patch);
+        this.deps.rooms.membersChanged(id);
         this.send(res, 200, updated);
         return;
       }

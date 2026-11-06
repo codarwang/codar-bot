@@ -124,6 +124,18 @@ export class RoomEngine extends EventEmitter {
     return this.enqueue(roomId, () => this.userSayInner(roomId, text));
   }
 
+  /** Membership changed via PATCH: when a runtime already exists the
+   *  watermark fallback delivers the backlog, so the persisted zeroMark is
+   *  consumed HERE — leaving it would re-inject the whole backlog after the
+   *  next restart (dogfood-D1 R2 P3). */
+  membersChanged(roomId: string): void {
+    if (this.runtimes.get(roomId) === undefined) return;
+    const room = this.store.room(roomId);
+    if (room !== undefined && (room.zeroMark ?? []).length > 0) {
+      try { this.store.updateRoom(roomId, { zeroMark: [] }); } catch { /* shutting down */ }
+    }
+  }
+
   /** Explicit pause/resume (budget stop lands here with reason "budget"). */
   pause(roomId: string, reason: RoomRuntime["pausedReason"], note: string): void {
     const room = this.store.room(roomId);
