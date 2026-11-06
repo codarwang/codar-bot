@@ -237,7 +237,6 @@ export function App(): JSX.Element {
           delete next[s.botId];
           return next;
         });
-        setStreaming((prev) => { void prev; return prev; });
       }
       // A later transition clears the failure flag — one transient provider
       // blip must not brand the bot red forever (R1 P2-3).

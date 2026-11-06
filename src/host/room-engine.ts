@@ -211,6 +211,18 @@ export class RoomEngine extends EventEmitter {
     const spoke: string[] = [];
     for (const botId of decision.responders) {
       if (this.store.bot(botId) === undefined) continue;
+      // Header-only turns (D3 review P2-2): the accept-phase split means a
+      // mid-batch message can be consumed by an EARLIER responder's render
+      // (watermark committed past it) — running this responder against an
+      // empty dialogue is a metered no-op turn. Skip honestly.
+      {
+        const ctx = this.renderContextUncommitted(room, rt, botId);
+        const hasDialogue = ctx.text.includes("\n\n");
+        if (!hasDialogue) {
+          rt.slots[botId] = "passed";
+          continue;
+        }
+      }
       // A pause triggered mid-fan-out (ping-pong) stops the rest (§3.3-1).
       if (rt.pausedReason !== null) break;
       await this.runTurn(roomId, room, rt, botId);

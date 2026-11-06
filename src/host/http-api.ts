@@ -306,6 +306,12 @@ export class HttpApi {
         return;
       }
       if (req.method === "POST" && id !== undefined && action === "reset-session") {
+        // Route guard (D3 review P3): the BUTTON is disabled while working,
+        // but the route itself must not kill an in-flight turn on a direct
+        // call — honest 409 instead.
+        if (this.deps.bots.status(id) === "working") {
+          throw new ApiError(409, `bot ${id} is working — abort the turn first`);
+        }
         await this.deps.bots.resetSession(id);
         this.send(res, 200, { ok: true });
         return;
@@ -602,14 +608,9 @@ export class HttpApi {
         const limit = scope === "bot"
           ? this.deps.store.bot(id)?.budget
           : this.deps.store.room(id)?.budget;
-        // Detail parity with the enforced window: a ROOM's own
-        // memory-review rows count too (bot scope already aggregated [id]
-        // as its single member — double-counting otherwise).
-        if (scope === "room") {
-          for (const row of this.deps.ledger.totals({ botId: id, sinceHour })) {
-            tokens += row.input + row.output + row.cacheRead + row.cacheWrite; micros += row.costMicros;
-          }
-        }
+        // (The room-own memory-review rows are ALREADY in detailRows via the
+        // botId branch above — a leftover loop here double-counted them,
+        // D3 review P2-1, detail 180 vs enforced 140.)
         this.send(res, 200, {
           scope, id, month: sinceHour.slice(0, 7), tokens, costMicros: micros, budget: limit ?? null,
           turns: this.deps.budget.turnsThisMonth(scope, id),

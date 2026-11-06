@@ -47,7 +47,10 @@ CREATE TABLE IF NOT EXISTS usage (
   cache_write INTEGER NOT NULL DEFAULT 0,
   cache_write_1h INTEGER NOT NULL DEFAULT 0,
   cost_micros INTEGER NOT NULL DEFAULT 0,
-  room_id TEXT,
+  -- '' sentinel, NOT NULL: SQLite composite-PK NULLs never compare equal,
+  -- so ON CONFLICT never fired for unattributed rows and every message_end
+  -- grew a new row (D3 review P3-1). '' = unattributed by construction.
+  room_id TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (hour, bot_id, model, kind, room_id)
 )`;
 
@@ -69,7 +72,7 @@ export class UsageLedger {
       this.db.exec(SCHEMA);
       this.db.exec(
         "INSERT INTO usage (hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, room_id) " +
-        "SELECT hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, NULL FROM usage_v1"
+        "SELECT hour, bot_id, model, kind, input, output, cache_read, cache_write, cache_write_1h, cost_micros, '' FROM usage_v1"
       );
       this.db.exec("DROP TABLE usage_v1");
     }
@@ -95,7 +98,7 @@ export class UsageLedger {
       .run(
         u.hour, u.botId, u.model, u.kind,
         u.input, u.output, u.cacheRead, u.cacheWrite, u.cacheWrite1h, u.costMicros,
-        u.roomId ?? null
+        u.roomId ?? ""
       );
     this.onRecord?.(u.botId);
   }

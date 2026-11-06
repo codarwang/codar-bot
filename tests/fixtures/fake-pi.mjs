@@ -89,7 +89,7 @@ async function runPrompt(id, message) {
 
   if (message.includes("HANG")) {
     // Started → silence forever: the rpc idle watchdog must fire and the
-    // room must still land its honest failure line (dogfood QA ISSUE-002).
+    // room must still land its honest failure line (dogfood QA ISSUE-003).
     transcript.push({ role: "user", content: message });
     respond(id, "prompt", { disposition: "started" });
     out({ type: "agent_start" });
