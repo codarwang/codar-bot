@@ -385,7 +385,7 @@ test("dogfood D2 P1 regression: docker bots survive a host-level extensionPath d
   // Host-level defaults WITH the repo gate (what codar start passes now).
   const emptyExtDir = join(root, "extensions");
   mkdirSync(emptyExtDir, { recursive: true });
-  // extensionsDir is the 7th ctor arg (docker mount source), not a
+  // extensionsDir is the 6th ctor arg (docker mount source), not a
   // SpawnOptions field.
   const bots = new BotManager(
     store, ledger, root,
@@ -411,7 +411,7 @@ test("dogfood D2 P1 regression: docker bots survive a host-level extensionPath d
         // opaque early-exit after a real container start.
         assert.ok(e.message.includes("codar-gate/codar-gate.ts"), e.message);
         assert.ok(e.message.includes("CODAR_EXTENSIONS_DIR"), e.message);
-        assert.ok(!e.message.includes("bare-process shims"), e.message);
+        assert.ok(!e.message.includes("bare-process shim"), e.message);
         return true;
       }
     );

@@ -479,14 +479,20 @@ function ActivityLine(props: {
   );
   if (busyTool !== undefined) {
     const tool = props.toolAt[busyTool]!;
+    const secs = Math.max(0, Math.round((props.now - tool.ts) / 1000));
     // Math.max: the 1s `now` ticker can lag a just-arrived tool event — a
-    // negative elapsed read as broken (dogfood D2 test).
-    return (
-      <div className="activityLine">
-        {props.t.runningTool(tool.name, Math.max(0, Math.round((props.now - tool.ts) / 1000)))}
-        <span className="dim"> · {props.botName(busyTool)}</span>
-      </div>
-    );
+    // negative elapsed read as broken (dogfood D2 test). The 300s cap is
+    // the SAME stale-settle guard the thinking line uses: toolAt clears
+    // only on SSE status events, so a settle during an SSE drop would
+    // otherwise tick forever (D2 R3 P3).
+    if (secs <= 300) {
+      return (
+        <div className="activityLine">
+          {props.t.runningTool(tool.name, secs)}
+          <span className="dim"> · {props.botName(busyTool)}</span>
+        </div>
+      );
+    }
   }
   const busyThinking = props.members.find(
     (m) => liveSince.current[m] !== undefined && (props.streaming[m] === undefined || props.streaming[m] === "")
@@ -495,9 +501,10 @@ function ActivityLine(props: {
     const since = liveSince.current[busyThinking]!;
     const secs = Math.max(0, Math.round((props.now - since) / 1000));
     // A turn that settled during an SSE drop leaves the slot live with no
-    // further events — cap the timer at the first-token timeout horizon so
-    // a stale "thinking … 40000s" line cannot masquerade as live truth
-    // (D2 R2 P3; heals on the next turn event).
+    // further events — cap the timer at the rpc idle horizon (300s; the
+    // server first-token guard is 180s) so a stale "thinking … 40000s"
+    // line cannot masquerade as live truth (D2 R2 P3; heals on the next
+    // turn event).
     if (secs <= 300) {
       return (
         <div className="activityLine">

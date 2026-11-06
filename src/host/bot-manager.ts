@@ -12,7 +12,7 @@
  */
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { RpcClient, type AgentEvent, type UiRequest } from "../driver/rpc-client.js";
 import type { BotRecord } from "./store.js";
@@ -21,7 +21,7 @@ import type { UsageLedger } from "./usage-ledger.js";
 import { botPiConfDir } from "./paths.js";
 import { buildSpawnConfig, materializePiConf, loadKeys, type BotSpawnConfig } from "./provider-config.js";
 import { ApiError } from "./http-error.js";
-import { buildDockerArgv, DEFAULT_SANDBOX_IMAGE } from "./sandbox.js";
+import { GATE_EXTENSION_ENTRY,  buildDockerArgv, DEFAULT_SANDBOX_IMAGE } from "./sandbox.js";
 import { paths } from "./paths.js";
 
 export type BotStatus = "stopped" | "starting" | "idle" | "working" | "crashed";
@@ -221,9 +221,8 @@ export class BotManager extends EventEmitter {
         // extensionsDir surfaces as an opaque "rpc child exited early" after
         // the container start — name it BEFORE spawning.
         {
-          const { existsSync: exists } = await import("node:fs");
-          const entry = join(this.extensionsDir, "codar-gate", "codar-gate.ts");
-          if (!exists(entry)) {
+          const entry = join(this.extensionsDir, GATE_EXTENSION_ENTRY);
+          if (!existsSync(entry)) {
             throw new Error(
               `docker bot needs the gate extension at ${entry} (mounted at /opt/codar-ext) — set CODAR_EXTENSIONS_DIR to a directory containing codar-gate/codar-gate.ts`
             );
@@ -242,7 +241,7 @@ export class BotManager extends EventEmitter {
           workDir: bot.workDir,
           piConfDir: cfg.piConfDir,
           extensionsDir: this.extensionsDir,
-          extensionEntry: "codar-gate/codar-gate.ts",
+          extensionEntry: GATE_EXTENSION_ENTRY,
           env: {
             ...cfg.env,
             PI_CODING_AGENT_DIR: "/state/pi-conf",

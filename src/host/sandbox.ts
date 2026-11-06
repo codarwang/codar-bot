@@ -20,10 +20,14 @@ export interface SandboxArgs {
   piConfDir: string;
   /** Host path of the extensions dir (contains codar-gate/). */
   extensionsDir: string;
-  /** Container path of the extension entry (relative to the mount). */
-  extensionEntry: string;
+  /** Container path of the extension entry (relative to the mount).
+   *  Defaults to GATE_EXTENSION_ENTRY; callers may omit it. */
+  extensionEntry?: string;
   env: Record<string, string>;
 }
+
+/** Single source for the in-container gate entry (drift hazard otherwise). */
+export const GATE_EXTENSION_ENTRY = "codar-gate/codar-gate.ts";
 
 export function buildDockerArgv(args: SandboxArgs): string[] {
   const argv = [
