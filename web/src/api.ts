@@ -100,6 +100,12 @@ export const put = (path: string, body: unknown): Promise<unknown> =>
     body: JSON.stringify(body),
   });
 
+export const patchRoom = (roomId: string, body: { members?: string[]; name?: string }): Promise<RoomRecord> =>
+  jsonFetch<RoomRecord>(`/api/rooms/${roomId}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
 export const patch = (path: string, body: unknown): Promise<unknown> =>
   jsonFetch<unknown>(path, {
     method: "PATCH",

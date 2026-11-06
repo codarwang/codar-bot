@@ -206,6 +206,21 @@ textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
   background: var(--warn-bg); color: var(--warn); flex-shrink: 0;
 }
 .pause-card.stop { background: var(--stop-bg); color: var(--stop); }
+.member-chips { display: flex; gap: 6px; align-items: center; overflow-x: auto; flex: 1; }
+.member-chip {
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  background: #f0f2f6; border-radius: 999px; padding: 1px 8px; font-size: 12px; flex-shrink: 0;
+}
+.member-chip .avatar { width: 16px; height: 16px; font-size: 10px; }
+.chip-x {
+  border: none; background: none; color: var(--dim); cursor: pointer; padding: 0 2px; font-size: 12px;
+}
+.chip-x:hover { color: var(--stop); }
+.member-add { display: inline-flex; gap: 4px; }
+.roomchip {
+  font-size: 11px; color: var(--accent); background: #eef1fe; border-radius: 6px;
+  padding: 0 5px; margin-left: 4px; white-space: nowrap;
+}
 .stoppedBanner {
   display: flex; align-items: center; gap: 10px; margin: 6px 16px 0; padding: 6px 12px;
   border-radius: var(--radius); background: var(--warn-bg); color: var(--warn);

@@ -354,6 +354,34 @@ export class HttpApi {
         this.send(res, 200, room);
         return;
       }
+      if (req.method === "PATCH" && id !== undefined && action === undefined) {
+        // Membership edit (dogfood D1): bots created AFTER a room had no way
+        // to ever join — Chief could promise "正式入房" and nothing could
+        // land it. members is the only mutable field; admin must stay a
+        // member; the room keeps at least one member.
+        const room = this.deps.store.room(id);
+        if (room === undefined) throw new ApiError(404, `no room ${id}`);
+        const body = (await this.readJson(req)) as { members?: unknown; name?: unknown };
+        if (body.members === undefined) throw new ApiError(400, "need {members: botId[]}");
+        if (!Array.isArray(body.members) || !body.members.every((m) => typeof m === "string")) {
+          throw new ApiError(400, "members must be botId[]");
+        }
+        const members = [...new Set(body.members as string[])];
+        if (members.length === 0) throw new ApiError(400, "a room needs at least one member");
+        for (const m of members) {
+          if (this.deps.store.bot(m) === undefined) throw new ApiError(404, `no bot ${m}`);
+        }
+        if (!members.includes(room.admin)) {
+          throw new ApiError(400, `admin must stay a member (admin=${room.admin})`);
+        }
+        const patch: Record<string, unknown> = { members };
+        if (typeof body.name === "string" && body.name.trim().length > 0) patch.name = body.name.trim();
+        const updated = this.deps.store.updateRoom(id, patch);
+        // New members see the full backlog on their first turn (watermark 0
+        // is the join default, room-engine already handles this).
+        this.send(res, 200, updated);
+        return;
+      }
       if (req.method === "POST" && id === undefined) {
         const body = (await this.readJson(req)) as Record<string, unknown>;
         const name = String(body["name"] ?? "").trim();

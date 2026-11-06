@@ -355,6 +355,15 @@ export function App(): JSX.Element {
     () => Object.values(works).filter((w) => w.roomId === roomId),
     [works, roomId]
   );
+  // Queued-handoff badge source (dogfood D1): a bot targeted by pending
+  // works LOOKS idle — the inbox must say "queued ×N" instead of silence.
+  const queuedFor = useMemo(() => {
+    const by: Record<string, number> = {};
+    for (const w of Object.values(works)) {
+      if (w.status === "pending" || w.status === "working") by[w.child] = (by[w.child] ?? 0) + 1;
+    }
+    return by;
+  }, [works]);
   const setDraft = useCallback((text: string): void => {
     setDrafts((prev) => ({ ...prev, [roomRef.current]: text }));
   }, []);
@@ -384,6 +393,7 @@ export function App(): JSX.Element {
           approvals={approvals}
           lastByRoom={lastByRoom}
           unread={unread}
+          queuedFor={queuedFor}
           roomId={roomId}
           onSelectRoom={setRoomId}
           onSelectBot={setDetailBotId}

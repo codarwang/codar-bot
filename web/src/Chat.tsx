@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { elapsed, money, timeStr, type Lang } from "./i18n";
-import { jsonFetch, post, put, type ApprovalEvent, type Budget4, type Overview, type RoomMessage, type RoomRecord, type TurnEvent } from "./api";
+import { jsonFetch, patchRoom, post, put, type ApprovalEvent, type Budget4, type Overview, type RoomMessage, type RoomRecord, type TurnEvent } from "./api";
 import type { WorkView } from "./App";
 
 type T = ReturnType<typeof import("./i18n").makeT>;
@@ -104,8 +104,12 @@ export function Chat(p: Props): JSX.Element {
     if (at < 0) return [];
     const frag = p.draft.slice(at + 1);
     if (frag.includes(" ")) return [];
-    return bots.filter((b) => b.name.toLowerCase().includes(frag.toLowerCase())).slice(0, 9);
-  }, [p.draft, bots]);
+    // MEMBERS ONLY (dogfood D1): the popup used to suggest every bot in the
+    // store — @-ing a non-member silently routes to nobody.
+    return bots
+      .filter((b) => roomMembers.includes(b.id) && b.name.toLowerCase().includes(frag.toLowerCase()))
+      .slice(0, 9);
+  }, [p.draft, bots, roomMembers]);
   useEffect(() => {
     setMentionOpen(mentionMatches.length > 0);
   }, [mentionMatches.length]);
@@ -151,8 +155,22 @@ export function Chat(p: Props): JSX.Element {
             ))}
           <header className="chat-head">
             <span className="chat-title">◎ {room.name}</span>
-            <span className="dim">{room.members.map((m) => botName(m)).join(", ")}</span>
             <span className="dim">· {t.turnMode}: {room.mode}</span>
+            <span className="member-chips">
+              {room.members.map((m) => (
+                <span key={m} className="member-chip" title={modelOf(m)}>
+                  <Avatar name={botName(m)} id={m} /> {botName(m)}
+                  {m !== room.admin && (
+                    <button
+                      className="chip-x"
+                      title={t.removeMember}
+                      onClick={() => { void patchRoom(room.id, { members: room.members.filter((x) => x !== m) }).then(() => p.onRefresh()).catch((e: unknown) => setError(String(e))); }}
+                    >×</button>
+                  )}
+                </span>
+              ))}
+              <MembersAdd t={t} room={room} overview={p.overview} botName={botName} onDone={p.onRefresh} onError={(e) => setError(e)} />
+            </span>
           </header>
 
           <div className="stream" ref={scrollRef}>
@@ -451,4 +469,33 @@ function TurnStrip(props: {
 
 export function moneyLabel(lang: Lang, micros: number): string {
   return money(lang, micros);
+}
+
+function MembersAdd(props: {
+  t: T;
+  room: RoomRecord;
+  overview: Overview | null;
+  botName: (id?: string) => string;
+  onDone: () => Promise<void>;
+  onError: (e: string) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const candidates = (props.overview?.bots ?? []).filter((b) => !props.room.members.includes(b.id));
+  if (candidates.length === 0) return <span />;
+  const add = (id: string): void => {
+    void patchRoom(props.room.id, { members: [...props.room.members, id] })
+      .then(() => props.onDone())
+      .catch((e: unknown) => props.onError(String(e)));
+  };
+  if (!open) {
+    return <button className="mini" onClick={() => setOpen(true)}>+ {props.t.addMember}</button>;
+  }
+  return (
+    <span className="member-add">
+      {candidates.map((b) => (
+        <button key={b.id} className="mini" onClick={() => { add(b.id); setOpen(false); }}>{props.botName(b.id)}</button>
+      ))}
+      <button className="mini ghost" onClick={() => setOpen(false)}>×</button>
+    </span>
+  );
 }

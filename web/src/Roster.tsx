@@ -5,7 +5,7 @@
  */
 import { useState } from "react";
 import type { Lang } from "./i18n";
-import { jsonFetch, post, type ApprovalEvent, type Overview, type RoomMessage } from "./api";
+import { jsonFetch, post, type ApprovalEvent, type Overview, type RoomMessage, type RoomRecord } from "./api";
 
 type T = ReturnType<typeof import("./i18n").makeT>;
 
@@ -18,6 +18,7 @@ interface Props {
   approvals: Array<ApprovalEvent & { resolved?: boolean }>;
   lastByRoom: Record<string, RoomMessage>;
   unread: Record<string, number>;
+  queuedFor: Record<string, number>;
   roomId: string;
   onSelectRoom: (id: string) => void;
   onSelectBot: (id: string) => void;
@@ -45,6 +46,8 @@ export function Roster(p: Props): JSX.Element {
     if (st === "stopped") return { cls: "stopped", label: t.stopped };
     return { cls: "idle", label: st };
   };
+  const roomsOf = (botId: string): RoomRecord[] =>
+    (overview?.rooms ?? []).filter((r) => r.members.includes(botId));
 
   const act = async (botId: string, action: "start" | "stop" | "delete"): Promise<void> => {
     setBusy(botId + action);
@@ -137,6 +140,12 @@ export function Roster(p: Props): JSX.Element {
                 {p.failures[b.id] !== undefined
                   ? p.failures[b.id]!.slice(0, 60)
                   : (p.statuses[b.id] === "working" ? t.working : `${b.model.provider}/${b.model.modelId}`).slice(0, 60)}
+                {(p.queuedFor[b.id] ?? 0) > 0 && p.statuses[b.id] !== "working" && (
+                  <span className="badge badge-working">⌛ {t.queuedWorks(p.queuedFor[b.id]!)}</span>
+                )}
+                {roomsOf(b.id).map((r) => (
+                  <span key={r.id} className="roomchip">◎ {r.name}</span>
+                ))}
               </div>
             </div>
             <div className="row-acts" onClick={(e) => e.stopPropagation()}>

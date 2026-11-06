@@ -174,6 +174,15 @@ export class RoomEngine extends EventEmitter {
       { kind: "user" } // @all is user/admin-only (§5); bot senders arrive M2-B
     );
 
+    // A mention that resolved to nobody (non-member @) must not be a silent
+    // no-op — the user asked a bot that will never answer (dogfood D1: the
+    // composer used to suggest every bot, and the send looked broken).
+    const nonMembers = mentions.botIds.filter((id) => !room.members.includes(id));
+    if (nonMembers.length > 0) {
+      const names = nonMembers.map((id) => this.botName(id)).join(", ");
+      this.systemLine(roomId, rt, `@${names} is not a member of this room — the message is logged but triggers no turn (add them via the room header)`);
+    }
+
     const spoke: string[] = [];
     for (const botId of decision.responders) {
       if (this.store.bot(botId) === undefined) continue;
