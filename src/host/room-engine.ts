@@ -174,13 +174,17 @@ export class RoomEngine extends EventEmitter {
       { kind: "user" } // @all is user/admin-only (§5); bot senders arrive M2-B
     );
 
-    // A mention that resolved to nobody (non-member @) must not be a silent
-    // no-op — the user asked a bot that will never answer (dogfood D1: the
-    // composer used to suggest every bot, and the send looked broken).
-    const nonMembers = mentions.botIds.filter((id) => !room.members.includes(id));
+    // A mention that resolved to nobody must not be a silent no-op (dogfood
+    // D1). NOTE: parseMentions is fed room.members, so member-less mentions
+    // resolve to NOTHING in mentions.botIds — detecting them needs a SECOND
+    // parse against ALL bots (typos and a@b.com still stay silent because
+    // they match no bot name).
+    const allBots = this.store.state.bots.map((b) => ({ id: b.id, name: b.name }));
+    const anyMentions = parseMentions(text, allBots);
+    const nonMembers = anyMentions.botIds.filter((id) => !room.members.includes(id));
     if (nonMembers.length > 0) {
       const names = nonMembers.map((id) => this.botName(id)).join(", ");
-      this.systemLine(roomId, rt, `@${names} is not a member of this room — the message is logged but triggers no turn (add them via the room header)`);
+      this.systemLine(roomId, rt, `@${names} is not a member of this room — not pinged (add them via the room header)`);
     }
 
     const spoke: string[] = [];
@@ -485,9 +489,17 @@ export class RoomEngine extends EventEmitter {
     const lastSeq = tail.length > 0 ? (tail[tail.length - 1]!.seq as number) : 0;
     // Restart semantics: every CURRENT member's pi session already contains
     // everything injected before the host restart, so their watermarks start
-    // at the disk tail (no re-injection/duplication). Members joining later
-    // (or a fresh room) fall back to 0 in renderContext — full backlog.
-    const watermark = new Map<string, number>(room.members.map((m) => [m, lastSeq]));
+    // at the disk tail (no re-injection/duplication). EXCEPT members the
+    // members-PATCH marked zeroMark: they were ADDED after that tail (e.g.
+    // while no runtime existed) and must see the full backlog — the mark is
+    // consumed here so it applies exactly once (dogfood D1 review P3).
+    const zero = new Set(room.zeroMark ?? []);
+    const watermark = new Map<string, number>(
+      room.members.map((m) => [m, zero.has(m) ? 0 : lastSeq])
+    );
+    if (zero.size > 0) {
+      try { this.store.updateRoom(roomId, { zeroMark: [] }); } catch { /* shutting down */ }
+    }
     rt = {
       lastSeq,
       rrPointer: 0,

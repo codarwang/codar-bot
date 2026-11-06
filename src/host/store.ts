@@ -69,6 +69,10 @@ export interface RoomRecord {
   /** When the current pause started (ISO). Durable month stamp for the
    *  §5.3 next-month auto-resume — survives host restarts (M2-C R4 P3). */
   pausedAt?: string | null;
+  /** Members that must start at watermark 0 (full backlog) when the room
+   *  runtime first spins up — consumed by RoomEngine.runtime(). Written by
+   *  the members PATCH for newly added bots (dogfood D1 review P3). */
+  zeroMark?: string[];
 }
 
 export interface WorkRecord {
@@ -311,6 +315,13 @@ export class Store {
 
   removeBot(id: string): void {
     this.doc.bots = this.doc.bots.filter((b) => b.id !== id);
+    this.persist();
+  }
+
+  /** Remove a room (messages.jsonl stays on disk; M2 drops only truly
+   *  empty rooms via the bot-DELETE ghost sweep). */
+  removeRoom(id: string): void {
+    this.state.rooms = this.state.rooms.filter((r) => r.id !== id);
     this.persist();
   }
 

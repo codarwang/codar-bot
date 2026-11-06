@@ -338,6 +338,23 @@ export class HttpApi {
         await this.deps.bots.stop(id);
         this.deps.store.removeBot(id);
         this.deps.bots.forget(id); // drop the runtime bookkeeping entry too
+        // Ghost sweep (dogfood D1 review P3): a deleted bot left stale ids
+        // in room members — round-robin/admin-default could select the
+        // ghost and silently answer nobody. Remove it everywhere; promote
+        // the first surviving member when it administered a room; a room
+        // left empty is dropped (its messages.jsonl stays on disk).
+        for (const room of [...this.deps.store.state.rooms]) {
+          if (!room.members.includes(id)) continue;
+          const members = room.members.filter((m) => m !== id);
+          if (members.length === 0) {
+            this.deps.store.removeRoom(room.id);
+            continue;
+          }
+          this.deps.store.updateRoom(room.id, {
+            members,
+            admin: room.admin === id ? members[0]! : room.admin,
+          });
+        }
         this.send(res, 200, { ok: true });
         return;
       }
@@ -357,28 +374,49 @@ export class HttpApi {
       if (req.method === "PATCH" && id !== undefined && action === undefined) {
         // Membership edit (dogfood D1): bots created AFTER a room had no way
         // to ever join — Chief could promise "正式入房" and nothing could
-        // land it. members is the only mutable field; admin must stay a
-        // member; the room keeps at least one member.
+        // land it. members/name editable; admin must stay a member; the
+        // room keeps at least one member; names stay unique.
         const room = this.deps.store.room(id);
         if (room === undefined) throw new ApiError(404, `no room ${id}`);
         const body = (await this.readJson(req)) as { members?: unknown; name?: unknown };
-        if (body.members === undefined) throw new ApiError(400, "need {members: botId[]}");
-        if (!Array.isArray(body.members) || !body.members.every((m) => typeof m === "string")) {
-          throw new ApiError(400, "members must be botId[]");
+        if (body.members === undefined && body.name === undefined) {
+          throw new ApiError(400, "need {members: botId[]} and/or {name}");
         }
-        const members = [...new Set(body.members as string[])];
-        if (members.length === 0) throw new ApiError(400, "a room needs at least one member");
-        for (const m of members) {
-          if (this.deps.store.bot(m) === undefined) throw new ApiError(404, `no bot ${m}`);
+        const patch: Record<string, unknown> = {};
+        if (body.members !== undefined) {
+          if (!Array.isArray(body.members) || !body.members.every((m) => typeof m === "string")) {
+            throw new ApiError(400, "members must be botId[]");
+          }
+          const members = [...new Set(body.members as string[])];
+          if (members.length === 0) throw new ApiError(400, "a room needs at least one member");
+          for (const m of members) {
+            if (this.deps.store.bot(m) === undefined) throw new ApiError(404, `no bot ${m}`);
+          }
+          if (!members.includes(room.admin)) {
+            throw new ApiError(400, `admin must stay a member (admin=${room.admin})`);
+          }
+          patch.members = members;
         }
-        if (!members.includes(room.admin)) {
-          throw new ApiError(400, `admin must stay a member (admin=${room.admin})`);
+        if (body.name !== undefined) {
+          const name = String(body.name).trim();
+          if (name.length === 0) throw new ApiError(400, "name must be non-empty");
+          if (this.deps.store.state.rooms.some((r) => r.id !== id && r.name === name)) {
+            throw new ApiError(409, `room name "${name}" already in use`);
+          }
+          patch.name = name;
         }
-        const patch: Record<string, unknown> = { members };
-        if (typeof body.name === "string" && body.name.trim().length > 0) patch.name = body.name.trim();
+        // Newly ADDED members start at watermark 0 (full backlog) — the
+        // runtime seeds watermarks at the disk TAIL on lazy creation, which
+        // is right for restarted members but starves fresh ones when no
+        // runtime exists yet (D1 review P3). zeroMark survives until the
+        // runtime first spins up.
+        const prevMembers = room.members ?? [];
+        const added = ((patch.members as string[] | undefined) ?? prevMembers)
+          .filter((m) => !prevMembers.includes(m));
+        if (added.length > 0) {
+          patch.zeroMark = [...new Set([...(room.zeroMark ?? []), ...added])];
+        }
         const updated = this.deps.store.updateRoom(id, patch);
-        // New members see the full backlog on their first turn (watermark 0
-        // is the join default, room-engine already handles this).
         this.send(res, 200, updated);
         return;
       }

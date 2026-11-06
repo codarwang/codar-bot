@@ -346,3 +346,62 @@ test("provider-error turn: NO phantom reply — stale text never lands in the ro
     await r.dispose();
   }
 });
+
+test("dogfood D1: @-ing a NON-MEMBER lands the honest line instead of silence", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    const outsider = r.store.addBot({
+      name: "Outsider", role: "", chief: false,
+      model: { provider: "fake", modelId: "f", thinkingLevel: "low" },
+      workDir: join(r.root, "work"), sessionPath: null,
+      sandbox: { mode: "host-not-isolated" }, budget: defaultBudget(),
+    });
+    // A typo'd / unknown @token stays silent; a REAL bot that is not a
+    // member gets the line. The old check was dead code (mentions were
+    // parsed against members only) — this pins the second parse against
+    // all store bots.
+    await r.rooms.userSay(r.roomId, "@NoSuchBot and @Outsider hello");
+    const hist = r.rooms.history(r.roomId);
+    assert.ok(hist.some((m) => m.from.kind === "system" && m.text.includes("@Outsider is not a member")), "honest line fires for the real non-member");
+    assert.ok(
+      !hist.some((m) => m.from.kind === "system" && m.text.includes("NoSuchBot")),
+      "unknown tokens stay silent (the user's own line may quote them)"
+    );
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("dogfood D1: a member PATCHed in while no runtime exists sees the full backlog (zeroMark)", async () => {
+  const r = await rig();
+  try {
+    // Backlog lands BEFORE the newcomer joins and before any runtime exists.
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    await r.bots.start(r.chiefId);
+    await r.rooms.userSay(r.roomId, "Reply with the single word ALPHA.");
+    await r.bots.stop(r.chiefId);
+    const newcomer = r.store.addBot({
+      name: "Newcomer", role: "", chief: false,
+      model: { provider: "fake", modelId: "f", thinkingLevel: "low" },
+      workDir: join(r.root, "work"), sessionPath: null,
+      sandbox: { mode: "host-not-isolated" }, budget: defaultBudget(),
+    });
+    const room = r.store.room(r.roomId)!;
+    r.store.updateRoom(r.roomId, { members: [...room.members, newcomer.id], zeroMark: [newcomer.id] });
+    // Fresh engine = host restarted with no runtime: the newcomer's first
+    // rendered context must contain the backlog (watermark 0), while the
+    // restart-preset member (chief) resumes from the tail.
+    const fresh = new RoomEngine(r.store, r.bots, join(r.root, "rooms")); // SAME log dir
+    const newcomerCtx = fresh.previewContext(r.roomId, newcomer.id);
+    assert.match(newcomerCtx, /ALPHA/, "newcomer sees the backlog");
+    const chiefCtx = fresh.previewContext(r.roomId, r.chiefId);
+    assert.ok(!chiefCtx.includes("ALPHA"), "restarted member stays at the tail (no re-injection)");
+    // zeroMark is consumed exactly once.
+    assert.deepEqual(r.store.room(r.roomId)!.zeroMark ?? [], []);
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});

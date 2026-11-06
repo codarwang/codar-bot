@@ -77,10 +77,26 @@ export function App(): JSX.Element {
     }
   }, []);
 
+  const refreshWorks = useCallback(async () => {
+    // UNFILTERED: the queued badge must see works in never-visited rooms
+    // (the per-room hydrate only covers the selected room — D1 review P3).
+    try {
+      const ws = await jsonFetch<WorkRecord[]>("/api/works");
+      const now = Date.now();
+      setWorks((prev) => {
+        const next = { ...prev };
+        for (const w of ws) next[w.id] = { ...w, oneLiner: next[w.id]?.oneLiner, firstSeen: next[w.id]?.firstSeen ?? now };
+        return next;
+      });
+    } catch {
+      /* works are supplementary */
+    }
+  }, []);
   useEffect(() => {
     void refreshOverview();
     void refreshBudget();
-  }, [refreshOverview, refreshBudget]);
+    void refreshWorks();
+  }, [refreshOverview, refreshBudget, refreshWorks]);
 
   // Hydrate every room's preview tail once the overview lands (the inbox
   // metaphor needs per-room last lines, not just the selected room's).
@@ -165,6 +181,7 @@ export function App(): JSX.Element {
       // saw, and refresh the snapshot surfaces (status/budget/works).
       void refreshOverview();
       void refreshBudget();
+      void refreshWorks();
       const cur = roomRef.current;
       if (cur !== "") {
         void jsonFetch<WorkRecord[]>(`/api/works?room=${cur}`)

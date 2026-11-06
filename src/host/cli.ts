@@ -44,7 +44,11 @@ async function main(): Promise<void> {
       extensionsDir: process.env.CODAR_EXTENSIONS_DIR,
     });
     const port = await host.start();
+    const webNote = existsSync(join(repoWebDist, "index.html"))
+      ? `serving web UI from ${repoWebDist}`
+      : "no web UI built (API-only) — build web/ or provide dataRoot/web-dist";
     console.log(`codar host listening on http://127.0.0.1:${port} (pid ${process.pid})`);
+    console.log(webNote);
     let closing = false;
     const shutdown = async (signal: string) => {
       if (closing) return;
