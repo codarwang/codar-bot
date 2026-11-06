@@ -7,6 +7,8 @@
  * `status` from other processes.
  */
 import { readFileSync, existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Host } from "./host.js";
 import { paths } from "./paths.js";
 import { initTeam } from "./init.js";
@@ -25,8 +27,17 @@ async function main(): Promise<void> {
   const cmd = process.argv[2];
   if (cmd === "start") {
     const argvTail = process.env.CODAR_PI_ARGV; // e.g. the fake-pi fixture for offline runs
+    // Repo-run web UI: serve the checkout's web/dist when it exists (the
+    // dogfood flow boots from the repo); dataRoot/web-dist stays the
+    // packaged fallback. Without either the host is honestly API-only.
+    const repoWebDist = resolve(
+      dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+      "web",
+      "dist"
+    );
     const host = Host.boot({
       dataRoot: process.env.CODAR_BOT_HOME,
+      webDir: existsSync(join(repoWebDist, "index.html")) ? repoWebDist : undefined,
       bin: process.env.CODAR_PI_BIN,
       argv: argvTail !== undefined && argvTail !== "" ? [argvTail] : undefined,
       extensionPath: process.env.CODAR_EXT_PATH,
