@@ -86,7 +86,16 @@ export function App(): JSX.Element {
       const now = Date.now();
       setWorks((prev) => {
         const next = { ...prev };
-        for (const w of ws) next[w.id] = { ...w, oneLiner: next[w.id]?.oneLiner, firstSeen: next[w.id]?.firstSeen ?? now };
+        for (const w of ws) {
+          next[w.id] = {
+            ...w,
+            oneLiner: next[w.id]?.oneLiner,
+            firstSeen: next[w.id]?.firstSeen ?? now,
+            endedAt: w.status === "done" || w.status === "failed" || w.status === "rejected"
+              ? next[w.id]?.endedAt ?? now
+              : undefined,
+          };
+        }
         return next;
       });
     } catch {
@@ -154,7 +163,16 @@ export function App(): JSX.Element {
         const now = Date.now();
         setWorks((prev) => {
           const next = { ...prev };
-          for (const w of ws) next[w.id] = { ...w, oneLiner: next[w.id]?.oneLiner, firstSeen: next[w.id]?.firstSeen ?? now };
+          for (const w of ws) {
+          next[w.id] = {
+            ...w,
+            oneLiner: next[w.id]?.oneLiner,
+            firstSeen: next[w.id]?.firstSeen ?? now,
+            endedAt: w.status === "done" || w.status === "failed" || w.status === "rejected"
+              ? next[w.id]?.endedAt ?? now
+              : undefined,
+          };
+        }
           return next;
         });
       })
@@ -190,7 +208,16 @@ export function App(): JSX.Element {
             const now = Date.now();
             setWorks((prev) => {
               const next = { ...prev };
-              for (const w of ws) next[w.id] = { ...w, oneLiner: next[w.id]?.oneLiner, firstSeen: next[w.id]?.firstSeen ?? now };
+              for (const w of ws) {
+          next[w.id] = {
+            ...w,
+            oneLiner: next[w.id]?.oneLiner,
+            firstSeen: next[w.id]?.firstSeen ?? now,
+            endedAt: w.status === "done" || w.status === "failed" || w.status === "rejected"
+              ? next[w.id]?.endedAt ?? now
+              : undefined,
+          };
+        }
               return next;
             });
           })
