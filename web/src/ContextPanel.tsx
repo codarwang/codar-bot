@@ -276,7 +276,10 @@ function WorkLog(props: {
     }
     return () => { cancelled = true; };
   }, [props.botId, props.status]);
-  const toolSecs = props.tool !== undefined ? Math.max(0, Math.round((now - props.tool.ts) / 1000)) : 0;
+  // Same 300s cap for the tool timer: a stale toolAt from a settle during
+  // an SSE drop ticks forever otherwise.
+  const toolLive = props.tool !== undefined && (now - props.tool.ts) / 1000 <= 300;
+  const toolSecs = toolLive ? Math.max(0, Math.round((now - props.tool!.ts) / 1000)) : 0;
   // Turn age: since the bot went working (status prop flips) — we do not
   // have turn slots here, so track the working-since moment locally.
   const workingSince = useRef<number | null>(null);
@@ -286,12 +289,16 @@ function WorkLog(props: {
     props.status === "working" && props.tool === undefined && props.streaming === "" && workingSince.current !== null
       ? Math.max(0, Math.round((now - workingSince.current) / 1000))
       : 0;
+  // Same 300s stale-settle cap as the ActivityLine: a settle that happened
+  // during an SSE drop leaves the status stuck at "working" in the overview
+  // until the next event — the timer must stop pretending to be live truth.
+  const noTokenLive = noTokenSecs > 0 && noTokenSecs <= 300;
   const live =
-    props.tool !== undefined
-      ? `#${props.tool.step} ⚙ ${props.tool.name} … ${toolSecs}s${props.tool.args !== "" ? ` · ${props.tool.args}` : ""}`
+    toolLive
+      ? `#${props.tool!.step} ⚙ ${props.tool!.name} … ${toolSecs}s${props.tool!.args !== "" ? ` · ${props.tool!.args}` : ""}`
       : props.streaming !== ""
         ? t.liveOutput
-        : noTokenSecs > 0
+        : noTokenLive
           ? `${t.noFirstToken(noTokenSecs)}${noTokenSecs >= 30 ? ` · ${t.possiblyStuck}` : ""}`
           : null;
   return (
@@ -307,7 +314,7 @@ function WorkLog(props: {
         <span className="dim">{t.resetSessionHint}</span>
       </div>
       {live !== null ? (
-        <div className={`worklog-live ${noTokenSecs >= 30 ? "stuck" : ""}`}>
+        <div className={`worklog-live ${noTokenLive && noTokenSecs >= 30 ? "stuck" : ""}`}>
           {live}
           {props.streaming !== "" && (
             <div className="worklog-stream">{props.streaming.slice(-240)}▍</div>
