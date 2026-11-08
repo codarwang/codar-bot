@@ -18,14 +18,14 @@ export type GateAction = "allow" | "deny" | "gate";
 
 /** v0 supported matchers. `tool` matches the tool name only; the bash
  *  matchers test the bash tool's `command` input. */
-export type GateMatch = "tool" | "bash_prefix" | "bash_keyword";
+export type GateMatch = "tool" | "bash_prefix" | "bash_keyword" | "path_prefix";
 
 export interface GateRule {
   readonly id: string;
   /** Exact tool name, or "*" for any tool. */
   readonly toolName: string;
   readonly match: GateMatch;
-  /** Required for bash_prefix (literal prefix) and bash_keyword (regex source). */
+  /** Required for bash_prefix/bash_keyword (command) and path_prefix (file path). */
   readonly pattern?: string;
   readonly action: GateAction;
   readonly description?: string;
@@ -182,7 +182,7 @@ function isGateAction(value: unknown): value is GateAction {
 }
 
 function isGateMatch(value: unknown): value is GateMatch {
-  return value === "tool" || value === "bash_prefix" || value === "bash_keyword";
+  return value === "tool" || value === "bash_prefix" || value === "bash_keyword" || value === "path_prefix";
 }
 
 function isBoundedString(value: unknown, max: number): value is string {
@@ -232,11 +232,11 @@ export function parseRulesFile(text: string): ParseRulesResult {
       };
     }
     if (!isGateMatch(rule["match"])) {
-      return { ok: false, error: `rules[${i}].match must be tool|bash_prefix|bash_keyword` };
+      return { ok: false, error: `rules[${i}].match must be tool|bash_prefix|bash_keyword|path_prefix` };
     }
     const match = rule["match"] as GateMatch;
     let pattern: string | undefined;
-    if (match === "bash_prefix" || match === "bash_keyword") {
+    if (match === "bash_prefix" || match === "bash_keyword" || match === "path_prefix") {
       if (!isBoundedString(rule["pattern"], RULE_PATTERN_MAX)) {
         return {
           ok: false,
@@ -298,12 +298,26 @@ function bashCommandOf(input: unknown): string | undefined {
   return undefined;
 }
 
+/** write/edit tool path input — the path_prefix matcher's test subject.
+ *  pi 1.5.0 write/edit carry the target as `path` (verified against the
+ *  tool schemas; `file_path` is the fallback for forward compat). */
+function filePathOf(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null) return undefined;
+  const rec = input as Record<string, unknown>;
+  const p = rec["path"] ?? rec["file_path"];
+  return typeof p === "string" ? p : undefined;
+}
+
 function ruleMatches(rule: GateRule, toolName: string, input: unknown): boolean {
   if (rule.toolName !== "*" && rule.toolName !== toolName) {
     return false;
   }
   if (rule.match === "tool") {
     return true;
+  }
+  if (rule.match === "path_prefix") {
+    const path = filePathOf(input);
+    return path !== undefined && path.startsWith(rule.pattern ?? "");
   }
   // bash matchers apply to the bash tool's command input only.
   const command = toolName === "bash" ? bashCommandOf(input) : undefined;

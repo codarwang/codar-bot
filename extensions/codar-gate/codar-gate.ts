@@ -28,7 +28,7 @@
  * running WITHOUT the gate): the factory installs the deny-all policy and
  * logs the load error (see rules.ts invalidPolicy()).
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
@@ -77,6 +77,35 @@ function loadPolicyFromEnv(): GatePolicy {
   return built.policy;
 }
 
+/** M3.1a mtime hot reload: check the rules file's mtime on every tool_call;
+ *  a change re-reads and re-parses (one readFileSync + parse — negligible).
+ *  Implementation notes (M3 arch v0.8 §1.4):
+ *  - lastMtime only updates on SUCCESS (a bad write never latches deny-all).
+ *  - macOS Docker Desktop virtiofs may delay mtime propagation ≤1s — one
+ *    call's worth of staleness is acceptable.
+ *  - The host guarantees the file exists at spawn time (including an empty
+ *    {rules:[]}). */
+function reloadIfStale(state: { path: string | null; lastMtime: number; policy: GatePolicy }): GatePolicy {
+  if (state.path === null) return state.policy;
+  let mtime: number;
+  try {
+    mtime = statSync(state.path).mtimeMs;
+  } catch {
+    return state.policy; // stat failure: keep the current policy (fail-safe, not fail-closed — a transient FS error should not lock deny-all)
+  }
+  if (mtime === state.lastMtime) return state.policy;
+  const reloaded = loadPolicyFromEnv();
+  if (reloaded.source === "invalid") {
+    console.error(`[codar-gate] hot reload FAILED, keeping previous policy: ${reloaded.loadError ?? "unknown"}`);
+    state.lastMtime = mtime; // do NOT retry every call on a permanently bad file
+    return state.policy;
+  }
+  state.policy = reloaded;
+  state.lastMtime = mtime;
+  console.error(`[codar-gate] hot reload ok: ${reloaded.rules.length} rules`);
+  return reloaded;
+}
+
 /** Per-toolCallId memo for bridge_echo: the dialog already ran in the
  *  tool_call handler; execute() only reports it (an earlier internal project ask_user pattern). */
 interface BridgeEchoMemo {
@@ -89,7 +118,15 @@ const bridgeEchoAnswers = new Map<string, BridgeEchoMemo>();
 
 export default function codarGate(pi: ExtensionAPI): void {
   const loaded = loadPolicyFromEnv();
-  const policy = loaded;
+  const rulesPath = process.env[RULES_ENV] ?? null;
+  const rulesState = {
+    path: rulesPath !== "" ? rulesPath : null,
+    lastMtime: 0,
+    policy: loaded,
+  };
+  if (rulesState.path !== null) {
+    try { rulesState.lastMtime = statSync(rulesState.path).mtimeMs; } catch { /* stat at boot: worst case we reload on first call */ }
+  }
   if (loaded.source === "invalid") {
     console.error(`[codar-gate] RULES LOAD FAILED, denying all tool calls: ${loaded.loadError ?? "unknown"}`);
   }
@@ -104,7 +141,7 @@ export default function codarGate(pi: ExtensionAPI): void {
       ? auditEnv
       : join(process.cwd(), DEFAULT_AUDIT_FILENAME);
   const audit: AuditSink = createAuditSink(auditPath);
-  console.error(`[codar-gate] active source=${policy.source} rules=${policy.rules.length} audit=${auditPath}`);
+  console.error(`[codar-gate] active source=${loaded.source} rules=${loaded.rules.length} audit=${auditPath}`);
 
   // message_bot acceptances: toolCallId → the host's workId (the execute
   // body reports it so the model can correlate wake lines — bridge_echo pattern).
@@ -234,6 +271,7 @@ export default function codarGate(pi: ExtensionAPI): void {
         return undefined;
       }
 
+      const policy = reloadIfStale(rulesState);
       const decision = evaluateSafe(policy, event.toolName, event.input);
       // Audit BEFORE acting on the call — the causal record must exist even
       // when the gate blocks or the process dies mid-approval.

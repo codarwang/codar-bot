@@ -2,6 +2,8 @@
  * codar-gate rule engine unit tests — offline, deterministic (PRD §7).
  */
 import { test } from "node:test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import {
   buildPolicy,
@@ -129,4 +131,60 @@ test("rules-file validation bounds and shapes", () => {
     parseRulesFile('{"rules":[{"id":"x","toolName":"bash","match":"bash_keyword","pattern":"(","action":"gate"}]}').ok,
     false
   );
+});
+
+test("M3.1a: path_prefix matcher — write/edit path matched, bash/unrelated not", () => {
+  const file = JSON.stringify({
+    rules: [
+      { id: "r1", toolName: "write", match: "path_prefix", pattern: "/home/bot/shared/", action: "allow" },
+    ],
+  });
+  const built = buildPolicy({ rulesText: file });
+  assert.ok(built.ok && built.policy !== undefined);
+
+  const hit = evaluate(built.policy, "write", { path: "/home/bot/shared/report.md", content: "x" });
+  assert.equal(hit.action, "allow");
+  assert.equal(hit.ruleId, "r1");
+
+  const miss = evaluate(built.policy, "write", { path: "/etc/passwd", content: "x" });
+  assert.notEqual(miss.ruleId, "r1"); // falls through to preset write-gate
+
+  // edit tool with file_path field name (forward compat) — the rule targets
+  // write specifically, so edit falls to preset; a * rule would match both.
+  const hit2 = evaluate(built.policy, "edit", { file_path: "/home/bot/shared/x.ts" });
+  assert.equal(hit2.ruleId, "preset:edit-gate"); // preset (toolName mismatch)
+
+  // bash tool never hits a path_prefix rule
+  const bash = evaluate(built.policy, "bash", { command: "cat /home/bot/shared/x" });
+  assert.notEqual(bash.ruleId, "r1");
+});
+
+test("M3.1a: path_prefix with deny — a global never-rule blocks writes to a protected path", () => {
+  const file = JSON.stringify({
+    rules: [
+      { id: "never-keys", toolName: "*", match: "path_prefix", pattern: "/etc/ssh/", action: "deny" },
+    ],
+  });
+  const built = buildPolicy({ rulesText: file });
+  assert.ok(built.ok);
+  const hit = evaluate(built.policy!, "write", { path: "/etc/ssh/authorized_keys" });
+  assert.equal(hit.action, "deny");
+  assert.equal(hit.ruleId, "never-keys");
+});
+
+test("M3.1a: mtime hot reload — rules file mtime detectable for the gate's reloadIfStale", async () => {
+  const { writeFileSync, statSync, utimesSync } = await import("node:fs");
+  const rulesPath = join(tmpdir(), `codar-gate-mtime-${Date.now()}.json`);
+  writeFileSync(rulesPath, JSON.stringify({ rules: [] }));
+  const m1 = statSync(rulesPath).mtimeMs;
+  // Simulate the host writing new rules (tmp+rename: new file, new mtime)
+  const tmp = `${rulesPath}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ rules: [
+    { id: "w1", toolName: "write", match: "tool", action: "allow" },
+  ]}));
+  const { renameSync, rmSync } = await import("node:fs");
+  renameSync(tmp, rulesPath);
+  const m2 = statSync(rulesPath).mtimeMs;
+  assert.ok(m2 >= m1, "rename produces a detectable mtime change");
+  rmSync(rulesPath, { force: true });
 });
