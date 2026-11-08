@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { makeT, type Lang } from "./i18n";
+import { initToken } from "./api";
 import {
   jsonFetch,
   post,
@@ -26,6 +27,7 @@ export interface WorkView extends WorkRecord {
 }
 
 export function App(): JSX.Element {
+  initToken(); // M3.4b: ?token=<key> → sessionStorage on first load
   const [lang, setLang] = useState<Lang>(() =>
     (localStorage.getItem("codar.lang") as Lang | null) ?? "zh"
   );

@@ -75,8 +75,35 @@ export interface MemoryFile {
   content: string;
 }
 
+/** M3.4b Bearer token: ?token=<key> on first load → sessionStorage →
+ *  Authorization header on every /api/* request. EventSource cannot send
+ *  headers, so the token also rides as ?token= for SSE connections. */
+function authHeaders(): Record<string, string> {
+  const token = sessionStorage.getItem("codar.token");
+  return token !== null ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function withToken(path: string): string {
+  const token = sessionStorage.getItem("codar.token");
+  if (token === null || !path.startsWith("/api/")) return path;
+  return path.includes("?") ? `${path}&token=${encodeURIComponent(token)}` : `${path}?token=${encodeURIComponent(token)}`;
+}
+
+export function initToken(): void {
+  const url = new URL(window.location.href);
+  const t = url.searchParams.get("token");
+  if (t !== null) {
+    sessionStorage.setItem("codar.token", t);
+    url.searchParams.delete("token");
+    window.history.replaceState({}, "", url.toString());
+  }
+}
+
 export const jsonFetch = async <T,>(path: string, init?: RequestInit): Promise<T> => {
-  const res = await fetch(path, init);
+  const res = await fetch(withToken(path), {
+    ...init,
+    headers: { ...init?.headers, ...authHeaders() },
+  });
   const body = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) {
     // The status rides on the Error so callers can distinguish "gone"

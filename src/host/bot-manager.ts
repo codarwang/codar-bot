@@ -617,6 +617,15 @@ export class BotManager extends EventEmitter {
       const botId = this.botIdOf(client);
       const approvalId = `apr_${randomUUID().slice(0, 8)}`;
       this.parkedApprovals.set(approvalId, { client, reqId: req.id });
+      // M3 §1.7 approval timeout: 5 minutes parked → resolve denied + audit
+      // timeout_deny (the bot's tool_call unblocks; the card settles).
+      setTimeout(() => {
+        if (!this.parkedApprovals.has(approvalId)) return;
+        this.parkedApprovals.delete(approvalId);
+        client.replyUi({ type: "extension_ui_response", id: req.id, confirmed: false });
+        this.audit("approval", { approvalId, botId, resolvedAs: "timeout_deny" });
+        this.emit("approvalResolved", { id: approvalId, confirmed: false, resolvedAs: "timeout_deny" });
+      }, 5 * 60_000).unref?.();
       this.emit("approval", {
         id: approvalId,
         botId,
@@ -664,6 +673,7 @@ export class BotManager extends EventEmitter {
       }
       this.audit("approval", {
         approvalId: id,
+        toolCallId: (confirmed.ruleSpec as { toolCallId?: string } | undefined)?.toolCallId ?? parked.reqId,
         botId: approvalBot,
         resolvedAs: confirmed.decision,
         ...(createdRuleId !== "" ? { ruleSpec: createdRuleId } : {}),
@@ -674,6 +684,7 @@ export class BotManager extends EventEmitter {
     parked.client.replyUi({ type: "extension_ui_response", id: parked.reqId, confirmed });
     this.audit("approval", {
       approvalId: id,
+      toolCallId: parked.reqId,
       botId: this.botIdOf(parked.client),
       resolvedAs: confirmed ? "allow_once" : "deny",
     });

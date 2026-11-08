@@ -14,8 +14,7 @@ codar-bot 是独立社区项目，与 earendil-works / pi **无关联**。
 
 ```bash
 npm i -g codar-bot @earendil-works/pi-coding-agent
-codar doctor    # 环境预检：node / pi / docker / 数据目录
-codar init      # 交互式配置：选 provider、输入 API key
+codar init --provider zai-coding-cn --model glm-5.3  # + 通过 stdin 输入 key
 codar start     # 启动 → 浏览器打开 http://127.0.0.1:7600
 ```
 
@@ -75,24 +74,12 @@ codar init --provider zai-coding-cn --model glm-5.3
 
 ### 审批规则
 
-审批规则控制哪些工具调用需要你批准。通过 Web UI 的
-`设置 → 规则` 配置，或 `PUT /api/rules`。
+审批规则控制哪些工具调用需要你批准。通过 `PUT /api/rules` 配置。
 
 ### 沙箱
 
 默认审批门控保障安全（与 Claude Code / Cursor 同级安全模型）。已装
 Docker 的用户可选开启 per-Bot 容器隔离（更强）。
-
-## Docker Compose 自托管
-
-```bash
-# .env
-CODAR_BOT_HOST_DIR=/home/you/.codar-bot
-CODAR_API_TOKEN=你的安全 token
-
-docker compose up
-# → 打开 http://your-server:7600/?token=你的安全-token
-```
 
 ## 文档
 

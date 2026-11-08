@@ -30,11 +30,11 @@ async function main(): Promise<void> {
     // Repo-run web UI: serve the checkout's web/dist when it exists (the
     // dogfood flow boots from the repo); dataRoot/web-dist stays the
     // packaged fallback. Without either the host is honestly API-only.
-    const repoWebDist = resolve(
-      dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-      "web",
-      "dist"
-    );
+    const pkgRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+    // npm installs ship dist/web/ inside the package; repo runs have web/dist/.
+    const repoWebDist = existsSync(resolve(pkgRoot, "dist", "web", "index.html"))
+      ? resolve(pkgRoot, "dist", "web")
+      : resolve(pkgRoot, "web", "dist");
     // Repo-run defaults (dogfood D2 P1): without CODAR_EXT_PATH the gate
     // never loaded — bots ran extension-less (no message_bot channel, no
     // approval gate, no audit), and Chief improvised dispatch over the raw

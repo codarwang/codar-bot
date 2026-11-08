@@ -209,6 +209,8 @@ function validateRulesOrThrow(rules: GateRuleJson[]): void {
     const actions = ["allow", "deny", "gate"];
     if (!actions.includes(r.action))
       throw new RulesValidationError(`rules[${i}].action must be ${actions.join("|")}`);
+    if (r.description !== undefined && typeof r.description !== "string")
+      throw new RulesValidationError(`rules[${i}].description must be a string`);
   }
 }
 

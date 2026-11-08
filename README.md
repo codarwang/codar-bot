@@ -14,8 +14,7 @@ per-bot budgets, tool-call approvals, and an append-only audit trail.
 
 ```bash
 npm i -g codar-bot @earendil-works/pi-coding-agent
-codar doctor    # environment preflight: node / pi / docker / data dir
-codar init      # interactive: pick a provider, enter your API key
+codar init --provider zai-coding-cn --model glm-5.3  # + set key
 codar start     # start the host → open http://127.0.0.1:7600
 ```
 
@@ -76,24 +75,13 @@ bots stop automatically, with a broadcast to the room.
 ### Rules (approval shortcuts)
 
 Approval rules control which tool calls need your permission. Configure
-via `Settings → Rules` in the Web UI, or `PUT /api/rules`.
+via `PUT /api/rules`.
 
 ### Sandbox
 
 By default, bots run as local processes protected by the approval gate
 (same security model as Claude Code / Cursor). If Docker is installed,
 you can optionally enable per-bot sandboxing for stronger isolation.
-
-## Self-hosting with Docker Compose
-
-```bash
-# .env
-CODAR_BOT_HOST_DIR=/home/you/.codar-bot
-CODAR_API_TOKEN=your-secure-token
-
-docker compose up
-# → open http://your-server:7600/?token=your-secure-token
-```
 
 ## Documentation
 

@@ -93,7 +93,7 @@ export class AuditQuery {
   }
 
   query(opts: AuditQueryOptions): AuditResult {
-    const limit = Number.isFinite(opts.limit) ? Math.min(opts.limit!, MAX_LIMIT) : DEFAULT_LIMIT;
+    const limit = Number.isFinite(opts.limit) ? Math.max(1, Math.min(opts.limit!, MAX_LIMIT)) : DEFAULT_LIMIT;
     let skipped = 0;
 
     // 1. Collect from host audit
@@ -118,12 +118,12 @@ export class AuditQuery {
 
     // Host entries first (they have approvalId for dedup)
     for (const e of hostEntries) {
-      if (typeof e.approvalId === "string") seenApprovals.add(e.approvalId);
+      if (typeof e.toolCallId === "string" || typeof e.approvalId === "string") seenApprovals.add(String(e.toolCallId ?? e.approvalId));
       merged.push(e);
     }
     // Gate entries: skip if the host already has this approval
     for (const e of gateEntries) {
-      if (typeof e.approvalId === "string" && seenApprovals.has(e.approvalId)) continue;
+      if ((typeof e.toolCallId === "string" || typeof e.approvalId === "string") && seenApprovals.has(String(e.toolCallId ?? e.approvalId))) continue;
       merged.push(e);
     }
 

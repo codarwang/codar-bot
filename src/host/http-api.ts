@@ -182,8 +182,11 @@ export class HttpApi {
     // exempt — the ?token= bootstrap page must load without auth.
     const token = process.env.CODAR_API_TOKEN;
     if (token !== undefined && token !== "" && parts[0] === "api") {
+      // M3.4b: Authorization header OR ?token= query (EventSource cannot
+      // send headers — the SSE client falls back to the query param).
       const auth = req.headers.authorization;
-      if (auth !== `Bearer ${token}`) {
+      const query = url.searchParams.get("token");
+      if (auth !== `Bearer ${token}` && query !== token) {
         res.writeHead(401, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "unauthorized" }));
         return;
