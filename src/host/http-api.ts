@@ -548,10 +548,18 @@ export class HttpApi {
       // M2-E §3.5 简版: Allow once / Deny. The third button (Always allow →
       // rule persistence) is an M3 placeholder in the UI.
       if (req.method === "POST" && id !== undefined && action === "resolve") {
-        const body = (await this.readJson(req)) as { confirmed?: unknown };
-        if (typeof body.confirmed !== "boolean") throw new ApiError(400, "need {confirmed: boolean}");
-        if (!this.deps.bots.resolveApproval(id, body.confirmed)) {
-          throw new ApiError(404, `no parked approval ${id}`);
+        const body = (await this.readJson(req)) as { confirmed?: unknown; decision?: unknown; ruleSpec?: unknown };
+        // M2 simple: {confirmed: boolean}. M3.1c: {decision, ruleSpec?}.
+        if (typeof body.confirmed === "boolean") {
+          if (!this.deps.bots.resolveApproval(id, body.confirmed)) {
+            throw new ApiError(404, `no parked approval ${id}`);
+          }
+        } else if (typeof body.decision === "string" && ["allow_once", "deny", "allow_rule"].includes(body.decision)) {
+          if (!this.deps.bots.resolveApproval(id, { decision: body.decision as "allow_once" | "deny" | "allow_rule", ruleSpec: body.ruleSpec })) {
+            throw new ApiError(404, `no parked approval ${id}`);
+          }
+        } else {
+          throw new ApiError(400, "need {confirmed: boolean} or {decision: allow_once|deny|allow_rule}");
         }
         this.send(res, 200, { ok: true });
         return;

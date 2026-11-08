@@ -620,7 +620,7 @@ export class BotManager extends EventEmitter {
   }
 
   /** Resolve a parked approval from the Web approval card (§3.5 M2 简版). */
-  resolveApproval(id: string, confirmed: boolean): boolean {
+  resolveApproval(id: string, confirmed: boolean | { decision: "allow_once" | "deny" | "allow_rule"; ruleSpec?: unknown }): boolean {
     const parked = this.parkedApprovals.get(id);
     if (parked === undefined) return false;
     // Liveness belt: if the parking client is no longer ANY bot's live
@@ -631,6 +631,21 @@ export class BotManager extends EventEmitter {
     if (!stillLive) {
       this.emit("approvalResolved", { id, confirmed: false, stale: true });
       return false;
+    }
+    // M3.1c: structured decision from the keyboard shortcuts — allow_rule
+    // creates a global rule then confirms (the gate's mtime hot reload
+    // makes it live on the next tool_call).
+    if (typeof confirmed === "object" && confirmed !== null) {
+      if (confirmed.decision === "allow_rule" && this.rules !== null && confirmed.ruleSpec !== undefined) {
+        try {
+          this.rules.createShortcutRule("global", null, confirmed.ruleSpec as never);
+          this.audit("rule_created", { approvalId: id, ruleSpec: JSON.stringify(confirmed.ruleSpec).slice(0, 200) });
+        } catch { /* rule creation failure must not block the approval */ }
+      }
+      const isAllowed = confirmed.decision !== "deny";
+      parked.client.replyUi({ type: "extension_ui_response", id: parked.reqId, confirmed: isAllowed });
+      this.emit("approvalResolved", { id, confirmed: isAllowed, resolvedAs: confirmed.decision });
+      return true;
     }
     parked.client.replyUi({ type: "extension_ui_response", id: parked.reqId, confirmed });
     this.emit("approvalResolved", { id, confirmed });
