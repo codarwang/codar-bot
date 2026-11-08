@@ -4,7 +4,7 @@
   "bin": {
     "codar": "bin/codar.cjs"
   },
-  "description": "A home for your bot team on the pi runtime — self-hosted, bring-your-own-model, chat-style multi-bot collaboration with budgets, approvals, and an audit trail.",
+  "description": "A home for your bot team on the pi runtime \u2014 self-hosted, bring-your-own-model, chat-style multi-bot collaboration with budgets, approvals, and an audit trail.",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
@@ -22,6 +22,10 @@
   ],
   "files": [
     "bin/codar.cjs",
+    "dist/host/",
+    "dist/driver/",
+    "extensions/codar-gate/",
+    "compose/",
     "README.md",
     "LICENSE"
   ],
@@ -35,7 +39,8 @@
     "host:fake": "CODAR_PI_BIN=node CODAR_PI_ARGV=$(pwd)/tests/fixtures/fake-pi.mjs CODAR_BOT_HOME=$(pwd)/.fake-home tsx src/host/cli.ts",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
-    "web:deploy": "npm --prefix web run build && mkdir -p \"${CODAR_BOT_HOME:-$HOME/.codar-bot}/web-dist\" && cp -r web/dist/* \"${CODAR_BOT_HOME:-$HOME/.codar-bot}/web-dist/\""
+    "web:deploy": "npm --prefix web run build && mkdir -p \"${CODAR_BOT_HOME:-$HOME/.codar-bot}/web-dist\" && cp -r web/dist/* \"${CODAR_BOT_HOME:-$HOME/.codar-bot}/web-dist/\"",
+    "build": "npm run web:build && tsc -p tsconfig.build.json"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.5.0",
@@ -44,5 +49,11 @@
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   },
-  "private": false
+  "private": false,
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0"
+  },
+  "engines": {
+    "node": ">=22.19"
+  }
 }

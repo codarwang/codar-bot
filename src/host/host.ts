@@ -2,8 +2,9 @@
  * Host assembly — store + ledger + bot-manager + HTTP API (architecture §3).
  * `codar start` boots this; PID/port land in host.json for CLI discovery.
  */
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Store } from "./store.js";
 import { UsageLedger } from "./usage-ledger.js";
 import { BotManager } from "./bot-manager.js";
@@ -61,6 +62,27 @@ export class Host {
     }
     for (const dir of [p.root, p.piConfRoot, p.memoryRoot, p.logs]) {
       mkdirSync(dir, { recursive: true });
+    }
+    // M3.4a: ensure the gate extension exists in dataRoot.
+    {
+      const dataExtDir = join(p.root, "extensions", "codar-gate");
+      const gateFile = join(dataExtDir, "codar-gate.ts");
+      if (!existsSync(gateFile)) {
+        const thisDir = dirname(fileURLToPath(import.meta.url));
+        const candidates = [
+          resolve(thisDir, "..", "..", "extensions", "codar-gate"),
+          resolve(thisDir, "..", "..", "..", "extensions", "codar-gate"),
+        ];
+        for (const src of candidates) {
+          try {
+            mkdirSync(dataExtDir, { recursive: true });
+            for (const f of ["codar-gate.ts", "rules.ts", "audit.ts"]) {
+              writeFileSync(join(dataExtDir, f), readFileSync(join(src, f)));
+            }
+            break;
+          } catch { /* try next */ }
+        }
+      }
     }
     const store = Store.openExclusive(p.state, { create: true });
     const ledger = new UsageLedger(p.ledger);
