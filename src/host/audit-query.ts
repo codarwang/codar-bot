@@ -112,20 +112,14 @@ export class AuditQuery {
       gateEntries.push(...entries.map((e) => ({ ...e, botId: (e.botId as string | undefined) ?? botId })));
     }
 
-    // 3. Merge + dedupe: same approvalId in host and gate → keep host
-    const seenApprovals = new Set<string>();
     const merged: Array<AuditEntry & { _source: string }> = [];
-
-    // Host entries first (they have approvalId for dedup)
-    for (const e of hostEntries) {
-      if (typeof e.toolCallId === "string" || typeof e.approvalId === "string") seenApprovals.add(String(e.toolCallId ?? e.approvalId));
-      merged.push(e);
-    }
-    // Gate entries: skip if the host already has this approval
-    for (const e of gateEntries) {
-      if ((typeof e.toolCallId === "string" || typeof e.approvalId === "string") && seenApprovals.has(String(e.toolCallId ?? e.approvalId))) continue;
-      merged.push(e);
-    }
+    // 3. Merge (P2-6 known limitation: the host approval rows carry the
+    // ui-request randomUUID while gate rows carry event.toolCallId — two
+    // different IDs for the same approval; cross-source dedup by key is
+    // not implementable without a protocol change. Each approval appears
+    // as two rows: host outcome + gate detail. ?kind=approval returns
+    // only the host rows — the decision log.)
+    merged.push(...hostEntries, ...gateEntries);
 
     // 4. Filter
     let filtered = merged;

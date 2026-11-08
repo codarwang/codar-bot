@@ -32,16 +32,17 @@ test("M3.3: host + gate-audit merged, ts descending", () => {
   } finally { r.dispose(); }
 });
 
-test("M3.3: approval dedup — host wins, gate copy skipped", () => {
+test("M3.3: approval rows from both sources appear (dedup removed — P2-6 known limitation)", () => {
   const r = rig();
   try {
     appendFileSync(join(r.root, "audit.jsonl"),
       JSON.stringify({ ts: "2026-11-08T01:00:00Z", kind: "approval", approvalId: "apr_1", resolvedAs: "allow_once" }) + "\n");
     appendFileSync(join(r.root, "pi-conf", "bot_a", "gate-audit.jsonl"),
-      JSON.stringify({ ts: "2026-11-08T01:00:01Z", kind: "approval", approvalId: "apr_1", approved: true }) + "\n");
+      JSON.stringify({ ts: "2026-11-08T01:00:01Z", kind: "approval", toolCallId: "call_1", approved: true }) + "\n");
+    // Both rows appear — cross-source dedup was removed (the host carries
+    // ui-request uuid, the gate carries event.toolCallId — different keys).
     const result = r.q.query({ kind: "approval" });
-    assert.equal(result.entries.length, 1, "gate copy deduped");
-    assert.equal(result.entries[0]!.resolvedAs, "allow_once");
+    assert.equal(result.entries.length, 2, "host outcome + gate detail both visible");
   } finally { r.dispose(); }
 });
 

@@ -30,7 +30,7 @@ codar start     # start the host → open http://127.0.0.1:7600
 | **Bot team** | Each bot has its own model, role, memory, and budget |
 | **Group chat** | Message the room or @-mention specific bots |
 | **Task dispatch** | Bots delegate work to each other via message_bot |
-| **Approval gate** | Every write operation requires your approval (Allow / Deny / Always allow) |
+| **Approval gate** | Every write operation requires your approval (Allow / Deny) |
 | **Budget** | Token / cost / turn / wall-time limits per bot and per room, with auto-stop |
 | **Memory** | Bots remember past conversations (three scopes: bot / room / team) |
 | **Audit** | Full audit trail of every tool call and approval |

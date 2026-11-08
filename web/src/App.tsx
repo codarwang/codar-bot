@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { makeT, type Lang } from "./i18n";
-import { initToken } from "./api";
+import { initToken, withToken } from "./api";
 import {
   jsonFetch,
   post,
@@ -186,7 +186,7 @@ export function App(): JSX.Element {
   const roomRef = useRef(roomId);
   roomRef.current = roomId;
   useEffect(() => {
-    const es = new EventSource("/api/events");
+    const es = new EventSource(withToken("/api/events"));
     let everConnected = false;
     const on = (name: string, fn: (d: unknown) => void): void => {
       es.addEventListener(name, (e) => {

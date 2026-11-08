@@ -83,7 +83,7 @@ function authHeaders(): Record<string, string> {
   return token !== null ? { Authorization: `Bearer ${token}` } : {};
 }
 
-function withToken(path: string): string {
+export function withToken(path: string): string {
   const token = sessionStorage.getItem("codar.token");
   if (token === null || !path.startsWith("/api/")) return path;
   return path.includes("?") ? `${path}&token=${encodeURIComponent(token)}` : `${path}?token=${encodeURIComponent(token)}`;
