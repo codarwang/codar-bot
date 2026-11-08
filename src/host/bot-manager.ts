@@ -207,7 +207,7 @@ export class BotManager extends EventEmitter {
       mkdirSync(bot.workDir, { recursive: true });
       let bin = spawn.bin;
       let argvPrefix = spawn.sandboxArgv;
-      let childEnv: Record<string, string> = { ...spawn.env, ...cfg.env, PI_CODAR_AGENT_DIR: cfg.piConfDir };
+      let childEnv: Record<string, string> = { ...spawn.env, ...cfg.env, PI_CODING_AGENT_DIR: cfg.piConfDir };
       // M3.1b: inject the rules path HERE — before the docker/bare branch.
       // Bare mode: flows into RpcClient opts.env (what spawn reads).
       // Docker mode: the -e spread inside buildDockerArgv reads this key.
