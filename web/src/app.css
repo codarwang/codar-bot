@@ -311,3 +311,12 @@ button.mini.danger { color: var(--stop); }
 .worklog-role { width: 64px; flex-shrink: 0; text-align: right; }
 .worklog-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mem-edit { margin-top: 6px; }
+
+/* M3.3 audit timeline (§4): filters + timeline + export. */
+.audit-filters { display: flex; gap: 4px; margin-bottom: 6px; }
+.audit-filters select { flex: 1; min-width: 0; font-size: 12px; padding: 1px 4px; }
+.audit-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
+.audit-row { display: flex; gap: 6px; font-size: 12px; align-items: baseline; white-space: nowrap; }
+.audit-kind { color: var(--accent); flex-shrink: 0; }
+.audit-detail { overflow: hidden; text-overflow: ellipsis; }
+.audit-foot { display: flex; gap: 8px; margin-top: 6px; align-items: center; }

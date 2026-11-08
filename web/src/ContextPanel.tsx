@@ -4,6 +4,7 @@
  * honesty badge, session, memory management — PRD 2.3).
  */
 import { useEffect, useRef, useState } from "react";
+import { AuditPanel } from "./AuditPanel";
 import { money, type Lang } from "./i18n";
 import { jsonFetch, post, put, type BudgetRow, type Overview, type RoomRecord, type TurnEvent } from "./api";
 import type { WorkView } from "./App";
@@ -91,6 +92,8 @@ export function ContextPanel(p: Props): JSX.Element {
           <BudgetMeter key={m} t={t} lang={p.lang} row={rowFor("bot", m)} label={botName(m)} />
         ))}
       </section>
+
+      <AuditPanel t={t} overview={p.overview} />
     </aside>
   );
 }

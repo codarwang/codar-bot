@@ -41,7 +41,7 @@
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",
     "web:deploy": "npm --prefix web run build && mkdir -p \"${CODAR_BOT_HOME:-$HOME/.codar-bot}/web-dist\" && cp -r web/dist/* \"${CODAR_BOT_HOME:-$HOME/.codar-bot}/web-dist/\"",
-    "build": "npm run web:build && tsc -p tsconfig.build.json && cp -r web/dist dist/web"
+    "build": "npm run web:build && tsc -p tsconfig.build.json && rm -rf dist/web && cp -r web/dist dist/web"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.5.0",
