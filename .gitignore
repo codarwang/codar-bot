@@ -11,3 +11,5 @@ web/node_modules/
 web/dist/
 .fake-home/
 dist/
+extensions/codar-gate/*.js
+extensions/codar-gate/*.js.map

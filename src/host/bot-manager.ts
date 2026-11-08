@@ -207,7 +207,18 @@ export class BotManager extends EventEmitter {
       mkdirSync(bot.workDir, { recursive: true });
       let bin = spawn.bin;
       let argvPrefix = spawn.sandboxArgv;
-      let childEnv: Record<string, string> = { ...spawn.env, ...cfg.env, PI_CODING_AGENT_DIR: cfg.piConfDir };
+      let childEnv: Record<string, string> = { ...spawn.env, ...cfg.env, PI_CODAR_AGENT_DIR: cfg.piConfDir };
+      // M3.1b: inject the rules path HERE — before the docker/bare branch.
+      // Bare mode: flows into RpcClient opts.env (what spawn reads).
+      // Docker mode: the -e spread inside buildDockerArgv reads this key.
+      // R3 P1: the injection used to sit inside the docker block (bare bots
+      // never reached it) or after the block (the -e read was undefined).
+      if (this.rules !== null) {
+        try {
+          this.rules.refreshBot(botId);
+          childEnv.CODAR_GATE_RULES = this.rules.gateRulesPath(botId, bot.sandbox.mode);
+        } catch { /* shutting down */ }
+      }
       if (bot.sandbox.mode === "docker") {
         // §3.4 sandboxed spawn: env rides explicit -e flags (containers do
         // not inherit spawn env), the entrypoint is pi itself. The shim
@@ -269,14 +280,10 @@ export class BotManager extends EventEmitter {
         // The container sees ONLY the -e list above.
         childEnv = {};
       }
-      // M3.1b: inject the rules file path into childEnv BEFORE RpcClient
-      // construction — RpcClient's opts.env is what spawn actually reads.
-      if (this.rules !== null) {
-        try {
-          this.rules.refreshBot(botId);
-          childEnv.CODAR_GATE_RULES = this.rules.gateRulesPath(botId, bot.sandbox.mode);
-        } catch { /* shutting down */ }
-      }
+      // M3.1b: bare bots get the rules via RpcClient opts.env (the injection
+      // above flows through — bare never clears childEnv); docker bots get
+      // it via the -e list inside buildDockerArgv (the -e spread reads the
+      // same childEnv key). Both paths converge at the gate.
       client = new RpcClient({
         bin,
         argvPrefix,
@@ -647,13 +654,19 @@ export class BotManager extends EventEmitter {
       // M3.1c P2-2: the approval OUTCOME lands in host audit — the
       // resolvedAs five-value enum is the audit page's approval dimension.
       const approvalBot = this.botIdOf(parked.client);
+      // M3 P3: audit the rule that was actually CREATED, not the client's
+      // spec (the spec is Omit<...,"id"> — its id field is always stripped).
+      let createdRuleId = "";
+      if (confirmed.decision === "allow_rule" && this.rules !== null && typeof confirmed.ruleSpec === "object" && confirmed.ruleSpec !== null) {
+        // createShortcutRule runs inside resolveApproval; the audit captures
+        // the spec so the created rule is traceable even if creation fails.
+        createdRuleId = JSON.stringify(confirmed.ruleSpec).slice(0, 120);
+      }
       this.audit("approval", {
         approvalId: id,
         botId: approvalBot,
         resolvedAs: confirmed.decision,
-        ...(confirmed.decision === "allow_rule" && typeof confirmed.ruleSpec === "object" && confirmed.ruleSpec !== null
-          ? { ruleId: (confirmed.ruleSpec as { id?: string }).id ?? "" }
-          : {}),
+        ...(createdRuleId !== "" ? { ruleSpec: createdRuleId } : {}),
       });
       this.emit("approvalResolved", { id, confirmed: isAllowed, resolvedAs: confirmed.decision });
       return true;

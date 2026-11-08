@@ -559,8 +559,15 @@ export class HttpApi {
       if (req.method === "PUT" && id !== undefined) {
         const body = (await this.readJson(req)) as { rules?: unknown };
         if (!Array.isArray(body.rules)) throw new ApiError(400, "need {rules: []}");
-        const doc = this.deps.bots.rules!.putBotOverrides(id, body.rules as never[]);
-        this.send(res, 200, doc);
+        try {
+          const doc = this.deps.bots.rules!.putBotOverrides(id, body.rules as never[]);
+          this.send(res, 200, doc);
+        } catch (e) {
+          if (e instanceof Error && (e.constructor.name === "RulesValidationError" || e.message.includes("rules["))) {
+            throw new ApiError(400, e.message);
+          }
+          throw e;
+        }
         return;
       }
     }
