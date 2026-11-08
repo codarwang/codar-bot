@@ -13,6 +13,7 @@
  */
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, openSync, closeSync, writeSync } from "node:fs";
+import { parseRulesFile } from "../../extensions/codar-gate/rules.js";
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Store } from "./store.js";
@@ -34,8 +35,8 @@ interface RulesDoc {
 const TIER: Record<GateRuleJson["action"], number> = { deny: 0, allow: 1, gate: 2 };
 const SPECIFICITY: Record<GateRuleJson["match"], number> = {
   path_prefix: 3,
-  bash_keyword: 2,
-  tool: 1,
+  tool: 2,
+  bash_keyword: 1,
   bash_prefix: 0,
 };
 
@@ -92,6 +93,7 @@ export class RulesManager {
 
   /** Full-replace global rules (optimistic lock on version). */
   putGlobal(rules: GateRuleJson[], expectedVersion: number): RulesDoc {
+    validateRulesOrThrow(rules);
     const cur = this.global();
     if (cur.version !== expectedVersion) {
       throw new RulesVersionConflict(cur.version, expectedVersion);
@@ -104,6 +106,7 @@ export class RulesManager {
 
   /** Full-replace per-bot override rules. */
   putBotOverrides(botId: string, rules: GateRuleJson[]): RulesDoc {
+    validateRulesOrThrow(rules);
     const path = join(this.perBotDir, `${botId}.json`);
     const cur = readDoc(path);
     const doc: RulesDoc = { version: cur.version + 1, rules };
@@ -138,11 +141,12 @@ export class RulesManager {
 
   /** CODAR_GATE_RULES env value for a bot (bare and docker differ). */
   gateRulesPath(botId: string, sandboxMode: string): string {
-    const rel = join(botId, "rules.d", "rules.json");
     if (sandboxMode === "docker") {
-      return `/state/pi-conf/${rel}`;
+      // The mount maps pi-conf/<botId>/ → /state/pi-conf/ — the container
+      // path has NO botId segment (the mount root already scopes it).
+      return "/state/pi-conf/rules.d/rules.json";
     }
-    return join(this.piConfRoot, rel);
+    return join(this.piConfRoot, botId, "rules.d", "rules.json");
   }
 
   /** Create a rule from a keyboard shortcut (approval card [1]/[2]/[3]). */
@@ -173,6 +177,18 @@ export class RulesManager {
     });
   }
 }
+
+/** Validate rules with the gate's own parser — a malformed rule rejected
+ *  HERE (clear 400 to the caller) instead of in the GATE (deny-all for
+ *  every bot on next spawn, M3 review P2-4). */
+function validateRulesOrThrow(rules: GateRuleJson[]): void {
+  const result = parseRulesFile(JSON.stringify({ rules }));
+  if (!result.ok) {
+    throw new RulesValidationError(result.error);
+  }
+}
+
+export class RulesValidationError extends Error {}
 
 export class RulesVersionConflict extends Error {
   constructor(public readonly currentVersion: number, public readonly expectedVersion: number) {

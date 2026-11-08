@@ -11,4 +11,3 @@ web/node_modules/
 web/dist/
 .fake-home/
 dist/
-tsconfig.build.json

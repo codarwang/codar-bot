@@ -81,19 +81,19 @@ export class AuditQuery {
 
   /** All gate-audit files across bots (filesystem enumeration — includes
    *  deleted bots whose pi-conf dirs still exist). */
-  private gateAuditPaths(): string[] {
-    const paths: string[] = [];
-    if (!existsSync(this.piConfRoot)) return paths;
+  private gateAuditPaths(): Array<{ path: string; botId: string }> {
+    const out: Array<{ path: string; botId: string }> = [];
+    if (!existsSync(this.piConfRoot)) return out;
     for (const entry of readdirSync(this.piConfRoot, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const p = join(this.piConfRoot, entry.name, "gate-audit.jsonl");
-      if (existsSync(p)) paths.push(p);
+      if (existsSync(p)) out.push({ path: p, botId: entry.name });
     }
-    return paths;
+    return out;
   }
 
   query(opts: AuditQueryOptions): AuditResult {
-    const limit = Math.min(opts.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
+    const limit = Number.isFinite(opts.limit) ? Math.min(opts.limit!, MAX_LIMIT) : DEFAULT_LIMIT;
     let skipped = 0;
 
     // 1. Collect from host audit
@@ -103,11 +103,13 @@ export class AuditQuery {
 
     // 2. Collect from all gate-audit files
     const gateEntries: Array<AuditEntry & { _source: string }> = [];
-    for (const path of this.gateAuditPaths()) {
+    for (const { path, botId } of this.gateAuditPaths()) {
       const lines = tailLines(path);
       const entries = parseEntries(lines, "gate");
       skipped += lines.length - entries.length;
-      gateEntries.push(...entries);
+      // P2-3: gate-audit entries have no botId field — stamp it from the
+      // pi-conf/<botId>/ directory name so ?bot= actually filters them.
+      gateEntries.push(...entries.map((e) => ({ ...e, botId: (e.botId as string | undefined) ?? botId })));
     }
 
     // 3. Merge + dedupe: same approvalId in host and gate → keep host
@@ -128,16 +130,9 @@ export class AuditQuery {
     // 4. Filter
     let filtered = merged;
     if (opts.bot !== undefined) {
-      // Host audit has botId; gate-audit has botId in the path context
       filtered = filtered.filter((e) => {
         const eBot = (e.botId as string | undefined) ?? (e.bot_id as string | undefined);
-        if (eBot !== undefined) return eBot === opts.bot;
-        // Gate-audit entries without a botId: match by _source path
-        if (e._source === "gate") {
-          const dir = e._source; // We need the actual bot dir, simplified for now
-          void dir;
-        }
-        return false;
+        return eBot === opts.bot;
       });
     }
     if (opts.kind !== undefined) {

@@ -112,6 +112,6 @@ test("M3.1b: gateRulesPath — bare vs docker paths", () => {
     assert.ok(bare.startsWith(r.root), "bare = host path");
     assert.ok(bare.includes("rules.d/rules.json"));
     const docker = r.rm.gateRulesPath(r.botId, "docker");
-    assert.equal(docker, `/state/pi-conf/${r.botId}/rules.d/rules.json`);
+    assert.equal(docker, "/state/pi-conf/rules.d/rules.json");
   } finally { r.dispose(); }
 });

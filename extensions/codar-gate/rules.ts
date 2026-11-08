@@ -316,6 +316,9 @@ function ruleMatches(rule: GateRule, toolName: string, input: unknown): boolean 
     return true;
   }
   if (rule.match === "path_prefix") {
+    // P3-6: path_prefix applies ONLY to write/edit — a bash tool carrying
+    // a path argument must not be matched by a path rule.
+    if (toolName !== "write" && toolName !== "edit") return false;
     const path = filePathOf(input);
     return path !== undefined && path.startsWith(rule.pattern ?? "");
   }

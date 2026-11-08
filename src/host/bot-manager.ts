@@ -259,6 +259,9 @@ export class BotManager extends EventEmitter {
             // The gate audit path MUST cross the boundary — without it the
             // gate falls back to a bot-writable cwd file (S4 §3.4 note).
             CODAR_GATE_AUDIT: "/state/pi-conf/gate-audit.jsonl",
+            ...(childEnv.CODAR_GATE_RULES !== undefined
+              ? { CODAR_GATE_RULES: childEnv.CODAR_GATE_RULES }
+              : {}),
           },
         });
         // The docker CLI process still inherits the host env (RpcClient
@@ -644,10 +647,18 @@ export class BotManager extends EventEmitter {
       }
       const isAllowed = confirmed.decision !== "deny";
       parked.client.replyUi({ type: "extension_ui_response", id: parked.reqId, confirmed: isAllowed });
+      // M3.1c P2-2: the approval OUTCOME lands in host audit — the
+      // resolvedAs five-value enum is the audit page's approval dimension.
+      this.audit("approval", {
+        approvalId: id,
+        resolvedAs: confirmed.decision,
+        ...(confirmed.decision === "allow_rule" ? { ruleSpec: String(confirmed.ruleSpec ?? "").slice(0, 120) } : {}),
+      });
       this.emit("approvalResolved", { id, confirmed: isAllowed, resolvedAs: confirmed.decision });
       return true;
     }
     parked.client.replyUi({ type: "extension_ui_response", id: parked.reqId, confirmed });
+    this.audit("approval", { approvalId: id, resolvedAs: confirmed ? "allow_once" : "deny" });
     this.emit("approvalResolved", { id, confirmed });
     return true;
   }
