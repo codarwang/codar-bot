@@ -22,6 +22,7 @@ import { botPiConfDir } from "./paths.js";
 import { buildSpawnConfig, materializePiConf, loadKeys, type BotSpawnConfig } from "./provider-config.js";
 import { ApiError } from "./http-error.js";
 import { GATE_EXTENSION_ENTRY,  buildDockerArgv, DEFAULT_SANDBOX_IMAGE } from "./sandbox.js";
+import type { RulesManager } from "./rules-manager.js";
 import { paths } from "./paths.js";
 
 export type BotStatus = "stopped" | "starting" | "idle" | "working" | "crashed";
@@ -95,6 +96,9 @@ export class BotManager extends EventEmitter {
   /** Parked confirm requests awaiting a Web approval card (M2-E §3.5);
    *  host id → { client, child-side request id }. */
   private readonly parkedApprovals = new Map<string, { client: RpcClient; reqId: string }>();
+
+  /** M3.1b: rules manager (late-bound by Host to avoid a ctor cycle). */
+  rules: RulesManager | null = null;
   private readonly spawnDefaults: SpawnOptions;
 
   constructor(
@@ -313,6 +317,17 @@ export class BotManager extends EventEmitter {
         } catch {
           /* stat race — the switch_session path below reports honestly */
         }
+      }
+      // M3.1b: inject the merged per-bot rules file path (mtime hot reload in
+      // the gate makes PUTs take effect on the next tool_call).
+      if (this.rules !== null) {
+        try {
+          this.rules.refreshBot(botId);
+          (client as unknown as { env?: Record<string, string> }).env = {
+            ...((client as unknown as { env?: Record<string, string> }).env ?? {}),
+            CODAR_GATE_RULES: this.rules.gateRulesPath(botId, bot.sandbox.mode),
+          };
+        } catch { /* shutting down */ }
       }
       const ready = await client.start({
         extensionPath:

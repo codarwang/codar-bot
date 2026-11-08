@@ -506,6 +506,44 @@ export class HttpApi {
       }
     }
 
+    if (resource === "rules") {
+      // M3.1b: global + per-bot rules CRUD (architecture m3 §1.5).
+      if (req.method === "GET" && id === undefined) {
+        const doc = this.deps.bots.rules?.global() ?? { version: 0, rules: [] };
+        this.send(res, 200, doc);
+        return;
+      }
+      if (req.method === "PUT" && id === undefined) {
+        const body = (await this.readJson(req)) as { rules?: unknown; version?: unknown };
+        if (!Array.isArray(body.rules)) throw new ApiError(400, "need {rules: []}");
+        if (typeof body.version !== "number") throw new ApiError(400, "need {version: number}");
+        try {
+          const doc = this.deps.bots.rules!.putGlobal(body.rules as never[], body.version);
+          this.send(res, 200, doc);
+        } catch (e) {
+          if (e instanceof Error && e.message.includes("version conflict")) {
+            throw new ApiError(409, e.message);
+          }
+          throw e;
+        }
+        return;
+      }
+      if (req.method === "GET" && id !== undefined && action === "merged") {
+        this.send(res, 200, this.deps.bots.rules?.merged(id) ?? []);
+        return;
+      }
+      if (req.method === "GET" && id !== undefined) {
+        this.send(res, 200, this.deps.bots.rules?.botOverrides(id) ?? { version: 0, rules: [] });
+        return;
+      }
+      if (req.method === "PUT" && id !== undefined) {
+        const body = (await this.readJson(req)) as { rules?: unknown };
+        if (!Array.isArray(body.rules)) throw new ApiError(400, "need {rules: []}");
+        const doc = this.deps.bots.rules!.putBotOverrides(id, body.rules as never[]);
+        this.send(res, 200, doc);
+        return;
+      }
+    }
     if (resource === "approvals") {
       // M2-E §3.5 简版: Allow once / Deny. The third button (Always allow →
       // rule persistence) is an M3 placeholder in the UI.
