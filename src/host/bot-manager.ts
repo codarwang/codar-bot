@@ -269,6 +269,14 @@ export class BotManager extends EventEmitter {
         // The container sees ONLY the -e list above.
         childEnv = {};
       }
+      // M3.1b: inject the rules file path into childEnv BEFORE RpcClient
+      // construction — RpcClient's opts.env is what spawn actually reads.
+      if (this.rules !== null) {
+        try {
+          this.rules.refreshBot(botId);
+          childEnv.CODAR_GATE_RULES = this.rules.gateRulesPath(botId, bot.sandbox.mode);
+        } catch { /* shutting down */ }
+      }
       client = new RpcClient({
         bin,
         argvPrefix,
@@ -320,17 +328,6 @@ export class BotManager extends EventEmitter {
         } catch {
           /* stat race — the switch_session path below reports honestly */
         }
-      }
-      // M3.1b: inject the merged per-bot rules file path (mtime hot reload in
-      // the gate makes PUTs take effect on the next tool_call).
-      if (this.rules !== null) {
-        try {
-          this.rules.refreshBot(botId);
-          (client as unknown as { env?: Record<string, string> }).env = {
-            ...((client as unknown as { env?: Record<string, string> }).env ?? {}),
-            CODAR_GATE_RULES: this.rules.gateRulesPath(botId, bot.sandbox.mode),
-          };
-        } catch { /* shutting down */ }
       }
       const ready = await client.start({
         extensionPath:
@@ -649,16 +646,24 @@ export class BotManager extends EventEmitter {
       parked.client.replyUi({ type: "extension_ui_response", id: parked.reqId, confirmed: isAllowed });
       // M3.1c P2-2: the approval OUTCOME lands in host audit — the
       // resolvedAs five-value enum is the audit page's approval dimension.
+      const approvalBot = this.botIdOf(parked.client);
       this.audit("approval", {
         approvalId: id,
+        botId: approvalBot,
         resolvedAs: confirmed.decision,
-        ...(confirmed.decision === "allow_rule" ? { ruleSpec: String(confirmed.ruleSpec ?? "").slice(0, 120) } : {}),
+        ...(confirmed.decision === "allow_rule" && typeof confirmed.ruleSpec === "object" && confirmed.ruleSpec !== null
+          ? { ruleId: (confirmed.ruleSpec as { id?: string }).id ?? "" }
+          : {}),
       });
       this.emit("approvalResolved", { id, confirmed: isAllowed, resolvedAs: confirmed.decision });
       return true;
     }
     parked.client.replyUi({ type: "extension_ui_response", id: parked.reqId, confirmed });
-    this.audit("approval", { approvalId: id, resolvedAs: confirmed ? "allow_once" : "deny" });
+    this.audit("approval", {
+      approvalId: id,
+      botId: this.botIdOf(parked.client),
+      resolvedAs: confirmed ? "allow_once" : "deny",
+    });
     this.emit("approvalResolved", { id, confirmed });
     return true;
   }

@@ -541,6 +541,9 @@ export class HttpApi {
           if (e instanceof Error && e.message.includes("version conflict")) {
             throw new ApiError(409, e.message);
           }
+          if (e instanceof Error && (e.constructor.name === "RulesValidationError" || e.message.includes("rules["))) {
+            throw new ApiError(400, e.message);
+          }
           throw e;
         }
         return;
@@ -572,8 +575,16 @@ export class HttpApi {
             throw new ApiError(404, `no parked approval ${id}`);
           }
         } else if (typeof body.decision === "string" && ["allow_once", "deny", "allow_rule"].includes(body.decision)) {
-          if (!this.deps.bots.resolveApproval(id, { decision: body.decision as "allow_once" | "deny" | "allow_rule", ruleSpec: body.ruleSpec })) {
-            throw new ApiError(404, `no parked approval ${id}`);
+          try {
+            if (!this.deps.bots.resolveApproval(id, { decision: body.decision as "allow_once" | "deny" | "allow_rule", ruleSpec: body.ruleSpec })) {
+              throw new ApiError(404, `no parked approval ${id}`);
+            }
+          } catch (e) {
+            if (e instanceof ApiError) throw e;
+            if (e instanceof Error && (e.constructor.name === "RulesValidationError" || e.message.includes("rules["))) {
+              throw new ApiError(400, e.message);
+            }
+            throw e;
           }
         } else {
           throw new ApiError(400, "need {confirmed: boolean} or {decision: allow_once|deny|allow_rule}");

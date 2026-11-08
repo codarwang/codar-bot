@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, openSync, closeSync, writeSync } from "node:fs";
-import { parseRulesFile } from "../../extensions/codar-gate/rules.js";
+
 import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Store } from "./store.js";
@@ -155,7 +155,13 @@ export class RulesManager {
     botId: string | null,
     rule: Omit<GateRuleJson, "id">,
   ): GateRuleJson {
+    // P2-4: same validation as the CRUD paths — the keyboard shortcut is
+    // client-supplied JSON on a public local API.
+    if (rule.action !== "allow") {
+      throw new RulesValidationError(`shortcut rules must be action "allow" (got "${rule.action}")`);
+    }
     const full: GateRuleJson = { ...rule, id: `rule_${randomUUID().slice(0, 8)}` };
+    validateRulesOrThrow([full]);
     if (scope === "global") {
       const cur = this.global();
       writeDoc(this.globalPath, { version: cur.version + 1, rules: [...cur.rules, full] });
@@ -178,13 +184,31 @@ export class RulesManager {
   }
 }
 
-/** Validate rules with the gate's own parser — a malformed rule rejected
- *  HERE (clear 400 to the caller) instead of in the GATE (deny-all for
- *  every bot on next spawn, M3 review P2-4). */
+/** Validate rules with the same shape checks the gate's parser enforces —
+ *  a malformed rule rejected HERE (clear error to the caller) instead of in
+ *  the GATE (deny-all on next spawn, M3 review P2-4). Inlined rather than
+ *  imported from extensions/ (rootDir:src excludes that path in tsconfig.build). */
 function validateRulesOrThrow(rules: GateRuleJson[]): void {
-  const result = parseRulesFile(JSON.stringify({ rules }));
-  if (!result.ok) {
-    throw new RulesValidationError(result.error);
+  if (rules.length > 256) throw new RulesValidationError(`rules exceed 256`);
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i]!;
+    if (typeof r.id !== "string" || r.id.length === 0 || r.id.length > 64)
+      throw new RulesValidationError(`rules[${i}].id must be 1-64 chars`);
+    if (r.toolName !== "*" && (typeof r.toolName !== "string" || r.toolName.length === 0 || r.toolName.length > 64))
+      throw new RulesValidationError(`rules[${i}].toolName must be 1-64 chars or "*")`);
+    const matches = ["tool", "bash_prefix", "bash_keyword", "path_prefix"];
+    if (!matches.includes(r.match))
+      throw new RulesValidationError(`rules[${i}].match must be ${matches.join("|")}`);
+    if (r.match !== "tool" && (typeof r.pattern !== "string" || r.pattern.length === 0 || r.pattern.length > 256))
+      throw new RulesValidationError(`rules[${i}].pattern required for ${r.match} (1-256 chars)`);
+    if (r.match === "bash_keyword") {
+      try { void new RegExp(r.pattern ?? ""); } catch (e) {
+        throw new RulesValidationError(`rules[${i}].pattern is not a valid regex: ${String(e).slice(0, 100)}`);
+      }
+    }
+    const actions = ["allow", "deny", "gate"];
+    if (!actions.includes(r.action))
+      throw new RulesValidationError(`rules[${i}].action must be ${actions.join("|")}`);
   }
 }
 
