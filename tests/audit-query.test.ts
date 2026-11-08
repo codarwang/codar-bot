@@ -58,6 +58,24 @@ test("M3.3: bot filter matches botId field", () => {
   } finally { r.dispose(); }
 });
 
+test("M3.3: scope:id rows (budget/memory writers) resolve botId — r5 P2-b", () => {
+  const r = rig();
+  try {
+    appendFileSync(join(r.root, "audit.jsonl"),
+      JSON.stringify({ ts: "2026-11-08T01:00:00Z", kind: "budget-stop", scope: "bot", id: "bot_a", dimension: "tokens", used: 100, limit: 100, stopResult: "stopped" }) + "\n" +
+      JSON.stringify({ ts: "2026-11-08T01:30:00Z", kind: "memory-review", scope: "bot", id: "bot_a", turns: 3, files: 1 }) + "\n" +
+      JSON.stringify({ ts: "2026-11-08T02:00:00Z", kind: "budget-warn", scope: "room", id: "room_x", dimension: "tokens", used: 80, limit: 100, pct: 80 }) + "\n");
+    // The bot's own budget/memory rows survive ?bot=bot_a (the "why did
+    // this bot stop" evidence), stamped with botId for the timeline.
+    const a = r.q.query({ bot: "bot_a" });
+    assert.equal(a.entries.length, 2, "budget-stop + memory-review both matched");
+    assert.ok(a.entries.every((e) => e.botId === "bot_a"));
+    // Room-scoped rows carry no botId — never misattributed.
+    const room = r.q.query({ bot: "room_x" });
+    assert.equal(room.entries.length, 0, "room scope does not masquerade as a bot");
+  } finally { r.dispose(); }
+});
+
 test("M3.3: kind filter + before cursor", () => {
   const r = rig();
   try {

@@ -97,10 +97,17 @@ export class AuditQuery {
     const limit = Number.isFinite(opts.limit) ? Math.max(1, Math.min(opts.limit!, MAX_LIMIT)) : DEFAULT_LIMIT;
     let skipped = 0;
 
-    // 1. Collect from host audit
+    // 1. Collect from host audit. Budget/memory rows carry scope+id instead
+    // of botId (r5 P2-b: without this stamp, ?bot=<id> silently dropped the
+    // budget-stop / memory-review rows for exactly that bot — the evidence
+    // for "why did this bot stop").
     const hostLines = tailLines(this.hostAuditPath);
-    const hostEntries = parseEntries(hostLines, "host");
-    skipped += hostLines.length - hostEntries.length;
+    const hostParsed = parseEntries(hostLines, "host");
+    skipped += hostLines.length - hostParsed.length;
+    const hostEntries = hostParsed.map((e) => ({
+      ...e,
+      botId: (e.botId as string | undefined) ?? (e.bot_id as string | undefined) ?? (e.scope === "bot" && typeof e.id === "string" ? e.id : undefined),
+    }));
 
     // 2. Collect from all gate-audit files
     const gateEntries: Array<AuditEntry & { _source: string }> = [];
