@@ -177,6 +177,18 @@ export class HttpApi {
   private dispatch(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? "/", "http://localhost");
     const parts = url.pathname.split("/").filter(Boolean); // ["api", ...]
+    // M3.4b Bearer auth: when CODAR_API_TOKEN is set (compose deployments),
+    // every /api/* request including SSE requires it. Static assets are
+    // exempt — the ?token= bootstrap page must load without auth.
+    const token = process.env.CODAR_API_TOKEN;
+    if (token !== undefined && token !== "" && parts[0] === "api") {
+      const auth = req.headers.authorization;
+      if (auth !== `Bearer ${token}`) {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+    }
     void this.route(req, res, url, parts).catch((e) => {
       if (res.headersSent) return; // late failures after SSE/headers: not res writable
       if (e instanceof ApiError) {
