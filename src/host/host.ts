@@ -12,6 +12,7 @@ import { Handoff } from "./handoff.js";
 import { Budget } from "./budget.js";
 import { MemoryEngine } from "./memory.js";
 import { RulesManager } from "./rules-manager.js";
+import { AuditQuery } from "./audit-query.js";
 import { HttpApi } from "./http-api.js";
 import { paths, type HostPaths } from "./paths.js";
 import { loadKeys } from "./provider-config.js";
@@ -90,6 +91,7 @@ export class Host {
     const handoff = new Handoff(store, bots, rooms);
     bots.handoff = handoff; // late bind (M2-B D1 bridge)
     const rules = new RulesManager(p.root, store);
+    const auditQuery = new AuditQuery(p.root);
     bots.rules = rules; // late bind (M3.1b rules injection)
     const budget = new Budget(store, ledger, bots, rooms, p.root);
     const memory = new MemoryEngine(store, ledger, p.root, {
@@ -128,7 +130,7 @@ export class Host {
     };
     handoff.memoryTail = (botId) => memory.snapshot("bot", botId) || null;
     const api = new HttpApi({
-      store, bots, ledger, rooms, handoff, budget, memory,
+      store, bots, ledger, rooms, handoff, budget, memory, auditQuery,
       webDir: opts.webDir ?? (existsSync(join(p.root, "web-dist")) ? join(p.root, "web-dist") : undefined),
     });
     return new Host(opts, store, ledger, bots, api);

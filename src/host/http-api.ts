@@ -43,6 +43,7 @@ import type { RoomEngine } from "./room-engine.js";
 import type { Handoff } from "./handoff.js";
 import type { Budget } from "./budget.js";
 import type { MemoryEngine } from "./memory.js";
+import type { AuditQuery } from "./audit-query.js";
 
 export interface ApiDeps {
   store: Store;
@@ -52,6 +53,7 @@ export interface ApiDeps {
   handoff: Handoff;
   budget: Budget;
   memory: MemoryEngine;
+  auditQuery: AuditQuery;
   /** Built web UI dir (web/dist); absent ⇒ API-only mode. */
   webDir?: string;
 }
@@ -506,6 +508,21 @@ export class HttpApi {
       }
     }
 
+    if (resource === "audit") {
+      // M3.3: query-time merged audit timeline (host + gate-audit).
+      if (req.method === "GET" && id === undefined) {
+        const url_ = new URL(req.url ?? "/", "http://localhost");
+        const result = this.deps.auditQuery.query({
+          bot: url_.searchParams.get("bot") ?? undefined,
+          since: url_.searchParams.get("since") ?? undefined,
+          kind: url_.searchParams.get("kind") ?? undefined,
+          limit: url_.searchParams.has("limit") ? Number(url_.searchParams.get("limit")) : undefined,
+          before: url_.searchParams.get("before") ?? undefined,
+        });
+        this.send(res, 200, result);
+        return;
+      }
+    }
     if (resource === "rules") {
       // M3.1b: global + per-bot rules CRUD (architecture m3 §1.5).
       if (req.method === "GET" && id === undefined) {
