@@ -54,8 +54,9 @@ export function Roster(p: Props): JSX.Element {
     setFormError(null);
     try {
       if (action === "delete") {
-        const res = await fetch(`/api/bots/${botId}`, { method: "DELETE" });
-        if (!res.ok) throw new Error(String((await res.json().catch(() => ({})) as { error?: string }).error ?? res.status));
+        // jsonFetch routes through withToken/authHeaders — a bare fetch here
+        // 401s under CODAR_API_TOKEN (m3 full-surface r3 P2).
+        await jsonFetch(`/api/bots/${botId}`, { method: "DELETE" });
       } else {
         await post(`/api/bots/${botId}/${action}`);
       }

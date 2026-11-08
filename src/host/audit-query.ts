@@ -3,8 +3,9 @@
  * JSONL files (M3.3, architecture m3-architecture.md §4).
  *
  * Both sources are append-only JSONL. The API reads the TAIL of each file
- * (bounded), parses lines (torn lines skipped), dedupes by approvalId, and
- * returns a ts-descending merged timeline with a `before` cursor.
+ * (bounded), parses lines (torn lines skipped), and returns a ts-descending
+ * merged timeline with a `before` cursor. No cross-source dedup — see the
+ * merge-step note below (known limitation).
  */
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
@@ -117,8 +118,7 @@ export class AuditQuery {
     // ui-request randomUUID while gate rows carry event.toolCallId — two
     // different IDs for the same approval; cross-source dedup by key is
     // not implementable without a protocol change. Each approval appears
-    // as two rows: host outcome + gate detail. ?kind=approval returns
-    // only the host rows — the decision log.)
+    // as two rows (both kind:"approval"): host outcome + gate detail.)
     merged.push(...hostEntries, ...gateEntries);
 
     // 4. Filter
