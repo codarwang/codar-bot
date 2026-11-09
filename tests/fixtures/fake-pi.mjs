@@ -13,6 +13,12 @@
  *                                          (confirm), parks until the host
  *                                          replies; confirmed=true ⇒ "PARKED"
  *                                          else blocked-settles
+ *   prompt containing "BRIDGE"           → emits extension_ui_request
+ *                                          (input, codar:bridge-echo), parks
+ *                                          until the host ACKs; ok marker ⇒
+ *                                          "ECHOED:<marker>" (regression:
+ *                                          the host once never answered and
+ *                                          the child parked forever)
  * Commands: get_state / prompt / abort / get_last_assistant_text /
  *           switch_session / set_auto_retry / get_session_stats
  */
@@ -55,6 +61,7 @@ if (process.env.FAKE_PI_MEM_REVIEW === "startdie") {
 let autoRetry = true;
 let pendingPark = null;
 let pendingMessageBot = null;
+let pendingBridge = null;
 
 function respond(id, command, data) {
   out({ id, type: "response", command, success: true, data });
@@ -144,6 +151,21 @@ async function runPrompt(id, message) {
     pendingPark = parkId;
     out({ type: "tool_execution_start", toolCallId: `call-${seq}`, toolName: "write", args: { path: "x" } });
     out({ type: "extension_ui_request", id: parkId, method: "confirm", title: "codar-gate: approval required", message: "write" });
+    return; // parked; resumed by extension_ui_response below
+  }
+
+  if (message.includes("BRIDGE")) {
+    // bridge_echo round-trip: an input dialog with the codar:bridge-echo
+    // title — the host must ACK {status:"ok", marker} (regression: it once
+    // had no branch for this title and the child parked forever).
+    const bridgeId = `bridge-${++seq}`;
+    pendingBridge = { id: bridgeId, callId: `call-${seq}` };
+    out({ type: "tool_execution_start", toolCallId: `call-${seq}`, toolName: "bridge_echo", args: { payload: { k: 1 } } });
+    out({
+      type: "extension_ui_request", id: bridgeId, method: "input",
+      title: "codar:bridge-echo",
+      placeholder: JSON.stringify({ payload: { poem: "snow" } }),
+    });
     return; // parked; resumed by extension_ui_response below
   }
 
@@ -266,6 +288,22 @@ process.stdin.on("data", (chunk) => {
       continue;
     }
     if (cmd.type === "extension_ui_response") {
+      if (pendingBridge !== null && cmd.id === pendingBridge.id && typeof cmd.value === "string") {
+        const br = pendingBridge;
+        pendingBridge = null;
+        let marker = "?";
+        try { marker = JSON.parse(cmd.value).marker ?? "?"; } catch { /* non-json stays "?" */ }
+        const word = `ECHOED:${marker}`;
+        lastText = word;
+        out({ type: "message_start", message: { role: "assistant" } });
+        out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: word } });
+        out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: word }], stopReason: "stop", usage: usage(6, 2) } });
+        out({ type: "tool_execution_end", toolCallId: br.callId });
+        out({ type: "turn_end" });
+        out({ type: "agent_end" });
+        out({ type: "agent_settled", aborted: false });
+        continue; // consumed by the bridge handler — never fall through to the id-unchecked message_bot branch below
+      }
       if (pendingPark !== null && cmd.id === pendingPark) finishParked(cmd.confirmed === true);
       if (pendingMessageBot !== null && typeof cmd.value === "string") {
         const mb = pendingMessageBot;

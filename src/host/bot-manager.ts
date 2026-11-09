@@ -600,6 +600,22 @@ export class BotManager extends EventEmitter {
       void this.dispatchMessageBot(client, req, botId);
       return;
     }
+    // S2 bridge_echo round-trip (rehearsal 2026-11-09): the gate parks the
+    // child's structured echo on an input dialog (codar:bridge-echo). The
+    // host ACKs with the {status:"ok", marker} shape the gate's memo
+    // expects — the run then settles naturally and the result text is
+    // harvested from the session like any plain reply. Unanswered, the
+    // child parks forever: the work sticks "working", and no timeout
+    // covers input dialogs (the 5-min deny is confirm-only) — glm-5.3 hit
+    // exactly that on its first-ever bridge_echo call during rehearsal.
+    if (req.method === "input" && req.title === "codar:bridge-echo") {
+      client.replyUi({
+        type: "extension_ui_response",
+        id: req.id,
+        value: JSON.stringify({ status: "ok", marker: "host-ack" }),
+      });
+      return;
+    }
     // M2-E approval bridge (§5.4 M1/M2 档): a confirm request parks and is
     // surfaced as an SSE approval event; the Web card resolves it via
     // resolveApproval(). CODAR_M1_AUTOAPPROVE=1 (tests/spikes only) still

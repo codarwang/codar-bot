@@ -106,6 +106,23 @@ test("park: confirm bridges through auto-approve and the run completes", async (
   }
 });
 
+test("bridge_echo: the host answers the codar:bridge-echo input dialog — the run settles instead of parking forever", async () => {
+  const r = await rig();
+  try {
+    const id = r.store.state.bots[0]!.id;
+    await r.bots.start(id);
+    // Regression (rehearsal 2026-11-09): handleUi only knew codar:message_bot
+    // and confirm — a bridge_echo dialog sat unanswered, the child parked
+    // forever, and the work stuck "working" with no timeout (the 5-min deny
+    // covers confirm only). glm-5.3 hit it on its first bridge_echo call.
+    const text = await r.bots.prompt(id, "BRIDGE then continue");
+    assert.equal(text, "ECHOED:host-ack");
+    assert.equal(r.bots.status(id), "idle");
+  } finally {
+    await r.dispose();
+  }
+});
+
 test("session resume: persisted sessionPath is replayed via switch_session on next start", async () => {
   const r = await rig();
   try {

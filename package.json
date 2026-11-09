@@ -4,7 +4,7 @@
   "bin": {
     "codar": "bin/codar.cjs"
   },
-  "description": "A home for your bot team on the pi runtime \u2014 self-hosted, bring-your-own-model, chat-style multi-bot collaboration with budgets, approvals, and an audit trail.",
+  "description": "A home for your bot team on the pi runtime — self-hosted, bring-your-own-model, chat-style multi-bot collaboration with budgets, approvals, and an audit trail.",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
@@ -31,7 +31,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "tsx --test tests/*.test.ts",
+    "test": "tsx --test --test-timeout=120000 tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "spike:s2": "tsx spike/s2-criteria.ts",
     "spike:s3": "tsx spike/s3-criteria.ts",
