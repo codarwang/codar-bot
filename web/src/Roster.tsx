@@ -42,9 +42,10 @@ export function Roster(p: Props): JSX.Element {
     if (attention(botId)) return { cls: "attention", label: t.needAttention };
     const st = p.statuses[botId] ?? "stopped";
     if (st === "working") return { cls: "working", label: t.working };
+    if (st === "starting") return { cls: "idle", label: t.starting };
     if (st === "crashed") return { cls: "attention", label: t.crashed };
     if (st === "stopped") return { cls: "stopped", label: t.stopped };
-    return { cls: "idle", label: st };
+    return { cls: "idle", label: t.idle };
   };
   const roomsOf = (botId: string): RoomRecord[] =>
     (overview?.rooms ?? []).filter((r) => r.members.includes(botId));
