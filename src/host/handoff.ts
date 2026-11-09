@@ -90,12 +90,11 @@ export class Handoff extends EventEmitter {
         if (wakes.length === 0) this.wakeQueue.delete(e.botId);
         void this.bots.prompt(e.botId, wake.text, "chat", wake.roomId).catch((err: unknown) => {
           // A failed wake is surfaced on the room log when possible — never
-          // silently swallowed (M2-B R2 P2-a note).
-          {
-            const roomId = this.store.state.rooms.find((r) => r.members.includes(e.botId))?.id;
-            if (roomId !== undefined) {
-              try { this.rooms.appendSystem(roomId, `wake delivery to ${this.botName(e.botId)} failed: ${String(err).slice(0, 140)}`); } catch { /* shutdown */ }
-            }
+          // silently swallowed (M2-B R2 P2-a note). The wake's OWN room, not
+          // rooms.find()'s first hit (swe-2 R4 P3-1: a failed studio-scoped
+          // wake used to log to default).
+          if (wake.roomId !== null) {
+            try { this.rooms.appendSystem(wake.roomId, `wake delivery to ${this.botName(e.botId)} failed: ${String(err).slice(0, 140)}`); } catch { /* shutdown */ }
           }
         });
         return;
@@ -340,7 +339,13 @@ export class Handoff extends EventEmitter {
    *  (never dropped — M2-B R1 P2). */
   private deliverWake(botId: string, text: string, roomId: string | null = null): void {
     if (this.bots.status(botId) === "idle") {
-      void this.bots.prompt(botId, text, "chat", roomId).catch(() => undefined);
+      // Same error surface as the drained path (swe-2 R4 P3-2): a failed
+      // direct wake lands on the work's room log, not the void.
+      void this.bots.prompt(botId, text, "chat", roomId).catch((err: unknown) => {
+        if (roomId !== null) {
+          try { this.rooms.appendSystem(roomId, `wake delivery to ${this.botName(botId)} failed: ${String(err).slice(0, 140)}`); } catch { /* shutdown */ }
+        }
+      });
     } else {
       const q = this.wakeQueue.get(botId) ?? [];
       q.push({ text, roomId });

@@ -232,6 +232,9 @@ test("multi-room wake chain (swe-2 R3 P2): a dispatch fired from INSIDE a result
       await new Promise((s) => setTimeout(s, 150));
     }
     assert.equal(chainedOf()[0]!.status, "done");
+    // Post-drain one-shot re-check (swe-2 R4 P3-3): the earlier length
+    // assertion ran before the chain could regress mid-drain.
+    assert.equal(chainedOf().length, 1, "the one-shot gate held through the drain");
     assert.equal(r.handoff.work(workId)!.status, "done");
   } finally {
     delete process.env.CODAR_M1_AUTOAPPROVE;
