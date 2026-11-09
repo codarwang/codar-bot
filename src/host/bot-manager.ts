@@ -96,6 +96,10 @@ export class BotManager extends EventEmitter {
   /** Parked confirm requests awaiting a Web approval card (M2-E §3.5);
    *  host id → { client, child-side request id }. */
   private readonly parkedApprovals = new Map<string, { client: RpcClient; reqId: string }>();
+  /** Room the bot's CURRENT turn was prompted from (dispatch context —
+   *  see dispatchMessageBot's multi-room note). Last write wins; a stop
+   *  clears it so a stale room never outlives the session that set it. */
+  private readonly promptRoom = new Map<string, string | null>();
 
   /** M3.1b: rules manager (late-bound by Host to avoid a ctor cycle). */
   rules: RulesManager | null = null;
@@ -406,6 +410,7 @@ export class BotManager extends EventEmitter {
       return;
     }
     this.dropClient(m, m.client);
+    this.promptRoom.delete(botId); // a stopped session's dispatch context must not outlive it
     this.setStatus(m, "stopped");
   }
 
@@ -416,6 +421,7 @@ export class BotManager extends EventEmitter {
   /** Drop runtime bookkeeping for a deleted bot (must be stopped first). */
   forget(botId: string): void {
     this.bots.delete(botId);
+    this.promptRoom.delete(botId);
   }
 
   /** §3.4 path rule: the store keeps HOST-absolute paths; the child sees
@@ -467,6 +473,10 @@ export class BotManager extends EventEmitter {
     // Room attribution (dogfood D3): the ROOM budget meters spend that
     // happened IN the room — not the member's global month total.
     (client as unknown as { __usageRoom?: string | null }).__usageRoom = roomId;
+    // Dispatch context (multi-room fix 2026-11-09): remember which room
+    // THIS turn was prompted from so a message_bot bridge raised inside it
+    // dispatches back to the same room, not rooms.find()'s first hit.
+    this.promptRoom.set(botId, roomId);
 
     // settle race: settled vs error vs exit — first wins, listeners detach
     // on settlement (no leak across rejected prompts; R1 P1-1).
@@ -797,7 +807,15 @@ export class BotManager extends EventEmitter {
         toBot: target,
         task,
         requestId,
-        roomId: this.roomOf(botId),
+        // Dispatch context room (multi-room fix, 2026-11-09): a bot can be
+        // a member of several rooms since membership PATCH (D1) — roomOf()'s
+        // rooms.find() always returns the FIRST one, so a dispatch asked in
+        // room B by a bot also in room A landed its result line in room A
+        // (proven on camera: studio dispatch, poem appended to default).
+        // The room the CURRENT turn was prompted from is the dispatch's
+        // context; fall back to roomOf for out-of-room prompts (memory
+        // reviews etc.) where no context exists.
+        roomId: this.promptRoom.get(botId) ?? this.roomOf(botId),
       });
       reply("ok", { workId });
     } catch (error) {

@@ -172,6 +172,35 @@ test("bridge e2e: a DISPATCH turn from chief drives Handoff through the ui bridg
   }
 });
 
+test("multi-room: a DISPATCH prompted from room B routes its work back to room B, not rooms.find()'s first hit", async () => {
+  const r = await rig();
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    // Chief (and Writer) are members of TWO rooms; rig's "default" is the
+    // first in state — roomOf()'s find() would always land there.
+    const studio = r.store.addRoom({
+      name: "studio", members: [r.chiefId, r.writerId], admin: r.chiefId,
+    } as Parameters<Store["addRoom"]>[0]);
+    await r.bots.start(r.chiefId);
+    await r.bots.start(r.writerId);
+    // Prompt Chief WITH the studio context (what RoomEngine does on a turn).
+    const reply = await r.bots.prompt(r.chiefId, "please DISPATCH the weekly report to Writer", "chat", studio.id);
+    assert.equal(reply, "DISPATCHED:ok");
+    const w = r.store.state.works.find((x) => x.parent === r.chiefId && x.child === r.writerId);
+    assert.ok(w !== undefined, "work created via the bridge");
+    assert.equal(w!.roomId, studio.id, "dispatch context room wins over rooms.find() first hit");
+    // Drain the out-of-band work before dispose.
+    const deadline = Date.now() + 20_000;
+    while (r.handoff.work(w!.id)!.status !== "done" && Date.now() < deadline) {
+      await new Promise((s) => setTimeout(s, 150));
+    }
+    assert.equal(r.handoff.work(w!.id)!.status, "done");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
 test("M2-B R1: busy-child dispatch retries on idle (no starvation); different calls = different works", async () => {
   const r = await rig();
   try {
