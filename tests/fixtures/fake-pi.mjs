@@ -19,6 +19,12 @@
  *                                          "ECHOED:<marker>" (regression:
  *                                          the host once never answered and
  *                                          the child parked forever)
+ *   prompt containing "BRIDGE_UNKNOWN"   → emits extension_ui_request
+ *                                          (input, codar:unknown-bridge),
+ *                                          settles "NAKED:<status>" on ANY
+ *                                          reply — the host must NAK
+ *                                          unknown codar:* bridges instead
+ *                                          of leaving them parked forever
  * Commands: get_state / prompt / abort / get_last_assistant_text /
  *           switch_session / set_auto_retry / get_session_stats
  */
@@ -151,6 +157,21 @@ async function runPrompt(id, message) {
     pendingPark = parkId;
     out({ type: "tool_execution_start", toolCallId: `call-${seq}`, toolName: "write", args: { path: "x" } });
     out({ type: "extension_ui_request", id: parkId, method: "confirm", title: "codar-gate: approval required", message: "write" });
+    return; // parked; resumed by extension_ui_response below
+  }
+
+  if (message.includes("BRIDGE_UNKNOWN")) {
+    // Unknown-bridge probe: any reply (string value) un-parks the child —
+    // the host is expected to NAK {status:"error"}; a missing reply parks
+    // forever, which is exactly what this fixture guards against.
+    const bridgeId = `bridgeu-${++seq}`;
+    pendingBridge = { id: bridgeId, callId: `call-${seq}`, unknown: true };
+    out({ type: "tool_execution_start", toolCallId: `call-${seq}`, toolName: "bridge_probe", args: {} });
+    out({
+      type: "extension_ui_request", id: bridgeId, method: "input",
+      title: "codar:unknown-bridge",
+      placeholder: JSON.stringify({ payload: { probe: 1 } }),
+    });
     return; // parked; resumed by extension_ui_response below
   }
 
@@ -291,9 +312,11 @@ process.stdin.on("data", (chunk) => {
       if (pendingBridge !== null && cmd.id === pendingBridge.id && typeof cmd.value === "string") {
         const br = pendingBridge;
         pendingBridge = null;
-        let marker = "?";
-        try { marker = JSON.parse(cmd.value).marker ?? "?"; } catch { /* non-json stays "?" */ }
-        const word = `ECHOED:${marker}`;
+        let parsed = null;
+        try { parsed = JSON.parse(cmd.value); } catch { /* non-json stays null */ }
+        const word = br.unknown
+          ? `NAKED:${parsed?.status ?? "non_json"}`
+          : `ECHOED:${parsed?.marker ?? "?"}`;
         lastText = word;
         out({ type: "message_start", message: { role: "assistant" } });
         out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: word } });

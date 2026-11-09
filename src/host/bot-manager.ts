@@ -648,6 +648,28 @@ export class BotManager extends EventEmitter {
         title: req.title,
         message: (req as { message?: unknown }).message ?? "",
       });
+      return;
+    }
+    // Unknown codar:* bridge (swe-2 review hardening, 2026-11-09): the
+    // message_bot/bridge-echo/approval titles above are the ones this host
+    // knows. A FUTURE codar:* dialog of a parking method (input/select/
+    // editor — confirm always parks as an approval above) would otherwise
+    // sit unanswered forever: the child parks, the work sticks "working",
+    // and no timeout covers these methods (the bridge_echo bug's whole
+    // failure class, just one title ahead). NAK with {status:"error"} — the
+    // gate family treats a non-"ok" reply as a failed memo and blocked-
+    // settles, so an unimplemented bridge reads as an honest refusal
+    // instead of a hang. Non-codar: requests keep the pre-existing silent
+    // behavior (they are not ours to answer).
+    if (
+      (req.method === "input" || req.method === "select" || req.method === "editor") &&
+      (req.title ?? "").startsWith("codar:")
+    ) {
+      client.replyUi({
+        type: "extension_ui_response",
+        id: req.id,
+        value: JSON.stringify({ status: "error", error: `codar host: no handler for bridge "${req.title ?? "(untitled)"}"` }),
+      });
     }
   }
 

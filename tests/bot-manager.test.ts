@@ -123,6 +123,23 @@ test("bridge_echo: the host answers the codar:bridge-echo input dialog — the r
   }
 });
 
+test("unknown bridge: a codar:* dialog with no host handler is NAKed — honest refusal, not a forever-park", async () => {
+  const r = await rig();
+  try {
+    const id = r.store.state.bots[0]!.id;
+    await r.bots.start(id);
+    // swe-2 review hardening: the bridge_echo bug was one title ahead of a
+    // whole failure class — any future codar:* input/select/editor dialog
+    // would park forever. The host now NAKs {status:"error"} so the gate
+    // family blocked-settles (a refusal the model can see and react to).
+    const text = await r.bots.prompt(id, "BRIDGE_UNKNOWN probe");
+    assert.equal(text, "NAKED:error");
+    assert.equal(r.bots.status(id), "idle");
+  } finally {
+    await r.dispose();
+  }
+});
+
 test("session resume: persisted sessionPath is replayed via switch_session on next start", async () => {
   const r = await rig();
   try {
