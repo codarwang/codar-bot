@@ -66,8 +66,11 @@ export class Handoff extends EventEmitter {
 
   /** Results for busy callers, delivered when the caller goes idle.
    *  Multi-slot per parent: a busy window can produce SEVERAL results —
-   *  each gets its own wake prompt, none overwritten (M2-B R2 P2-a). */
-  private readonly wakeQueue = new Map<string, string[]>();
+   *  each gets its own wake prompt, none overwritten (M2-B R2 P2-a).
+   *  Entries carry the work's room: a wake turn that dispatches again must
+   *  stay in the SAME room's context (swe-2 R3 P2 — the coordinator
+   *  pattern chains delegations through exactly these wakes). */
+  private readonly wakeQueue = new Map<string, { text: string; roomId: string | null }[]>();
 
   constructor(
     private readonly store: Store,
@@ -85,7 +88,7 @@ export class Handoff extends EventEmitter {
         // next idle transition so each result keeps its own causal frame.
         const wake = wakes.shift()!;
         if (wakes.length === 0) this.wakeQueue.delete(e.botId);
-        void this.bots.prompt(e.botId, wake, "chat").catch((err: unknown) => {
+        void this.bots.prompt(e.botId, wake.text, "chat", wake.roomId).catch((err: unknown) => {
           // A failed wake is surfaced on the room log when possible — never
           // silently swallowed (M2-B R2 P2-a note).
           {
@@ -326,18 +329,21 @@ export class Handoff extends EventEmitter {
     // when idle; a BUSY parent queues (never dropped — M2-B R1 P2). Results
     // for room-scoped works also arrive via room injection next turn.
     if (result.trim().length > 0) {
-      this.deliverWake(work.parent, `[${this.botName(work.child)} → you, task ${work.id} result]\n${result}`);
+      // roomId threads the dispatch context through the wake (swe-2 R3 P2):
+      // a coordinator that dispatches again from inside this wake turn must
+      // land the next result in the SAME room, not rooms.find()'s first hit.
+      this.deliverWake(work.parent, `[${this.botName(work.child)} → you, task ${work.id} result]\n${result}`, work.roomId);
     }
   }
 
   /** Deliver a wake prompt to a bot: now when idle, queued when busy
    *  (never dropped — M2-B R1 P2). */
-  private deliverWake(botId: string, text: string): void {
+  private deliverWake(botId: string, text: string, roomId: string | null = null): void {
     if (this.bots.status(botId) === "idle") {
-      void this.bots.prompt(botId, text, "chat").catch(() => undefined);
+      void this.bots.prompt(botId, text, "chat", roomId).catch(() => undefined);
     } else {
       const q = this.wakeQueue.get(botId) ?? [];
-      q.push(text);
+      q.push({ text, roomId });
       this.wakeQueue.set(botId, q);
     }
   }

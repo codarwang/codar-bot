@@ -406,6 +406,10 @@ export class BotManager extends EventEmitter {
     if (m === undefined) return;
     m.stopRequested = true; // sentinel: no async path may respawn (R1 P1-2)
     if (m.client === null) {
+      // stop-on-crashed early return clears the context too (swe-2 R3 P3) —
+      // harmless either way (a fresh prompt re-sets it), but a stopped bot
+      // should not remember any room.
+      this.promptRoom.delete(botId);
       if (m.status !== "stopped") this.setStatus(m, "stopped");
       return;
     }

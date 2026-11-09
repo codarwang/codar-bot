@@ -68,6 +68,7 @@ let autoRetry = true;
 let pendingPark = null;
 let pendingMessageBot = null;
 let pendingBridge = null;
+let wakeChainFired = false;
 
 function respond(id, command, data) {
   out({ id, type: "response", command, success: true, data });
@@ -78,6 +79,34 @@ function fail(id, command, error) {
 
 async function runPrompt(id, message) {
   void id;
+  if (message.startsWith("[Writer → you, task") && process.env.FAKE_PI_WAKECHAIN === "1" && !wakeChainFired) {
+    // one-shot: a second result wake would chain forever (wake → dispatch →
+    // result → wake …) — the first hop is what the regression needs.
+    // FAKE_PI_WAKECHAIN gates it: the plain wake prefix would otherwise fire
+    // inside unrelated suites whose children happen to be named Writer.
+    wakeChainFired = true;
+    // Wake turn (swe-2 R3 P2): a coordinator that receives a result wake
+    // dispatches AGAIN from inside the wake — the room context must survive
+    // the hop. Same bridge shape as DISPATCH; keyed on the wake text prefix
+    // so the child's "[Chief → you]" injection can never trigger it.
+    respond(id, "prompt", { disposition: "started" });
+    out({ type: "agent_start" });
+    out({ type: "turn_start" });
+    out({ type: "message_start", message: { role: "system", content: "" } });
+    out({ type: "message_end", message: { role: "system", content: "" } });
+    const callId = `call-wakechain-${++seq}`;
+    const target = process.env.FAKE_PI_MB_TARGET ?? "Writer";
+    out({ type: "message_start", message: { role: "assistant" } });
+    out({ type: "tool_execution_start", toolCallId: callId, toolName: "message_bot", args: { to: target, task: "chain hop" } });
+    out({
+      type: "extension_ui_request", id: `mb-${++seq}`, method: "input",
+      title: "codar:message_bot",
+      placeholder: JSON.stringify({ to: target, task: "Reply with the single word BRAVO.", request_id: "", call_id: callId }),
+    });
+    pendingMessageBot = { callId };
+    return;
+  }
+
   if (message.includes("DISPATCH")) {
     // Chief-like turn: call the message_bot tool — the gate parks it on the
     // ui bridge (input dialog with the codar: title), then the host Handoff

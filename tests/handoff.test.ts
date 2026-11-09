@@ -20,13 +20,13 @@ import { Budget } from "../src/host/budget.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FAKE_PI = resolve(HERE, "fixtures/fake-pi.mjs");
 
-async function rig() {
+async function rig(envExtra: Record<string, string> = {}) {
   const root = mkdtempSync(join(tmpdir(), "codar-ho-"));
   mkdirSync(join(root, "work"), { recursive: true });
   const store = Store.open(join(root, "state.json"), { create: true });
   const ledger = new UsageLedger(join(root, "usage.sqlite"));
   const bots = new BotManager(store, ledger, root, {
-    bin: process.execPath, sandboxArgv: [FAKE_PI], env: {},
+    bin: process.execPath, sandboxArgv: [FAKE_PI], env: envExtra,
   });
   const chief = store.addBot({
     name: "Chief", role: "", chief: true,
@@ -195,6 +195,44 @@ test("multi-room: a DISPATCH prompted from room B routes its work back to room B
       await new Promise((s) => setTimeout(s, 150));
     }
     assert.equal(r.handoff.work(w!.id)!.status, "done");
+  } finally {
+    delete process.env.CODAR_M1_AUTOAPPROVE;
+    await r.dispose();
+  }
+});
+
+test("multi-room wake chain (swe-2 R3 P2): a dispatch fired from INSIDE a result wake keeps the work's room", async () => {
+  const r = await rig({ FAKE_PI_WAKECHAIN: "1" });
+  try {
+    process.env.CODAR_M1_AUTOAPPROVE = "1";
+    const studio = r.store.addRoom({
+      name: "studio", members: [r.chiefId, r.writerId], admin: r.chiefId,
+    } as Parameters<Store["addRoom"]>[0]);
+    await r.bots.start(r.chiefId);
+    await r.bots.start(r.writerId);
+    // Room-scoped work → child settles → result wake prompts chief → the
+    // fake chief dispatches AGAIN from inside that wake turn.
+    const { workId } = await r.handoff.dispatch({
+      fromBot: r.chiefId, toBot: r.writerId,
+      task: "Reply with the single word ALPHA.", requestId: "wake-1", roomId: studio.id,
+    });
+    // Wait for the chained (wake-fired) work to appear and settle.
+    const deadline = Date.now() + 25_000;
+    const chainedOf = () => r.store.state.works.filter((w) => w.id !== workId && w.parent === r.chiefId);
+    while (chainedOf().length === 0 && Date.now() < deadline) {
+      await new Promise((s) => setTimeout(s, 150));
+    }
+    const chained = chainedOf();
+    assert.equal(chained.length, 1, "the wake turn fired exactly one chained dispatch");
+    assert.equal(chained[0]!.roomId, studio.id, "wake-threaded dispatch keeps the work's room (not rooms.find() first hit)");
+    // Drain everything before dispose.
+    const drain = Date.now() + 25_000;
+    const pendingWorks = () => r.store.state.works.filter((w) => w.status === "pending" || w.status === "working");
+    while ((pendingWorks().length > 0 || chainedOf()[0]!.status !== "done") && Date.now() < drain) {
+      await new Promise((s) => setTimeout(s, 150));
+    }
+    assert.equal(chainedOf()[0]!.status, "done");
+    assert.equal(r.handoff.work(workId)!.status, "done");
   } finally {
     delete process.env.CODAR_M1_AUTOAPPROVE;
     await r.dispose();
