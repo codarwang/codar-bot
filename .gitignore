@@ -11,5 +11,9 @@ web/node_modules/
 web/dist/
 .fake-home/
 dist/
+
+# video production workspace — never published (storyboards, raw recordings, demo data)
+codar-bot-video/
+storyboard-*.md
 extensions/codar-gate/*.js
 extensions/codar-gate/*.js.map
