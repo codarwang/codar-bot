@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Governance — Codar Bot</title>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <header class="nav">
+    <div class="wrap nav__inner">
+      <a class="nav__logo" href="../">Codar&nbsp;Bot</a>
+      <nav class="nav__links">
+        <a href="../">Home</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+        <a href="https://www.npmjs.com/package/codar-bot">npm</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap docs">
+    <aside class="docs__nav">
+      <h4>Getting started</h4>
+      <a href="quickstart.html">Quickstart</a>
+      <h4>Reference</h4>
+      <a href="configuration.html">Configuration</a>
+      <a href="governance.html" aria-current="page">Governance</a>
+      <a href="extending.html">Extending</a>
+    </aside>
+
+    <article class="docs__body">
+      <p class="eyebrow eyebrow--amber">Reference</p>
+      <h1 class="display display--h2">Governance</h1>
+      <p class="lede" style="margin-top: 16px;">
+        Budgets, approvals, audit — the three mechanisms that make a room full of autonomous bots safe to run.
+      </p>
+
+      <h2>Budgets</h2>
+      <p>
+        Every bot and every room can carry limits in four currencies. The first one that blows pauses the work —
+        no silent overspend, ever.
+      </p>
+      <table>
+        <tr><th>Limit</th><th>Measured in</th><th>Good for</th></tr>
+        <tr><td>Tokens</td><td>input + output tokens</td><td>Hard cap on model usage regardless of price changes.</td></tr>
+        <tr><td>Cost</td><td>provider-listed currency</td><td>"Don't spend more than ¥20 on this room."</td></tr>
+        <tr><td>Turns</td><td>settled conversation turns</td><td>Stopping runaway loops by count.</td></tr>
+        <tr><td>Wall time</td><td>elapsed time</td><td>"One afternoon, max."</td></tr>
+      </table>
+      <p>
+        Budget meters are always visible in the workstation (right panel and a persistent warning bar above the
+        composer when a room crosses 80%). When a budget stops a bot, the room says so explicitly — the audit
+        log records the stop with the reason.
+      </p>
+
+      <h2>The approval gate</h2>
+      <p>
+        Bots can read freely, but <strong>every write operation pauses for your decision</strong> — file edits,
+        shell commands, anything that changes state. The approval card appears right in the chat timeline.
+      </p>
+      <table>
+        <tr><th>Decision</th><th>Effect</th></tr>
+        <tr><td><strong>Allow once</strong></td><td>This operation proceeds; the next one asks again.</td></tr>
+        <tr><td><strong>Deny</strong></td><td>The operation is refused; the bot is told and can adjust.</td></tr>
+        <tr><td><strong>Always allow → rule</strong></td><td>Creates a standing rule (e.g. "writes under <span class="mono">~/project/notes/</span>") so routine work stops interrupting you.</td></tr>
+      </table>
+      <p>
+        Rules are ordered and inspectable — deny rules always win over allow rules, and you can review and edit
+        them per bot or globally from the workstation or the REST API.
+      </p>
+
+      <h2>Audit trail</h2>
+      <p>
+        Every tool call, every approval decision, every budget stop lands in an append-only JSONL log
+        (<span class="mono">~/.codar-bot/audit.jsonl</span>) — and surfaces in the workstation's audit page with
+        filters by bot and event kind. It's the honest answer to "what did my bots actually do while I was away?"
+      </p>
+
+      <div class="callout">
+        <strong>Why append-only?</strong> Audit logs that can be edited aren't audit logs. The record grows;
+        it never rewrites. Filter views are just lenses over the same immutable lines.
+      </div>
+
+      <h2>The posture, in one paragraph</h2>
+      <p>
+        Treat bots like talented contractors: welcome in the room, watched at the toolbox. Default settings lean
+        safe — approvals on, budgets on. As a setup earns your trust, promote routine work to rules and raise
+        the budgets. Trust is granted in increments, not assumed at install.
+      </p>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__grid">
+      <p class="footer__note">Apache-2.0. Codar Bot is an independent project, not affiliated with earendil-works or the pi project.</p>
+      <nav class="footer__links">
+        <a href="../">Home</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+
+</body>
+</html>

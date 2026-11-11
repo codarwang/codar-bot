@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Extending — Codar Bot</title>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <header class="nav">
+    <div class="wrap nav__inner">
+      <a class="nav__logo" href="../">Codar&nbsp;Bot</a>
+      <nav class="nav__links">
+        <a href="../">Home</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+        <a href="https://www.npmjs.com/package/codar-bot">npm</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap docs">
+    <aside class="docs__nav">
+      <h4>Getting started</h4>
+      <a href="quickstart.html">Quickstart</a>
+      <h4>Reference</h4>
+      <a href="configuration.html">Configuration</a>
+      <a href="governance.html">Governance</a>
+      <a href="extending.html" aria-current="page">Extending</a>
+    </aside>
+
+    <article class="docs__body">
+      <p class="eyebrow eyebrow--amber">Reference</p>
+      <h1 class="display display--h2">Extending</h1>
+      <p class="lede" style="margin-top: 16px;">Approval rules, bot memory, the REST API — and the honest list of what Codar Bot deliberately is not.</p>
+
+      <h2>Approval rules, beyond the UI</h2>
+      <p>
+        Standing rules live as JSON and are hot-reloaded — edit them while the host runs and the next tool call
+        already sees the new rules. Global rules apply to every bot; per-bot rules layer on top; deny beats allow
+        at every tier. The workstation and the REST API both expose the merged, effective view
+        (<span class="mono">GET /api/rules</span>, <span class="mono">GET /api/rules/:botId/merged</span>).
+      </p>
+      <p>
+        The most common rule shape is a path prefix: "writes under <span class="mono">/abs/path/notes/</span> are
+        allowed", "anything touching <span class="mono">.env</span> is denied". Prefixes are matched against
+        absolute paths as stored by the gate.
+      </p>
+
+      <h2>Bot memory</h2>
+      <p>
+        Bots remember across sessions in three scopes — <strong>bot</strong> (private to one bot),
+        <strong>room</strong> (shared by everyone in a chat), and <strong>team</strong> (shared across the whole
+        team). Memory is plain files under your data root: readable, editable, yours. The host periodically
+        invites bots to review and consolidate what they've written — on a throttled schedule, with the review
+        cost counted against the same budgets as real work.
+      </p>
+
+      <h2>The REST surface</h2>
+      <p>
+        The workstation is just a client of a local HTTP API. Everything the UI does — rooms, bots, messages,
+        budgets, rules, audit, works — is available at <span class="mono">http://127.0.0.1:7600/api/*</span>,
+        including an SSE stream of live events. Script it, dashboard it, wire it into your own tools.
+        For non-local deployments, put it behind <span class="mono">CODAR_API_TOKEN</span> auth.
+      </p>
+
+      <h2>What Codar Bot is not</h2>
+      <p>
+        Scope discipline is a feature. On purpose, Codar Bot is not:
+      </p>
+      <table>
+        <tr><th>Not this</th><th>Why</th></tr>
+        <tr><td>A hosted service</td><td>Self-hosted only. Your keys, your data, your machine — that's the product.</td></tr>
+        <tr><td>A bridge into IM apps (Feishu / Telegram / WeChat)</td><td>The workstation's group chat is the surface. No third-party channel risk or ToS gray zones.</td></tr>
+        <tr><td>Multi-tenant</td><td>One operator, one machine. Team features may come later; multi-user SaaS is not the direction.</td></tr>
+        <tr><td>A fork of pi</td><td>Codar Bot uses the pi runtime's public extension surface only. Upgrades are version bumps, not patches.</td></tr>
+      </table>
+
+      <h2>Contributing</h2>
+      <p>
+        Issues and PRs are welcome at <a href="https://github.com/codarwang/codar-bot">github.com/codarwang/codar-bot</a>.
+        The test suite is fully offline and deterministic — no network, no real model calls — so a green run on
+        your laptop means the same on CI.
+      </p>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__grid">
+      <p class="footer__note">Apache-2.0. Codar Bot is an independent project, not affiliated with earendil-works or the pi project.</p>
+      <nav class="footer__links">
+        <a href="../">Home</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+
+</body>
+</html>

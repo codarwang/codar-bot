@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quickstart — Codar Bot</title>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <header class="nav">
+    <div class="wrap nav__inner">
+      <a class="nav__logo" href="../">Codar&nbsp;Bot</a>
+      <nav class="nav__links">
+        <a href="../">Home</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+        <a href="https://www.npmjs.com/package/codar-bot">npm</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap docs">
+    <aside class="docs__nav">
+      <h4>Getting started</h4>
+      <a href="quickstart.html" aria-current="page">Quickstart</a>
+      <h4>Reference</h4>
+      <a href="configuration.html">Configuration</a>
+      <a href="governance.html">Governance</a>
+      <a href="extending.html">Extending</a>
+    </aside>
+
+    <article class="docs__body">
+      <p class="eyebrow eyebrow--amber">Quickstart</p>
+      <h1 class="display display--h2">From zero to a working bot team.</h1>
+      <p class="lede" style="margin-top: 16px;">Two paths below — pick by comfort, not by profession. Both end in the same place: a bot finishes real work in your chat room.</p>
+
+      <h2 class="display display--h3" id="fast">Path A — I write code</h2>
+      <p>You need Node.js 22.19+ and one provider API key (Zhipu, MiniMax, or any OpenAI-compatible endpoint).</p>
+
+      <div class="term">
+        <div><span class="c-muted"># 1 — install (npm 7+ also installs the pi runtime for you)</span></div>
+        <div><span class="c-amber">$</span> npm i -g codar-bot</div>
+        <div>&nbsp;</div>
+        <div><span class="c-muted"># 2 — initialize your workspace and chief bot</span></div>
+        <div><span class="c-amber">$</span> codar init --provider zai --model glm-4.7</div>
+        <div><span class="c-muted">#    (your API key goes into ~/.codar-bot — never leaves your disk)</span></div>
+        <div>&nbsp;</div>
+        <div><span class="c-muted"># 3 — start the host and open the workstation</span></div>
+        <div><span class="c-amber">$</span> codar start</div>
+        <div><span class="c-ok">✓</span> web workstation at http://127.0.0.1:7600</div>
+      </div>
+
+      <p style="margin-top: 24px;">In the workstation: give your chief bot a writer to delegate to, then type a task into the room.
+        Watch the handoff happen — and when a bot wants to write a file, you'll get an approval card. That's the product.</p>
+
+      <h2 class="display display--h3" id="gentle">Path B — I don't write code</h2>
+      <p>Never used a terminal? Here's the whole idea in plain words: a <strong>terminal</strong> is a window where you type
+        commands instead of clicking. You'll type five short lines, total. Ready?</p>
+
+      <ol>
+        <li>
+          <strong>Get a key.</strong> A provider API key is like a pre-paid card for AI models. Sign up at a provider
+          (for example Zhipu's open platform), create a key, copy it — it looks like <span class="mono">xxxx.xxxx</span>.
+          Keep it private: it's the one thing that spends money.
+        </li>
+        <li>
+          <strong>Open the terminal.</strong> On macOS: press <span class="mono">⌘+Space</span>, type
+          <span class="mono">Terminal</span>, press Enter. On Windows: open PowerShell.
+        </li>
+        <li>
+          <strong>Install Node.js</strong> (the engine Codar Bot runs on) from
+          <a href="https://nodejs.org">nodejs.org</a> — the "LTS" download, default options.
+        </li>
+        <li>
+          <strong>Install Codar Bot.</strong> In the terminal, type this line and press Enter:
+          <div class="term" style="margin-top: 8px;"><div><span class="c-amber">$</span> npm i -g codar-bot</div></div>
+        </li>
+        <li>
+          <strong>Set up and start.</strong> Two more lines:
+          <div class="term" style="margin-top: 8px;">
+            <div><span class="c-amber">$</span> codar init --provider zai --model glm-4.7</div>
+            <div><span class="c-amber">$</span> codar start</div>
+          </div>
+          <p>The terminal will ask for your API key when it needs it — paste it and press Enter.</p>
+        </li>
+        <li>
+          <strong>Open the workstation.</strong> Double-click the address the terminal prints
+          (<span class="mono">http://127.0.0.1:7600</span>) or type it into your browser. You're in the chat room.
+          Say hello — your chief bot answers.
+        </li>
+      </ol>
+
+      <div class="callout">
+        <strong>When a bot asks to write a file</strong>, you'll see an <strong>Allow / Deny</strong> card in the chat.
+        This is the approval gate — nothing touches your disk unless you click Allow. Try both buttons once; it's your room.
+      </div>
+
+      <div class="callout callout--amber">
+        <strong>Spending safety.</strong> Every bot and room has a budget. When it runs out, the room pauses —
+        it can't quietly overspend. See <a href="governance.html">Governance</a> to set your own caps.
+      </div>
+
+      <h2 class="display display--h3">Where things live</h2>
+      <table>
+        <tr><th>Path</th><th>What</th></tr>
+        <tr><td><span class="mono">~/.codar-bot/</span></td><td>Everything: settings, bot memory, audit log, shared work files.</td></tr>
+        <tr><td><span class="mono">http://127.0.0.1:7600</span></td><td>The web workstation — roster, chat, budgets, approvals, audit.</td></tr>
+        <tr><td><span class="mono">codar status</span> / <span class="mono">codar stop</span></td><td>Check or stop the host from the terminal.</td></tr>
+      </table>
+
+      <p style="margin-top: 24px;">Stuck? <a href="https://github.com/codarwang/codar-bot/issues">Open an issue</a> —
+        describe what you typed and what you saw. Next stop: <a href="configuration.html">Configuration</a>.</p>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__grid">
+      <p class="footer__note">Apache-2.0. Codar Bot is an independent project, not affiliated with earendil-works or the pi project.</p>
+      <nav class="footer__links">
+        <a href="../">Home</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+
+</body>
+</html>

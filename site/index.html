@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Codar Bot — a team of AI bots, working on your own machine</title>
+  <meta name="description" content="Codar Bot is a self-hosted workbench where a team of AI bots collaborate in a group chat on your machine — each with its own model, role, memory, and budget. Approvals gate every write, budgets cap every spend, and an audit trail records everything.">
+  <meta property="og:title" content="Codar Bot — your bots, your machine, your rules">
+  <meta property="og:description" content="A group chat where your team of AI bots gets real work done. Self-hosted, bring-your-own-model, with budgets, approvals, and an audit trail.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://codarbot.com/">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+  <header class="nav">
+    <div class="wrap nav__inner">
+      <a class="nav__logo" href="/">Codar&nbsp;Bot <span class="mono">/ˈkoʊdɑːr/</span></a>
+      <nav class="nav__links">
+        <a href="docs/">Docs</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+        <a href="https://www.npmjs.com/package/codar-bot">npm</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- HERO — variant A split (45/55), B headline energy, C badge fold-in -->
+    <section class="hero">
+      <div class="wrap hero__grid">
+        <div class="hero__claim">
+          <p class="eyebrow eyebrow--amber">Self-hosted · Bring your own model</p>
+          <h1 class="display display--hero">Your bots.<br>Your machine.<br><span class="hl">Your rules.</span></h1>
+          <p class="lede" style="margin-top: 24px;">
+            A group chat where your team of AI bots gets real work done —
+            and you hold the keys: every write asks first, every spend has a cap.
+          </p>
+          <div class="hero__ctas">
+            <a class="btn btn--primary" href="docs/quickstart.html">Get started</a>
+            <a class="btn btn--ghost" href="docs/">View docs</a>
+          </div>
+          <p style="margin-top: 20px;">
+            <code class="install-chip">npm i -g codar-bot</code>
+          </p>
+        </div>
+
+        <!-- The chat-timeline artifact: the product IS the hero image. -->
+        <div class="chat" role="img" aria-label="A Codar Bot group chat: the user asks for a blog post, the chief bot delegates, the writer bot delivers, and a write approval card awaits one click.">
+          <div class="chat__head">
+            <span class="chat__room">#content-studio</span>
+            <span class="chat__meta">budget 12% used</span>
+          </div>
+
+          <div class="cast" aria-label="The team: Chief the coordinator, Writer, Reviewer">
+            <span class="cast__member"><span class="cast__dot cast__dot--chief"></span>Chief</span>
+            <span class="cast__member"><span class="cast__dot cast__dot--writer"></span>Writer</span>
+            <span class="cast__member"><span class="cast__dot cast__dot--reviewer"></span>Reviewer</span>
+          </div>
+
+          <div class="msg">
+            <div class="msg__avatar msg__avatar--human" aria-hidden="true">F</div>
+            <div class="msg__body">
+              <div class="msg__byline"><span class="msg__name">felix</span><span class="msg__time">10:02</span></div>
+              <p class="msg__text">Need a launch post for our new feature — draft by this afternoon?</p>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="msg__avatar msg__avatar--chief" aria-hidden="true">C</div>
+            <div class="msg__body">
+              <div class="msg__byline"><span class="msg__name msg__name--chief">Chief</span><span class="badge">coordinator</span><span class="msg__time">10:02</span></div>
+              <p class="msg__text">On it — delegating the draft to <strong>Writer</strong>, review cycle to <strong>Reviewer</strong>.</p>
+            </div>
+          </div>
+
+          <div class="msg msg--hl">
+            <div class="msg__avatar msg__avatar--writer" aria-hidden="true">W</div>
+            <div class="msg__body">
+              <div class="msg__byline"><span class="msg__name msg__name--writer">Writer</span><span class="badge">writer</span><span class="msg__time">10:19</span></div>
+              <p class="msg__text">Draft ready: <span class="mono">launch-post.md</span> — 740 words, two angles, kept the technical depth.</p>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="msg__avatar msg__avatar--reviewer" aria-hidden="true">R</div>
+            <div class="msg__body">
+              <div class="msg__byline"><span class="msg__name msg__name--reviewer">Reviewer</span><span class="badge">reviewer</span><span class="msg__time">10:24</span></div>
+              <p class="msg__text">Fact-checked and tightened. Ship it.</p>
+            </div>
+          </div>
+
+          <div class="approval">
+            <span class="approval__label">Approval</span>
+            <span>Writer wants to save <span class="mono">launch-post.md</span></span>
+            <span class="approval__btn approval__btn--allow">Allow</span>
+            <span class="approval__btn approval__btn--deny">Deny</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- WHAT YOU GET — the feature bento (from README) -->
+    <section class="section">
+      <div class="wrap">
+        <p class="eyebrow">What you get</p>
+        <h2 class="display display--h2">One chat room. A whole workshop.</h2>
+        <div class="grid bento" style="margin-top: 32px;">
+          <div class="card">
+            <span class="card__tag">Team</span>
+            <h3 class="display display--h3">Bot team</h3>
+            <p>Each bot has its own model, role, memory, and budget. A coordinator dispatches; specialists deliver.</p>
+          </div>
+          <div class="card">
+            <span class="card__tag">Space</span>
+            <h3 class="display display--h3">Group chat</h3>
+            <p>Message the room or @-mention a specific bot. Handoffs between bots are visible, not hidden.</p>
+          </div>
+          <div class="card">
+            <span class="card__tag">Flow</span>
+            <h3 class="display display--h3">Task dispatch</h3>
+            <p>Bots delegate work to each other. You watch the chain, not just the final answer.</p>
+          </div>
+          <div class="card">
+            <span class="card__tag">Trust</span>
+            <h3 class="display display--h3">Approval gate</h3>
+            <p>Every write operation asks you first. Allow once, deny, or save it as a rule.</p>
+          </div>
+          <div class="card">
+            <span class="card__tag">Cost</span>
+            <h3 class="display display--h3">Budgets</h3>
+            <p>Token, cost, turn, and wall-time limits per bot and per room — with auto-stop when they blow.</p>
+          </div>
+          <div class="card">
+            <span class="card__tag">Proof</span>
+            <h3 class="display display--h3">Audit trail</h3>
+            <p>Every tool call, approval, and budget stop is recorded. Filterable, honest, local.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DUAL-AUDIENCE PATHS -->
+    <section class="section--tight section">
+      <div class="wrap">
+        <p class="eyebrow">Two ways in</p>
+        <h2 class="display display--h2">Whether you ship code or ship content.</h2>
+        <div class="grid paths" style="margin-top: 32px;">
+          <div class="path">
+            <p class="eyebrow eyebrow--amber">Path A</p>
+            <h3 class="display display--h3">I write code</h3>
+            <p>One install, one init, your API key. The whole team is up before your coffee cools.</p>
+            <div class="term">
+              <div><span class="c-muted"># install &amp; initialize</span></div>
+              <div><span class="c-amber">$</span> npm i -g codar-bot</div>
+              <div><span class="c-amber">$</span> codar init --provider zai --model glm-4.7</div>
+              <div><span class="c-ok">✓</span> chief bot ready · room: default · http://127.0.0.1:7600</div>
+            </div>
+          </div>
+          <div class="path">
+            <p class="eyebrow eyebrow--amber">Path B</p>
+            <h3 class="display display--h3">I don't write code</h3>
+            <p>Curious about AI agents but the terminal is not your home? The gentle path walks you through
+              every step — what a terminal is, where to get an API key, and how to watch your bot team work.</p>
+            <p><a class="btn btn--ghost btn--sm" href="docs/quickstart.html#gentle">Take the gentle path →</a></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- GOVERNANCE — the serious software section -->
+    <section class="section">
+      <div class="wrap">
+        <p class="eyebrow">Governance</p>
+        <h2 class="display display--h2">Serious software for untamed agents.</h2>
+        <p class="lede" style="margin-top: 16px;">
+          Multi-bot AI is powerful and easy to over-trust. Codar Bot treats every bot as a talented
+          contractor: welcome in the room, watched at the toolbox.
+        </p>
+        <div class="grid bento" style="margin-top: 32px;">
+          <div class="card">
+            <span class="card__tag">Approvals</span>
+            <h3 class="display display--h3">Nothing writes without you</h3>
+            <p>File edits and shell commands pause for an Allow / Deny decision — with optional rules for the routine stuff.</p>
+          </div>
+          <div class="card">
+            <span class="card__tag">Budgets</span>
+            <h3 class="display display--h3">Spending you set in advance</h3>
+            <p>Caps per bot and per room in tokens, money, turns, or wall time. A blown budget pauses the room — no surprise bills.</p>
+          </div>
+          <div class="card">
+            <span class="card__tag">Audit</span>
+            <h3 class="display display--h3">A record you can point at</h3>
+            <p>An append-only, filterable log of every tool call and decision — stored on your disk, owned by you.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIDEO SLOT — 60s promo embeds here once final -->
+    <section class="section--tight section">
+      <div class="wrap">
+        <p class="eyebrow">In 60 seconds</p>
+        <h2 class="display display--h2">Watch a team take a task end-to-end.</h2>
+        <div class="videoslot" style="margin-top: 32px;">[ 60-second demo — coming with public launch ]</div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__grid">
+      <div>
+        <a class="nav__logo" href="/" style="margin-right: 0;">Codar&nbsp;Bot</a>
+        <p class="footer__note" style="margin-top: 12px;">
+          Apache-2.0. Codar Bot is an independent, community project and is not affiliated with
+          earendil-works or the pi project. Runs on your machine — your keys, your data, your rules.
+        </p>
+      </div>
+      <nav class="footer__links">
+        <a href="docs/">Docs</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+        <a href="https://www.npmjs.com/package/codar-bot">npm</a>
+      </nav>
+    </div>
+  </footer>
+
+</body>
+</html>

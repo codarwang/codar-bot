@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docs — Codar Bot</title>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <header class="nav">
+    <div class="wrap nav__inner">
+      <a class="nav__logo" href="../">Codar&nbsp;Bot</a>
+      <nav class="nav__links">
+        <a href="../">Home</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+        <a href="https://www.npmjs.com/package/codar-bot">npm</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap docs">
+    <aside class="docs__nav">
+      <h4>Getting started</h4>
+      <a href="quickstart.html">Quickstart</a>
+      <h4>Reference</h4>
+      <a href="configuration.html">Configuration</a>
+      <a href="governance.html">Governance</a>
+      <a href="extending.html">Extending</a>
+    </aside>
+
+    <article class="docs__body">
+      <p class="eyebrow eyebrow--amber">Documentation</p>
+      <h1 class="display display--h2">The workshop manual.</h1>
+      <p class="lede" style="margin-top: 16px;">
+        Everything you need to run a team of AI bots on your own machine —
+        from first install to budgets, approvals, and beyond.
+      </p>
+
+      <h2 class="display display--h3">New here?</h2>
+      <p>
+        Start with the <a href="quickstart.html">Quickstart</a>. It has two paths:
+        a fast lane if you live in the terminal, and a gentle lane that explains
+        every step if this is your first time running a command-line tool.
+      </p>
+
+      <h2 class="display display--h3">The ten-cent tour</h2>
+      <table>
+        <tr><th>Page</th><th>What's in it</th></tr>
+        <tr><td><a href="quickstart.html">Quickstart</a></td><td>Install → init → open the workstation → first task. Two paths, one goal: watch a bot finish real work.</td></tr>
+        <tr><td><a href="configuration.html">Configuration</a></td><td>Providers and models, data directory, CLI commands, environment variables.</td></tr>
+        <tr><td><a href="governance.html">Governance</a></td><td>Budgets, the approval gate, and the audit trail — how you stay in control.</td></tr>
+        <tr><td><a href="extending.html">Extending</a></td><td>Approval rules, bot memory, and where the project draws its scope lines.</td></tr>
+      </table>
+
+      <div class="callout callout--amber">
+        <strong>Everything runs locally.</strong> Your API keys stay on your disk,
+        bot memory lives in <span class="mono">~/.codar-bot/</span>, and the audit log never leaves your machine.
+      </div>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__grid">
+      <p class="footer__note">Apache-2.0. Codar Bot is an independent project, not affiliated with earendil-works or the pi project.</p>
+      <nav class="footer__links">
+        <a href="../">Home</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+
+</body>
+</html>

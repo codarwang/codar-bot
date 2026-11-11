@@ -20,7 +20,8 @@ extensions/codar-gate/*.js
 extensions/codar-gate/*.js.map
 
 # internal working documents — never published (product strategy, donor details, spike artifacts, QA records)
-docs/
+# /docs/ is root-anchored so site/docs/ (public website docs) stays tracked
+/docs/
 AGENTS.md
 .gstack/
 mockups/

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuration — Codar Bot</title>
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+
+  <header class="nav">
+    <div class="wrap nav__inner">
+      <a class="nav__logo" href="../">Codar&nbsp;Bot</a>
+      <nav class="nav__links">
+        <a href="../">Home</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+        <a href="https://www.npmjs.com/package/codar-bot">npm</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap docs">
+    <aside class="docs__nav">
+      <h4>Getting started</h4>
+      <a href="quickstart.html">Quickstart</a>
+      <h4>Reference</h4>
+      <a href="configuration.html" aria-current="page">Configuration</a>
+      <a href="governance.html">Governance</a>
+      <a href="extending.html">Extending</a>
+    </aside>
+
+    <article class="docs__body">
+      <p class="eyebrow eyebrow--amber">Reference</p>
+      <h1 class="display display--h2">Configuration</h1>
+      <p class="lede" style="margin-top: 16px;">Providers, models, the CLI, and where everything lives on disk.</p>
+
+      <h2>CLI commands</h2>
+      <table>
+        <tr><th>Command</th><th>What it does</th></tr>
+        <tr>
+          <td><span class="mono">codar init --provider &lt;name&gt; --model &lt;modelId&gt;</span></td>
+          <td>
+            Create your workspace and the chief bot. Optional flags:
+            <span class="mono">--base-url</span> (custom/OpenAI-compatible endpoint),
+            <span class="mono">--api</span> (pi KnownApi type),
+            <span class="mono">--thinking</span> (thinking level).
+          </td>
+        </tr>
+        <tr><td><span class="mono">codar start</span></td><td>Start the host: API on 127.0.0.1:7600, web workstation served from the same port.</td></tr>
+        <tr><td><span class="mono">codar status</span></td><td>Is the host alive? How many bots are up?</td></tr>
+        <tr><td><span class="mono">codar stop</span></td><td>Send SIGTERM to the host.</td></tr>
+      </table>
+
+      <h2>Providers and models</h2>
+      <p>
+        Codar Bot is bring-your-own-model. Each bot declares its provider and model — mix them freely
+        (a fast coordinator on a flash model, writers on deeper ones). Providers speak the OpenAI-compatible
+        protocol by default; presets exist for Zhipu (zai) and MiniMax.
+      </p>
+      <p>
+        API keys are written to your local data directory during <span class="mono">init</span> and passed to bots
+        as environment variables at spawn time. They are never sent anywhere except your chosen provider.
+      </p>
+
+      <h2>Data directory</h2>
+      <table>
+        <tr><th>Path</th><th>Contents</th></tr>
+        <tr><td><span class="mono">~/.codar-bot/</span></td><td>Default data root (override with <span class="mono">CODAR_BOT_HOME</span>).</td></tr>
+        <tr><td><span class="mono">~/.codar-bot/work/&lt;name&gt;</span></td><td>Recommended work directories for bots (any absolute path works).</td></tr>
+        <tr><td><span class="mono">~/.codar-bot/audit.jsonl</span></td><td>The append-only audit log.</td></tr>
+        <tr><td><span class="mono">~/.codar-bot/usage.sqlite</span></td><td>The token/cost ledger behind budgets and meters.</td></tr>
+      </table>
+
+      <h2>Environment variables</h2>
+      <table>
+        <tr><th>Variable</th><th>Effect</th></tr>
+        <tr><td><span class="mono">CODAR_BOT_HOME</span></td><td>Use a different data root (handy for tests and demos).</td></tr>
+        <tr><td><span class="mono">CODAR_BIND</span></td><td>Bind address for the API (default 127.0.0.1; 0.0.0.0 for containerized deployments).</td></tr>
+        <tr><td><span class="mono">CODAR_API_TOKEN</span></td><td>Require <span class="mono">Authorization: Bearer</span> on API endpoints — for non-local deployments.</td></tr>
+        <tr><td><span class="mono">CODAR_MEMORY_REVIEW_EVERY</span></td><td>How often bot memory is auto-reviewed (measured in settled turns).</td></tr>
+      </table>
+
+      <div class="callout">
+        <strong>Docker is optional.</strong> By default bots run as local processes behind the approval gate —
+        same trust model as popular coding agents. If you want stronger per-bot isolation and Docker is installed,
+        you can run each bot in its own container; the compose layout ships with the repository.
+      </div>
+
+      <h2>Runtime</h2>
+      <p>
+        Codar Bot runs on the <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent">pi agent runtime</a>
+        (pinned at 1.5.0). With npm 7+ it is installed automatically as a peer dependency; with other package
+        managers, install it explicitly alongside.
+      </p>
+    </article>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer__grid">
+      <p class="footer__note">Apache-2.0. Codar Bot is an independent project, not affiliated with earendil-works or the pi project.</p>
+      <nav class="footer__links">
+        <a href="../">Home</a>
+        <a href="https://github.com/codarwang/codar-bot">GitHub</a>
+      </nav>
+    </div>
+  </footer>
+
+</body>
+</html>
