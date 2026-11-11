@@ -86,9 +86,6 @@ you can optionally enable per-bot sandboxing for stronger isolation.
 ## Documentation
 
 - [中文文档](README.zh-CN.md)
-- [Architecture](docs/architecture.md)
-- [M3 Design](docs/m3-architecture.md)
-- [PRD](docs/PRD.md)
 
 ## Non-affiliation
 

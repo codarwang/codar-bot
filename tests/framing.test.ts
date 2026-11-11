@@ -1,6 +1,6 @@
 /**
  * LineFramer unit tests — offline, deterministic. The U+2028/U+2029 cases are
- * the an earlier internal project lesson pinned as a regression anchor: those code points are
+ * a hard-won lesson pinned as a regression anchor: those code points are
  * valid inside JSON strings, and readline-style splitting corrupts them.
  */
 import { test } from "node:test";

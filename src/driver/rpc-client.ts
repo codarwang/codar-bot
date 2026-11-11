@@ -1,8 +1,9 @@
 /**
  * codar-bot RPC driver — spawns a pi subprocess in rpc mode and speaks the
- * JSONL protocol on stdin/stdout (architecture.md §2).
+ * JSONL protocol on stdin/stdout.
  *
- * Engineering red lines inherited from the an earlier internal project adapter's hard-won rules:
+ * Engineering red lines inherited from an earlier internal adapter's
+ * hard-won rules:
  *  - Framing is byte-split-on-LF only. readline is NOT usable: it also splits
  *    on U+2028/U+2029, which are valid inside JSON strings.
  *  - Bounded everything: line bytes, raw stream bytes, idle timeout,
@@ -95,7 +96,7 @@ const UI_METHODS_AWAITING_REPLY: ReadonlySet<string> = new Set(["select", "confi
 /**
  * Byte-level LF framing. Feed chunks; complete lines come back as Buffers
  * (callers decode + JSON.parse). Splits ONLY on 0x0A — U+2028/U+2029 inside
- * JSON strings stay in-line (the an earlier internal project readline lesson).
+ * JSON strings stay in-line (the readline splitting lesson).
  */
 export class LineFramer {
   private buffer: Buffer = Buffer.alloc(0);

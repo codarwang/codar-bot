@@ -84,9 +84,6 @@ Docker 的用户可选开启 per-Bot 容器隔离（更强）。
 ## 文档
 
 - [English](README.md)
-- [架构设计](docs/architecture.md)
-- [M3 设计](docs/m3-architecture.md)
-- [PRD](docs/PRD.md)
 
 ## 许可证
 

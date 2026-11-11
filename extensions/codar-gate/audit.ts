@@ -1,7 +1,7 @@
 /**
  * codar-gate audit sink — bounded JSONL append to a single file.
  *
- * Donated semantics from an earlier internal project an earlier internal gate/audit.ts (PRD §14): every
+ * Donated semantics from a prior internal project's gate: every
  * tool call is audited BEFORE the gate acts on it ("先记审计"), approvals are
  * audited when they resolve, and message_end usage+cost is appended to the
  * SAME file (S3 metering source ①).

@@ -1,9 +1,9 @@
 /**
  * codar-gate rule engine — pure module (no pi imports, no I/O).
  *
- * Donated semantics from an earlier internal project an earlier internal gate/rules.ts (Apache-2.0 donor
- * project, PRD §14; 5383-test-pinned fail-closed evaluation), re-cut for the
- * codar-bot M1/M2 default policy (architecture.md §5.4):
+ * Donated semantics from a prior internal project's rule engine
+ * (test-pinned fail-closed evaluation), re-cut for the
+ * codar-bot M1/M2 default policy:
  * read-class tools allow; write/edit gate (approval); bash allows container-
  * interior work but gates destructive/egress patterns; unknown tools gate.
  *
@@ -122,7 +122,7 @@ function bashKeywordRule(spec: BashPatternSpec): GateRule {
   };
 }
 
-/** Ordered codar preset rules (architecture.md §5.4 M1/M2 defaults). */
+/** Ordered codar preset rules (M1/M2 defaults). */
 export function presetRules(): readonly GateRule[] {
   return [
     ...READ_TOOLS.map<GateRule>((tool) => ({

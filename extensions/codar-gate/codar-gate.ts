@@ -1,9 +1,8 @@
 /**
  * codar-gate — the codar-bot pi gate extension (M0-S2 port).
  *
- * Donated from an earlier internal project an earlier internal gate (PRD §14: gate extension code is the
- * one code-level donation), re-targeted at the pi 1.5.0 extension surface and
- * re-cut to the codar-bot M1/M2 policy (architecture.md §5.4):
+ * Donated from a prior internal project, re-targeted at the pi 1.5.0
+ * extension surface and re-cut to the codar-bot M1/M2 policy:
  *
  *  - tool_call: EVERY call is audited first (JSONL append to
  *    $CODAR_GATE_AUDIT, default `<cwd>/.codar-gate-audit.jsonl`); then the
@@ -16,7 +15,7 @@
  *  - bridge_echo (S2 criterion ② only): a structured round-trip over the
  *    extension_ui bridge — the D1 message_bot channel premise. The call is
  *    parked in the tool_call handler (where ctx.ui lives, the ask_user
- *    pattern an earlier internal project proved): params go OUT as the input-dialog placeholder
+ *    pattern the donor project proved): params go OUT as the input-dialog placeholder
  *    JSON, the host's structured reply comes BACK as the dialog value, and
  *    the memoized result is reported by execute() — no second dialog.
  *
@@ -107,7 +106,7 @@ function reloadIfStale(state: { path: string | null; lastMtime: number; policy: 
 }
 
 /** Per-toolCallId memo for bridge_echo: the dialog already ran in the
- *  tool_call handler; execute() only reports it (an earlier internal project ask_user pattern). */
+ *  tool_call handler; execute() only reports it (donor ask_user pattern). */
 interface BridgeEchoMemo {
   ok: boolean;
   marker?: string;
