@@ -7,7 +7,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "./paths.js";
 import { Store, defaultBudget, type BotModelRef } from "./store.js";
-import { writeKeys, loadKeys, type KeysDoc } from "./provider-config.js";
+import { writeKeys, loadKeys, SAFE_ID, THINKING_LEVELS, type KeysDoc } from "./provider-config.js";
 
 export interface InitInput {
   provider: string;
@@ -35,8 +35,17 @@ export function initTeam(input: InitInput): InitResult {
   }
   // Provider names become keys.json members and pi provider ids — restrict
   // to a safe charset (blocks __proto__/constructor prototype escapes).
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.provider)) {
+  // modelId gets the same charset (the HTTP validateModel would otherwise
+  // reject a slash id init wrote — init-vs-API asymmetry, R3 audit) and
+  // thinkingLevel must be a pi level (a bad flag failed only at spawn).
+  if (!SAFE_ID.test(input.provider)) {
     throw new Error(`invalid provider name "${input.provider}" (use [A-Za-z0-9._-])`);
+  }
+  if (!SAFE_ID.test(input.modelId)) {
+    throw new Error(`invalid model id "${input.modelId}" (use [A-Za-z0-9._-])`);
+  }
+  if (input.thinkingLevel !== undefined && !(THINKING_LEVELS as readonly string[]).includes(input.thinkingLevel)) {
+    throw new Error(`invalid thinking level "${input.thinkingLevel}" (use ${THINKING_LEVELS.join("|")})`);
   }
 
   // Take the single-writer lock FIRST: a locked-out init must leave NOTHING

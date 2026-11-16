@@ -14,13 +14,15 @@ per-bot budgets, tool-call approvals, and an append-only audit trail.
 
 ```bash
 npm i -g codar-bot @earendil-works/pi-coding-agent
-codar init --provider zai-coding-cn --model glm-5.3  # + set key
-codar start     # start the host → open http://127.0.0.1:7600
+codar init --provider openai --model gpt-5.4       # + set key (intl)
+# or: codar init --provider zai-coding-cn --model glm-5.3   (CN)
+codar providers  # see every built-in preset + what you have configured
+codar start      # start the host → open http://127.0.0.1:7600
 ```
 
 **What you need:**
 - Node.js 22.19+
-- One AI provider API key (Zhipu/zai, MiniMax, or any OpenAI-compatible endpoint)
+- One AI provider API key (OpenAI, Anthropic, Zhipu/zai, MiniMax, DeepSeek, Groq, or any OpenAI-compatible endpoint)
 - Docker optional (stronger per-bot isolation if installed)
 
 ## What you get
@@ -53,8 +55,16 @@ codar start     # start the host → open http://127.0.0.1:7600
 ### Providers
 
 ```bash
-codar init --provider zai-coding-cn --model glm-5.3
+codar init --provider openai --model gpt-5.4
+codar providers   # built-in presets + your configured keys + models in use
 ```
+
+Built-in presets: `openai`, `anthropic`, `deepseek`, `zai-coding-cn`,
+`minimax-anthropic`, `minimax-cn`, `groq`, `openrouter` — any other
+OpenAI-compatible relay works too (just name it and give a `--base-url`).
+The web workstation's bot form and bot detail page offer provider/model
+dropdowns fed by the same list (`GET /api/providers`); unknown providers and
+model ids stay free-text.
 
 Or edit `~/.codar-bot/keys.json`:
 
@@ -66,6 +76,14 @@ Or edit `~/.codar-bot/keys.json`:
   }
 }
 ```
+
+> **openai protocol note:** the `openai` preset speaks `openai-responses`
+> (pi's pinned catalog serves all current GPT chat models that way, and
+> OpenAI recommends Responses for reasoning models). This only shapes the
+> models codar generates entries for; to pin an older completions-only
+> model, set `"api": "openai-completions"` in its keys.json entry — for a
+> catalog-served model you must declare it explicitly in `entry.models`
+> with its `api` instead.
 
 ### Budgets
 

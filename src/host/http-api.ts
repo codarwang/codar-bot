@@ -12,8 +12,7 @@ import type { BotManager } from "./bot-manager.js";
 import { mkdirSync, readFileSync } from "node:fs";
 import { resolve, relative, isAbsolute, sep, join } from "node:path";
 import { ApiError } from "./http-error.js";
-
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+import { loadKeys, providersReport, SAFE_ID } from "./provider-config.js";
 
 /** UTC calendar-month start as a ledger `hour` string (§6.1a window). */
 function monthStartHour(): string {
@@ -54,6 +53,8 @@ export interface ApiDeps {
   budget: Budget;
   memory: MemoryEngine;
   auditQuery: AuditQuery;
+  /** keys.json path — re-read per request so `codar init` needs no restart. */
+  keysPath: string;
   /** Built web UI dir (web/dist); absent ⇒ API-only mode. */
   webDir?: string;
 }
@@ -230,6 +231,22 @@ export class HttpApi {
       return;
     }
 
+    if (resource === "providers" && req.method === "GET" && parts.length === 2) {
+      // Read-only discovery surface (v3): keys.json ∪ presets ∪ in-use
+      // providers, zero key material. Re-read per request — a provider
+      // registered via `codar init` shows up without a host restart (same
+      // freshness contract as bot spawns, bot-manager's per-start loadKeys).
+      // Malformed keys.json throws in loadKeys → 500 with its message.
+      this.send(res, 200, {
+        providers: providersReport(
+          loadKeys(this.deps.keysPath),
+          this.deps.store.state.bots,
+          this.deps.store.state.reviewModel ?? null
+        ),
+      });
+      return;
+    }
+
     if (parts.length > 4) {
       this.send(res, 404, { error: "no route (too many path segments)" });
       return;
@@ -260,7 +277,19 @@ export class HttpApi {
           throw new ApiError(400, "workDir must not contain ':' (breaks docker -v mounts)");
         }
         const model = body.model === undefined
-          ? { provider: "zai-coding-cn", modelId: "glm-5.3", thinkingLevel: "low" }
+          ? (() => {
+              // No model given → default to the chief's (the model the user
+              // initialized with — the natural team default). Never a
+              // hardcoded provider: the old zai-coding-cn fallback handed
+              // strangers a provider they have no key for (v3 default-value
+              // governance). Defensive copy — addBot must not share the
+              // chief's model object reference.
+              const chief = this.deps.store.chief();
+              if (chief === undefined) {
+                throw new ApiError(400, "no model given and no chief bot to default to — run codar init or pass model {provider, modelId, thinkingLevel}");
+              }
+              return { ...chief.model };
+            })()
           : validateModel(body.model);
         const budget = body.budget ?? { maxTokens: 5_000_000, maxCostMicros: 20_000_000, maxTurns: 2_000, maxWallMs: 3_600_000 };
         for (const k of ["maxTokens", "maxCostMicros", "maxTurns", "maxWallMs"] as const) {

@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -168,6 +168,73 @@ test("lower-layer error mapping: bad JSON 400, unknown bot 404, busy/stopped 409
       method: "POST", headers: { "content-type": "application/json" }, body: "null",
     });
     assert.equal(nullBody.status, 400);
+  } finally {
+    await teardown(t.host, t.root);
+  }
+});
+
+test("provider discovery + chief-derived defaults (v3): POST model default, GET /api/providers, PATCH→start rebuild", async () => {
+  const t = await boot();
+  try {
+    // POST without a model defaults to the CHIEF's model (never a hardcoded
+    // provider — the old zai-coding-cn fallback handed strangers a provider
+    // they have no key for). boot() seeds chief "Routes" on fake/f/low.
+    const created = await json(t.port, "/api/bots", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Defaulted", workDir: join(t.root, "work") }),
+    });
+    assert.equal(created.status, 201);
+    const createdBody = (await created.json()) as { model: { provider: string; modelId: string; thinkingLevel: string } };
+    assert.deepEqual(createdBody.model, { provider: "fake", modelId: "f", thinkingLevel: "low" });
+
+    // GET /api/providers: presets + bots-only provider, no keys.json yet.
+    const list1 = (await (await json(t.port, "/api/providers")).json()) as {
+      providers: Array<{ id: string; configured: boolean; models: Array<{ id: string }> }>;
+    };
+    const by1 = (id: string) => list1.providers.find((p) => p.id === id);
+    assert.ok(by1("openai") !== undefined && by1("openai")!.configured === false);
+    assert.ok(by1("openai")!.models.some((m) => m.id === "gpt-5.4"), "curated pick listed");
+    assert.ok(by1("fake") !== undefined, "bots-only provider listed");
+    assert.deepEqual(by1("fake")!.models.map((m) => m.id), ["f"]);
+
+    // keys.json written AFTER boot shows up without a restart (per-request
+    // loadKeys — same freshness contract as spawns).
+    writeFileSync(join(t.root, "keys.json"), JSON.stringify({ providers: { "zai-coding-cn": { apiKey: "k" } } }));
+    const list2 = (await (await json(t.port, "/api/providers")).json()) as {
+      providers: Array<{ id: string; configured: boolean }>;
+    };
+    const zai = list2.providers.find((p) => p.id === "zai-coding-cn");
+    assert.ok(zai !== undefined && zai.configured === true, "init-added key is live");
+    assert.ok(list2.providers.findIndex((p) => p.configured) <= list2.providers.findIndex((p) => p.id === "zai-coding-cn"), "configured sorts first");
+
+    // Malformed keys.json → 500 with the loadKeys message (honest, and the
+    // boot-time fail-fast already covered the same validation).
+    writeFileSync(join(t.root, "keys.json"), "{broken");
+    const bad = await json(t.port, "/api/providers");
+    assert.equal(bad.status, 500);
+
+    // PATCH model → start → pi-conf models.json rebuilt for the NEW model
+    // (models.json only materializes at start — the "takes effect on next
+    // start" contract). Restore a valid keys.json first, then PATCH "Routes"
+    // onto a configured relay provider with an explicit model.
+    writeFileSync(join(t.root, "keys.json"), JSON.stringify({
+      providers: { myrelay: { apiKey: "k-relay", api: "openai-completions", baseUrl: "https://relay.example/v1" } },
+    }));
+    const patched = await json(t.port, `/api/bots/${t.botId}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: { provider: "myrelay", modelId: "rm-9", thinkingLevel: "low" } }),
+    });
+    assert.equal(patched.status, 200);
+    const started = await json(t.port, `/api/bots/${t.botId}/start`, { method: "POST" });
+    assert.equal(started.status, 200);
+    const confDoc = JSON.parse(
+      readFileSync(join(t.root, "pi-conf", t.botId, "models.json"), "utf8")
+    ) as { providers: { myrelay: { baseUrl: string; apiKey: string; models: Array<{ id: string }> } } };
+    assert.equal(confDoc.providers.myrelay.baseUrl, "https://relay.example/v1");
+    assert.equal(confDoc.providers.myrelay.apiKey, "$CODAR_BOT_KEY");
+    assert.equal(confDoc.providers.myrelay.models[0]!.id, "rm-9");
+    // stop the started bot so teardown is clean
+    await json(t.port, `/api/bots/${t.botId}/stop`, { method: "POST" });
   } finally {
     await teardown(t.host, t.root);
   }

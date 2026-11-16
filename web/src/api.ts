@@ -75,6 +75,23 @@ export interface MemoryFile {
   content: string;
 }
 
+/** Discovery surface (GET /api/providers): keys.json ∪ presets ∪ in-use,
+ *  zero key material. models carry UI metadata only. */
+export interface ProviderModelInfo {
+  id: string;
+  name?: string;
+  badge?: string;
+}
+export interface ProviderInfo {
+  id: string;
+  label: string;
+  configured: boolean;
+  api?: string;
+  baseUrl?: string;
+  models: ProviderModelInfo[];
+}
+export type ProvidersResponse = { providers: ProviderInfo[] };
+
 /** M3.4b Bearer token: ?token=<key> on first load → sessionStorage →
  *  Authorization header on every /api/* request. EventSource cannot send
  *  headers, so the token also rides as ?token= for SSE connections. */

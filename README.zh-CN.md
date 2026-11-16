@@ -14,13 +14,15 @@ codar-bot 是独立社区项目，与 earendil-works / pi **无关联**。
 
 ```bash
 npm i -g codar-bot @earendil-works/pi-coding-agent
-codar init --provider zai-coding-cn --model glm-5.3  # + 通过 stdin 输入 key
+codar init --provider openai --model gpt-5.4  # + 通过 stdin 输入 key
+# 或：codar init --provider zai-coding-cn --model glm-5.3   # 智谱国内
+codar providers  # 查看全部内置预设 + 你已配置的 key + 在用模型
 codar start     # 启动 → 浏览器打开 http://127.0.0.1:7600
 ```
 
 **你需要什么：**
 - Node.js 22.19+
-- 一个 AI provider 的 API key（智谱/zai、MiniMax、或任何 OpenAI 兼容端点）
+- 一个 AI provider 的 API key（OpenAI、Anthropic、智谱/zai、MiniMax、DeepSeek、Groq、或任何 OpenAI 兼容端点）
 - Docker 可选（装了可开启更强的 per-Bot 隔离）
 
 ## 功能一览
@@ -53,8 +55,15 @@ codar start     # 启动 → 浏览器打开 http://127.0.0.1:7600
 ### Provider
 
 ```bash
-codar init --provider zai-coding-cn --model glm-5.3
+codar init --provider openai --model gpt-5.4
+codar providers   # 内置预设 + 已配置 key + 在用模型一览
 ```
+
+内置预设：`openai`、`anthropic`、`deepseek`、`zai-coding-cn`、
+`minimax-anthropic`、`minimax-cn`、`groq`、`openrouter`——其他任何
+OpenAI 兼容中转也能用（自定义名字 + `--base-url` 即可）。Web 工作站的
+建 Bot 表单与 Bot 详情页提供同一份数据的 provider/模型下拉
+（`GET /api/providers`）；未知名的 provider 与模型 id 仍可自由填写。
 
 或直接编辑 `~/.codar-bot/keys.json`：
 
@@ -66,6 +75,13 @@ codar init --provider zai-coding-cn --model glm-5.3
   }
 }
 ```
+
+> **openai 协议说明：** `openai` 预设走 `openai-responses`（pi 钉定版
+> catalog 的全部现行 GPT chat 模型都走该协议，OpenAI 官方也推荐
+> reasoning 模型使用 Responses）。该设置只影响 codar 生成条目的模型；
+> 要固定旧的仅 completions 模型，在其 keys.json 条目里设
+> `"api": "openai-completions"`——catalog 内模型则需在 `entry.models`
+> 显式声明该模型并指定 `api`。
 
 ### 预算
 

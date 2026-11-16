@@ -1,5 +1,5 @@
 /**
- * codar host CLI — start | stop | status (PRD §8 subset for M1-A).
+ * codar host CLI — start | stop | status | init | providers (PRD §8 subset).
  *
  * start: boot the host in the FOREGROUND (Ctrl-C / SIGTERM shuts it down
  * gracefully). Daemonization is a packaging concern (M3 compose); the
@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { Host } from "./host.js";
 import { paths } from "./paths.js";
 import { initTeam } from "./init.js";
+import { loadKeys, providersReport, renderProviders, PROVIDER_PRESETS } from "./provider-config.js";
+import type { BotRecord, BotModelRef } from "./store.js";
 
 function readRuntime(): { pid: number; port: number } | null {
   const p = paths().hostRuntime;
@@ -92,6 +94,7 @@ async function main(): Promise<void> {
     if (provider === undefined || provider === "" || modelId === undefined || modelId === "") {
       console.error("usage: codar init --provider <name> --model <modelId> [--base-url <url>] [--api <pi KnownApi>] [--thinking <level>]");
       console.error("       (api key on stdin, or CODAR_INIT_KEY env)");
+      console.error(`built-in providers: ${Object.keys(PROVIDER_PRESETS).join(", ")} — see also: codar providers`);
       process.exitCode = 1;
       return;
     }
@@ -142,6 +145,36 @@ async function main(): Promise<void> {
     console.log(`codar host: pid=${rt.pid} port=${rt.port} alive=${alive} bots=${overview}`);
     return;
   }
+  if (cmd === "providers") {
+    // Offline read-only listing (v3 discovery surface). state.json is read
+    // DIRECTLY (readFileSync, absent = no bots) — Store.openExclusive takes
+    // the single-writer lock and fails while the host runs; atomic writes
+    // (store.ts) make a torn read impossible. Malformed state/keys fail
+    // loudly rather than half-listing.
+    const p = paths(process.env.CODAR_BOT_HOME);
+    let bots: BotRecord[] = [];
+    let reviewModel: BotModelRef | null = null;
+    if (existsSync(p.state)) {
+      try {
+        const doc = JSON.parse(readFileSync(p.state, "utf8")) as {
+          bots?: BotRecord[]; reviewModel?: BotModelRef | null;
+        };
+        bots = Array.isArray(doc.bots) ? doc.bots : [];
+        reviewModel = doc.reviewModel ?? null;
+      } catch (e) {
+        console.error(`codar: state.json at ${p.state} is not valid JSON (${String(e).slice(0, 120)})`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+    try {
+      console.log(renderProviders(providersReport(loadKeys(p.keys), bots, reviewModel)));
+    } catch (e) {
+      console.error(String(e).slice(0, 300));
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (cmd === "stop") {
     const rt = readRuntime();
     if (rt === null) {
@@ -156,11 +189,11 @@ async function main(): Promise<void> {
     }
     return;
   }
-  console.log("usage: codar-host <start|stop|status>");
+  console.log("usage: codar <start|stop|status|init|providers>");
   process.exitCode = 1;
 }
 
 void main().catch((e) => {
-  console.error("codar-host:", String(e));
+  console.error("codar:", String(e));
   process.exit(1);
 });

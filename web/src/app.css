@@ -141,6 +141,13 @@ textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; }
 .form { padding: 8px 12px 14px; display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
 .form-row { display: flex; gap: 6px; align-items: center; }
 
+/* provider/model picker (v3 discovery): the picker renders provider row,
+   keyless warning, model row — wrap inside one .form-row instead of one
+   squeezed line; the effort select shares the row when it fits. */
+.model-picker { flex-wrap: wrap; }
+.model-picker > * { flex: 1 1 150px; min-width: 0; }
+.model-picker .provider-warn { flex-basis: 100%; flex-grow: 1; font-size: 12px; }
+
 /* --- chat -------------------------------------------------------------------- */
 .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .chat-head {

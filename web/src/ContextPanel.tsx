@@ -6,7 +6,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AuditPanel } from "./AuditPanel";
 import { money, type Lang } from "./i18n";
-import { jsonFetch, post, put, type BudgetRow, type Overview, type RoomRecord, type TurnEvent } from "./api";
+import { jsonFetch, patch, post, put, type BudgetRow, type Overview, type ProviderInfo, type ProvidersResponse, type RoomRecord, type TurnEvent } from "./api";
+import { ModelPicker } from "./ModelPicker";
 import type { WorkView } from "./App";
 
 type T = ReturnType<typeof import("./i18n").makeT>;
@@ -134,6 +135,15 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
   const [memFiles, setMemFiles] = useState<Array<{ path: string; content: string }>>([]);
   const [memPending, setMemPending] = useState(0);
   const [memEdit, setMemEdit] = useState<{ path: string; content: string } | null>(null);
+  const [memMsg, setMemMsg] = useState<string | null>(null);
+  // Model editor (v3): draft state initialized from the bot's current model;
+  // the per-bot remount (key) guarantees no cross-bot drafts.
+  const [providers, setProviders] = useState<ProviderInfo[] | null>(null);
+  const [draftProvider, setDraftProvider] = useState(bot.model.provider);
+  const [draftModelId, setDraftModelId] = useState(bot.model.modelId);
+  const [draftThinking, setDraftThinking] = useState(bot.model.thinkingLevel);
+  const [modelMsg, setModelMsg] = useState<string | null>(null);
+  const [modelBusy, setModelBusy] = useState(false);
 
   useEffect(() => {
     void jsonFetch<{ files: Array<{ path: string; content: string }>; pending: number }>(`/api/memory/bots/${bot.id}`)
@@ -143,6 +153,16 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
       })
       .catch(() => setMemFiles([]));
   }, [bot.id]);
+
+  // Discovery list, fetched once per detail open; null = fetch failed →
+  // the picker degrades to free-text (editable, just without dropdowns).
+  useEffect(() => {
+    let cancelled = false;
+    void jsonFetch<ProvidersResponse>("/api/providers")
+      .then((r) => { if (!cancelled) setProviders(r.providers); })
+      .catch(() => { if (!cancelled) setProviders(null); });
+    return () => { cancelled = true; };
+  }, []);
 
   const saveBudget = async (): Promise<void> => {
     setSaveMsg(null);
@@ -156,14 +176,31 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
     }
   };
 
+  const saveModel = async (): Promise<void> => {
+    setModelBusy(true);
+    setModelMsg(null);
+    try {
+      await patch(`/api/bots/${bot.id}`, {
+        model: { provider: draftProvider, modelId: draftModelId, thinkingLevel: draftThinking },
+      });
+      await props.onRefresh();
+      setModelMsg("✓");
+    } catch (e) {
+      setModelMsg(String(e));
+    } finally {
+      setModelBusy(false);
+    }
+  };
+
   const saveMemory = async (): Promise<void> => {
     if (memEdit === null) return;
     try {
       await put(`/api/memory/bots/${bot.id}`, memEdit);
       setMemFiles((fs) => fs.map((f) => (f.path === memEdit.path ? { path: f.path, content: memEdit.content } : f)));
       setMemEdit(null);
+      setMemMsg(null);
     } catch (e) {
-      setSaveMsg(String(e));
+      setMemMsg(String(e));
     }
   };
 
@@ -198,6 +235,26 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
       </section>
 
       <section className="panel">
+        <h3>{t.modelSection}</h3>
+        <div className="form-row model-picker">
+          <ModelPicker t={t} providers={providers} provider={draftProvider} modelId={draftModelId}
+            onProvider={setDraftProvider} onModelId={setDraftModelId} />
+          <select aria-label={t.effortLabel} value={draftThinking} onChange={(e) => setDraftThinking(e.target.value)}>
+            {["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((lv) => <option key={lv} value={lv}>{lv}</option>)}
+          </select>
+        </div>
+        <div className="form-row">
+          <button disabled={modelBusy || draftProvider === "" || draftModelId === ""} onClick={() => void saveModel()}>{t.save}</button>
+          {modelMsg !== null && <span className="dim">{modelMsg}</span>}
+        </div>
+        {/* PATCH only rewrites the store; models.json materializes at the
+            next start (bot-manager) — say so instead of implying a hot swap. */}
+        {["starting", "idle", "working"].includes(props.statuses[bot.id] ?? "stopped") && (
+          <div className="dim">⏱ {t.modelTakesEffect}</div>
+        )}
+      </section>
+
+      <section className="panel">
         <h3>{t.budgetLabel} <span className="dim">{t.monthLabel}</span></h3>
         {(["maxTokens", "maxCostMicros", "maxTurns", "maxWallMs"] as const).map((k) => (
           <div className="kv" key={k}>
@@ -220,6 +277,7 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
       <section className="panel">
         <h3>{t.memoryTitle}</h3>
         {memPending > 0 && <div className="dim">{t.memoryPending(memPending)}</div>}
+        {memMsg !== null && <div className="error">{memMsg}</div>}
         {memFiles.length === 0 && <div className="dim">—</div>}
         {memFiles.map((f) => (
           <div className="kv" key={f.path}>

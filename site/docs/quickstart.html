@@ -46,8 +46,8 @@
         <div><span class="c-amber">$</span> npm i -g codar-bot</div>
         <div>&nbsp;</div>
         <div><span class="c-muted"># 2 — initialize your workspace and chief bot</span></div>
-        <div><span class="c-amber">$</span> codar init --provider zai --model glm-4.7</div>
-        <div><span class="c-muted">#    (your API key goes into ~/.codar-bot — never leaves your disk)</span></div>
+        <div><span class="c-amber">$</span> codar init --provider openai --model gpt-5.4</div>
+        <div><span class="c-muted">#    (or --provider zai-coding-cn --model glm-5.3 · key goes into ~/.codar-bot)</span></div>
         <div>&nbsp;</div>
         <div><span class="c-muted"># 3 — start the host and open the workstation</span></div>
         <div><span class="c-amber">$</span> codar start</div>
@@ -82,9 +82,10 @@
         <li>
           <strong>Set up and start.</strong> Two more lines:
           <div class="term" style="margin-top: 8px;">
-            <div><span class="c-amber">$</span> codar init --provider zai --model glm-4.7</div>
+            <div><span class="c-amber">$</span> codar init --provider openai --model gpt-5.4</div>
             <div><span class="c-amber">$</span> codar start</div>
           </div>
+          <p>Not OpenAI? <span class="mono">codar providers</span> lists every built-in preset (zai, MiniMax, DeepSeek, Anthropic, Groq…) — swap the provider and model in the line above.</p>
           <p>The terminal will ask for your API key when it needs it — paste it and press Enter.</p>
         </li>
         <li>

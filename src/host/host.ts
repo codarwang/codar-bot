@@ -153,6 +153,7 @@ export class Host {
     handoff.memoryTail = (botId) => memory.snapshot("bot", botId) || null;
     const api = new HttpApi({
       store, bots, ledger, rooms, handoff, budget, memory, auditQuery,
+      keysPath: p.keys,
       webDir: opts.webDir ?? (existsSync(join(p.root, "web-dist")) ? join(p.root, "web-dist") : undefined),
     });
     return new Host(opts, store, ledger, bots, api);

@@ -3,9 +3,10 @@
  * with a one-line latest state (per-room previews + unread counters);
  * badges sort attention first; rooms creatable in-place.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Lang } from "./i18n";
-import { jsonFetch, post, type ApprovalEvent, type Overview, type RoomMessage, type RoomRecord } from "./api";
+import { jsonFetch, post, type ApprovalEvent, type Overview, type ProviderInfo, type ProvidersResponse, type RoomMessage, type RoomRecord } from "./api";
+import { ModelPicker } from "./ModelPicker";
 
 type T = ReturnType<typeof import("./i18n").makeT>;
 
@@ -253,10 +254,23 @@ function BotForm(props: {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
   const [workDir, setWorkDir] = useState("");
-  const [provider, setProvider] = useState(props.overview?.bots[0]?.model.provider ?? "zai-coding-cn");
-  const [modelId, setModelId] = useState(props.overview?.bots[0]?.model.modelId ?? "glm-5.3");
+  // Prefill from the CHIEF's model (the user's own init choice — the natural
+  // team default), never a hardcoded developer provider; no chief → empty.
+  const chief = props.overview?.bots.find((b) => b.chief);
+  const [provider, setProvider] = useState(chief?.model.provider ?? "");
+  const [modelId, setModelId] = useState(chief?.model.modelId ?? "");
   const [thinking, setThinking] = useState("low");
   const [busy, setBusy] = useState(false);
+  // Discovery list, fetched once per open form; null = fetch failed → the
+  // picker degrades to free-text inputs (form still works).
+  const [providers, setProviders] = useState<ProviderInfo[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void jsonFetch<ProvidersResponse>("/api/providers")
+      .then((r) => { if (!cancelled) setProviders(r.providers); })
+      .catch(() => { if (!cancelled) setProviders(null); });
+    return () => { cancelled = true; };
+  }, []);
   const create = async (): Promise<void> => {
     setBusy(true);
     props.setError(null);
@@ -277,16 +291,16 @@ function BotForm(props: {
       <input placeholder={t.nameLabel} value={name} onChange={(e) => setName(e.target.value)} />
       <input placeholder={t.roleLabel} value={role} onChange={(e) => setRole(e.target.value)} />
       <input placeholder={t.workDirLabel} value={workDir} onChange={(e) => setWorkDir(e.target.value)} />
-      <div className="form-row">
-        <input placeholder={t.providerLabel} value={provider} onChange={(e) => setProvider(e.target.value)} />
-        <input placeholder={t.modelIdLabel} value={modelId} onChange={(e) => setModelId(e.target.value)} />
-        <select value={thinking} onChange={(e) => setThinking(e.target.value)}>
-          <option value="off">off</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option>
+      <div className="form-row model-picker">
+        <ModelPicker t={t} providers={providers} provider={provider} modelId={modelId}
+          onProvider={setProvider} onModelId={setModelId} />
+        <select aria-label={t.thinkingLabel} value={thinking} onChange={(e) => setThinking(e.target.value)}>
+          {["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((lv) => <option key={lv} value={lv}>{lv}</option>)}
         </select>
       </div>
       {props.error !== null && <div className="error">{props.error}</div>}
       <div className="form-row">
-        <button disabled={busy || name === "" || workDir === ""} onClick={() => void create()}>{t.createLabel}</button>
+        <button disabled={busy || name === "" || workDir === "" || provider === "" || modelId === ""} onClick={() => void create()}>{t.createLabel}</button>
         <button className="ghost" onClick={props.onCancel}>{t.cancel}</button>
       </div>
     </div>

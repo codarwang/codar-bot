@@ -44,12 +44,14 @@
         <tr>
           <td><span class="mono">codar init --provider &lt;name&gt; --model &lt;modelId&gt;</span></td>
           <td>
-            Create your workspace and the chief bot. Optional flags:
+            Create your workspace and the chief bot (e.g.
+            <span class="mono">--provider openai --model gpt-5.4</span>). Optional flags:
             <span class="mono">--base-url</span> (custom/OpenAI-compatible endpoint),
             <span class="mono">--api</span> (pi KnownApi type),
             <span class="mono">--thinking</span> (thinking level).
           </td>
         </tr>
+        <tr><td><span class="mono">codar providers</span></td><td>List every built-in provider preset, which ones you have configured keys for, and the models in use. Works offline.</td></tr>
         <tr><td><span class="mono">codar start</span></td><td>Start the host: API on 127.0.0.1:7600, web workstation served from the same port.</td></tr>
         <tr><td><span class="mono">codar status</span></td><td>Is the host alive? How many bots are up?</td></tr>
         <tr><td><span class="mono">codar stop</span></td><td>Send SIGTERM to the host.</td></tr>
@@ -58,8 +60,10 @@
       <h2>Providers and models</h2>
       <p>
         Codar Bot is bring-your-own-model. Each bot declares its provider and model — mix them freely
-        (a fast coordinator on a flash model, writers on deeper ones). Providers speak the OpenAI-compatible
-        protocol by default; presets exist for Zhipu (zai) and MiniMax.
+        (a fast coordinator on a flash model, writers on deeper ones). Built-in presets cover
+        OpenAI, Anthropic, DeepSeek, Zhipu zai, MiniMax (both API faces), Groq, and OpenRouter; any other
+        OpenAI-compatible endpoint works with <span class="mono">--base-url</span>. The bot form and bot
+        detail page offer provider/model dropdowns from the same list; unknown ids stay free-text.
       </p>
       <p>
         API keys are written to your local data directory during <span class="mono">init</span> and passed to bots
