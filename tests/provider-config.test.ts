@@ -208,6 +208,16 @@ test("keys.json: round-trip 0600, malformed providers shapes rejected (null/arra
     assert.throws(() => loadKeys(p), /must be \{providers/);
     writeFileSync(p, JSON.stringify({ providers: { x: null } }));
     assert.throws(() => loadKeys(p), /providers\.x must be an object/);
+    // Empty-string api/baseUrl normalize to unset: "" is not nullish and
+    // would otherwise BEAT the preset in the ?? chains (models.json would
+    // carry "baseUrl":"" — R6 P3-a regression lock).
+    writeFileSync(p, JSON.stringify({ providers: { "zai-coding-cn": { apiKey: "k", baseUrl: "", api: "" } } }));
+    const normalized = loadKeys(p).providers["zai-coding-cn"]!;
+    assert.equal(normalized.baseUrl, undefined, "empty baseUrl reads as unset");
+    assert.equal(normalized.api, undefined, "empty api reads as unset");
+    const cfg = buildSpawnConfig(loadKeys(p), r, "bot_norm", "zai-coding-cn", "glm-5.3");
+    const normDoc = JSON.parse(cfg.modelsJson!) as { providers: Record<string, { baseUrl: string }> };
+    assert.equal(normDoc.providers["zai-coding-cn"]!.baseUrl, "https://open.bigmodel.cn/api/coding/paas/v4", "preset baseUrl wins over empty entry string");
     assert.deepEqual(loadKeys(join(r, "absent.json")), { providers: {} });
   } finally {
     rmSync(r, { recursive: true, force: true });
@@ -246,15 +256,18 @@ test("registry integrity: PI_CATALOG_IDS ⊆ pinned pi catalog (set diff), keys 
     // B3: rule-2 correctness also depends on endpoint parity — the provider
     // block's baseUrl OVERWRITES every catalog entry's (provider-composer),
     // so a preset baseUrl drift would silently repoint catalog-served models
-    // while every id-based test stays green. Lock baseUrl AND api protocol.
+    // while every id-based test stays green. Lock baseUrl AND api protocol
+    // (strict: the api key that actually SERVES chat: entries — openai.json
+    // also carries an openai-decisions bucket that must never be picked).
     const catalogBaseUrls = new Set<string>();
-    const catalogApis = new Set<string>();
+    const chatApis = new Set<string>();
     for (const [api, group] of Object.entries(catalog)) {
-      catalogApis.add(api);
+      const servesChat = Object.keys(group).some((key) => key.startsWith("chat:"));
+      if (servesChat) chatApis.add(api);
       for (const m of Object.values(group)) catalogBaseUrls.add((m as { baseUrl?: string }).baseUrl ?? "");
     }
     assert.ok(catalogBaseUrls.has(preset.baseUrl!), `${provider}: preset baseUrl matches the catalog endpoint`);
-    assert.ok(catalogApis.has(preset.api), `${provider}: preset api is the catalog's protocol (${[...catalogApis].join(",")})`);
+    assert.ok(chatApis.has(preset.api), `${provider}: preset api serves the catalog's chat entries (${[...chatApis].join(",")})`);
   }
   for (const name of ["anthropic", "openai", "minimax-anthropic", "zai-coding-cn", "minimax-cn", "groq", "openrouter", "deepseek"]) {
     assert.ok(Object.hasOwn(PROVIDER_PRESETS, name), `preset ${name}`);

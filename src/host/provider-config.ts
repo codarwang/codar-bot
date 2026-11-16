@@ -237,11 +237,16 @@ export function loadKeys(keysPath: string): KeysDoc {
   }
   // Per-entry shape: a null entry used to pass the outer typeof check and
   // blow up later (ownEntry consumers) or silently misbehave — reject here
-  // so boot fail-fast (host.ts) catches it.
+  // so boot fail-fast (host.ts) catches it. Empty-string api/baseUrl are
+  // normalized to "unset" — a "" is not nullish, so the ?? fallback chains
+  // downstream (spawn config, discovery surface) would otherwise let it
+  // BEAT the preset and write "baseUrl":"" into models.json.
   for (const [name, entry] of Object.entries(doc.providers)) {
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
       throw new Error(`server config error: keys.json providers.${name} must be an object`);
     }
+    if (entry.api === "") delete entry.api;
+    if (entry.baseUrl === "") delete entry.baseUrl;
   }
   return doc;
 }
@@ -294,7 +299,7 @@ function extractEntryModels(models: unknown): Array<{ id: string; name?: string 
     else if (typeof m === "object" && m !== null) {
       const id = (m as Record<string, unknown>)["id"];
       const name = (m as Record<string, unknown>)["name"];
-      if (typeof id === "string") out.push({ id, ...(typeof name === "string" ? { name } : {}) });
+      if (typeof id === "string") out.push({ id, ...(typeof name === "string" && name !== "" ? { name } : {}) });
     }
   }
   return out;
