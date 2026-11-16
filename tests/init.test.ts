@@ -66,3 +66,24 @@ test("custom provider init records baseUrl in keys (chain input)", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("init rejects bad modelId charset and non-pi thinking levels at entry (B2)", () => {
+  const root = mkdtempSync(join(tmpdir(), "codar-init3-"));
+  try {
+    // A slash model id would pass init's old checks and only blow up later:
+    // POST/PATCH validateModel rejects it, so the UI could never represent
+    // it — fail at entry instead (init-vs-API asymmetry fix).
+    assert.throws(
+      () => initTeam({ provider: "groq", apiKey: "k", modelId: "openai/gpt-oss-120b", dataRoot: root }),
+      /invalid model id/,
+    );
+    assert.throws(
+      () => initTeam({ provider: "groq", apiKey: "k", modelId: "llama-3.3-70b-versatile", thinkingLevel: "bogus", dataRoot: root }),
+      /invalid thinking level/,
+    );
+    // Nothing must have been written by the rejected inits.
+    assert.equal(loadKeys(paths(root).keys).providers["groq"], undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

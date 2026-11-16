@@ -205,7 +205,12 @@ test("provider discovery + chief-derived defaults (v3): POST model default, GET 
     };
     const zai = list2.providers.find((p) => p.id === "zai-coding-cn");
     assert.ok(zai !== undefined && zai.configured === true, "init-added key is live");
-    assert.ok(list2.providers.findIndex((p) => p.configured) <= list2.providers.findIndex((p) => p.id === "zai-coding-cn"), "configured sorts first");
+    // Strict ordering: every configured entry precedes every unconfigured one.
+    const firstUnconfigured = list2.providers.findIndex((p) => !p.configured);
+    assert.ok(
+      firstUnconfigured === -1 || list2.providers.slice(0, firstUnconfigured).every((p) => p.configured),
+      "configured sorts first",
+    );
 
     // Malformed keys.json → 500 with the loadKeys message (honest, and the
     // boot-time fail-fast already covered the same validation).
@@ -235,6 +240,46 @@ test("provider discovery + chief-derived defaults (v3): POST model default, GET 
     assert.equal(confDoc.providers.myrelay.models[0]!.id, "rm-9");
     // stop the started bot so teardown is clean
     await json(t.port, `/api/bots/${t.botId}/stop`, { method: "POST" });
+  } finally {
+    await teardown(t.host, t.root);
+  }
+});
+
+test("POST /api/bots with NO chief → 400 with guidance (the other default path, B1)", async () => {
+  const t = await boot();
+  try {
+    // boot() seeds a chief; delete it to reach the no-chief branch.
+    t.host.store.removeBot(t.botId);
+    const res = await json(t.port, "/api/bots", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Orphan", workDir: join(t.root, "work") }),
+    });
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { error: string };
+    assert.match(body.error, /no chief bot to default to/);
+  } finally {
+    await teardown(t.host, t.root);
+  }
+});
+
+test("model thinkingLevel is validated on POST/PATCH like init does (R5 P2-1)", async () => {
+  const t = await boot();
+  try {
+    const bad = await json(t.port, "/api/bots", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "BadEffort", workDir: join(t.root, "work"),
+        model: { provider: "fake", modelId: "f", thinkingLevel: "bogus" },
+      }),
+    });
+    assert.equal(bad.status, 400);
+    const body = (await bad.json()) as { error: string };
+    assert.match(body.error, /thinkingLevel \(one of/);
+    const patchBad = await json(t.port, `/api/bots/${t.botId}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: { provider: "fake", modelId: "f", thinkingLevel: "turbo" } }),
+    });
+    assert.equal(patchBad.status, 400);
   } finally {
     await teardown(t.host, t.root);
   }

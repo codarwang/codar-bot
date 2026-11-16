@@ -86,11 +86,16 @@ export interface ProviderInfo {
   id: string;
   label: string;
   configured: boolean;
+  preset: boolean;
   api?: string;
   baseUrl?: string;
   models: ProviderModelInfo[];
 }
 export type ProvidersResponse = { providers: ProviderInfo[] };
+
+/** pi ThinkingLevel (7 values). One definition for both the create form and
+ *  the detail editor — mirrors the host's THINKING_LEVELS validation. */
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 /** M3.4b Bearer token: ?token=<key> on first load → sessionStorage →
  *  Authorization header on every /api/* request. EventSource cannot send

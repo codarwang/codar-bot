@@ -6,7 +6,8 @@
  * free-text inputs — the form stays usable, just without discovery.
  * A current value that is not among the options (bots-only relay providers,
  * custom model ids) auto-selects "Custom…" and keeps the value — the picker
- * must always be able to represent what a bot already runs.
+ * must always be able to represent what a bot already runs. Clearing the
+ * custom input falls back to the dropdown (no one-way dead end).
  */
 import { useState } from "react";
 import type { ProviderInfo } from "./api";
@@ -34,8 +35,8 @@ interface Props {
 
 export function ModelPicker(props: Props): JSX.Element {
   const { t, providers } = props;
-  // Custom mode is tracked per field independently of the providers list, so
-  // switching the provider select away from Custom… resets cleanly.
+  // Custom mode is tracked per field independently of the providers list;
+  // clearing the custom input drops back to the dropdown.
   const [providerCustom, setProviderCustom] = useState(false);
   const [modelCustom, setModelCustom] = useState(false);
 
@@ -61,7 +62,9 @@ export function ModelPicker(props: Props): JSX.Element {
     }
     setProviderCustom(false);
     props.onProvider(value);
-    // provider switch: reset the model unless the new provider also knows it
+    // Provider switch: the old model id almost never exists on the new
+    // provider — reset to its first listed model (the custom input stays
+    // reachable via "Custom…" if the user really wants to carry an id over).
     const nextModels = providers.find((p) => p.id === value)?.models ?? [];
     if (!nextModels.some((m) => m.id === props.modelId)) {
       setModelCustom(false);
@@ -76,9 +79,22 @@ export function ModelPicker(props: Props): JSX.Element {
     setModelCustom(false);
     props.onModelId(value);
   };
+  // Clearing a custom input returns to the dropdown (dead-end fix).
+  const customProviderChanged = (value: string): void => {
+    props.onProvider(value);
+    if (value === "") setProviderCustom(false);
+  };
+  const customModelChanged = (value: string): void => {
+    props.onModelId(value);
+    if (value === "") setModelCustom(false);
+  };
 
+  // Three groups: configured entries first, then built-in presets, then
+  // other known providers (keys-only entries without a key, bots-only relay
+  // providers) — those are NOT presets and must not be labeled as such.
   const configuredGroup = providers.filter((p) => p.configured);
-  const presetGroup = providers.filter((p) => !p.configured);
+  const presetGroup = providers.filter((p) => !p.configured && p.preset);
+  const otherGroup = providers.filter((p) => !p.configured && !p.preset);
   const option = (p: ProviderInfo): JSX.Element => (
     <option key={p.id} value={p.id}>{p.label !== p.id ? `${p.label} (${p.id})` : p.id}</option>
   );
@@ -86,7 +102,7 @@ export function ModelPicker(props: Props): JSX.Element {
   return (
     <>
       {providerCustom || (props.provider !== "" && !providerKnown) ? (
-        <input placeholder={t.providerLabel} value={props.provider} onChange={(e) => props.onProvider(e.target.value)} />
+        <input placeholder={t.providerLabel} value={props.provider} onChange={(e) => customProviderChanged(e.target.value)} />
       ) : (
         <select aria-label={t.providerLabel} value={providerKnown ? props.provider : ""} onChange={(e) => setProvider(e.target.value)}>
           <option value="" disabled>{t.providersPlaceholder}</option>
@@ -94,6 +110,9 @@ export function ModelPicker(props: Props): JSX.Element {
             <optgroup label={t.providersConfigured}>{configuredGroup.map(option)}</optgroup>
           )}
           <optgroup label={t.providersPresets}>{presetGroup.map(option)}</optgroup>
+          {otherGroup.length > 0 && (
+            <optgroup label={t.providersOther}>{otherGroup.map(option)}</optgroup>
+          )}
           <option value={CUSTOM}>{t.providersCustom}</option>
         </select>
       )}
@@ -101,7 +120,7 @@ export function ModelPicker(props: Props): JSX.Element {
         <div className="provider-warn dim" title={t.providerNoKey}>⚠ {t.providerNoKey}</div>
       )}
       {modelCustom || (props.modelId !== "" && !modelKnown) || models.length === 0 ? (
-        <input placeholder={t.modelIdLabel} value={props.modelId} onChange={(e) => props.onModelId(e.target.value)} />
+        <input placeholder={t.modelIdLabel} value={props.modelId} onChange={(e) => customModelChanged(e.target.value)} />
       ) : (
         <select aria-label={t.modelIdLabel} value={modelKnown ? props.modelId : ""} onChange={(e) => setModel(e.target.value)}>
           <option value="" disabled>{t.modelPlaceholder}</option>

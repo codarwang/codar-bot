@@ -71,7 +71,7 @@ export interface PresetModelPrice {
 export interface PresetModel {
   id: string;
   name: string;
-  /** UI hint: "flagship" | "fast" | "budget" */
+  /** UI hint: "flagship" | "balanced" | "fast" | "budget" */
   badge?: string;
   // --- entry-generation fields (pi-unknown providers only) ---
   contextWindow?: number;
@@ -94,7 +94,12 @@ export interface PresetModel {
  *  at /v1 (openai-completions) — provider-block baseUrl overwrites catalog
  *  baseUrl, so the two cannot coexist; it keeps the generated-entry path.
  *  openrouter is absent (aggregator; nearly all catalog ids fail SAFE_ID).
- *  INVARIANT: every key is a PROVIDER_PRESETS key with a baseUrl. */
+ *  INVARIANT: every key is a PROVIDER_PRESETS key with a baseUrl.
+ *  KNOWN RESIDUE (documented in docs/architecture.md §3.3 v3 note): the
+ *  ~35 pi-built-in providers NOT in this table still take the
+ *  generated-entry path — a user naming their provider after one of them
+ *  with a catalog model id replaces that catalog entry (same-degradation).
+ *  Escape hatch in all residue cases: declare entry.models explicitly. */
 export const PI_CATALOG_IDS: Record<string, readonly string[]> = {
   anthropic: [
     "claude-fable-5", "claude-fable-5-1", "claude-haiku-4-5", "claude-haiku-4-5-20251001",
@@ -268,26 +273,31 @@ export interface ProviderReportEntry {
   id: string;
   label: string;
   configured: boolean;
+  /** True when the id comes from PROVIDER_PRESETS (lets the UI group
+   *  "built-in presets" apart from keys-only / bots-only providers). */
+  preset: boolean;
   api?: string;
   baseUrl?: string;
   models: Array<{ id: string; name?: string; badge?: string }>;
 }
 
-/** ids out of an entry.models value of unknown shape: own-key traversal is
- *  not needed here (callers pass the already-own entry value), but every
- *  element is shape-checked — malformed data (strings, {id:42}, __proto__
- *  keys) yields nothing instead of crashing or polluting. */
-function extractEntryModelIds(models: unknown): string[] {
+/** ids (with an optional declared display name) out of an entry.models value
+ *  of unknown shape: own-key traversal is not needed here (callers pass the
+ *  already-own entry value), but every element is shape-checked — malformed
+ *  data (strings, {id:42}, __proto__ keys) yields nothing instead of
+ *  crashing or polluting. */
+function extractEntryModels(models: unknown): Array<{ id: string; name?: string }> {
   if (!Array.isArray(models)) return [];
-  const ids: string[] = [];
+  const out: Array<{ id: string; name?: string }> = [];
   for (const m of models) {
-    if (typeof m === "string") ids.push(m);
+    if (typeof m === "string") out.push({ id: m });
     else if (typeof m === "object" && m !== null) {
       const id = (m as Record<string, unknown>)["id"];
-      if (typeof id === "string") ids.push(id);
+      const name = (m as Record<string, unknown>)["name"];
+      if (typeof id === "string") out.push({ id, ...(typeof name === "string" ? { name } : {}) });
     }
   }
-  return ids;
+  return out;
 }
 
 /** The provider discovery surface (pure, offline): keys.json entries ∪
@@ -319,7 +329,7 @@ export function providersReport(
     const preset = Object.hasOwn(PROVIDER_PRESETS, id) ? PROVIDER_PRESETS[id] : undefined;
     const configured =
       (entry !== undefined && typeof entry.apiKey === "string" && entry.apiKey !== "") ||
-      (entry !== undefined && entry.baseUrl !== undefined); // keyless relay with explicit baseUrl is deliberate
+      (entry !== undefined && typeof entry.baseUrl === "string" && entry.baseUrl !== ""); // keyless relay with explicit baseUrl is deliberate (empty string is not)
     const models: ProviderReportEntry["models"] = [];
     const seen = new Set<string>();
     const push = (modelId: string, name?: string, badge?: string): void => {
@@ -328,12 +338,15 @@ export function providersReport(
       models.push(name !== undefined || badge !== undefined ? { id: modelId, ...(name !== undefined ? { name } : {}), ...(badge !== undefined ? { badge } : {}) } : { id: modelId });
     };
     for (const m of preset?.models ?? []) push(m.id, m.name, m.badge);
-    for (const modelId of extractEntryModelIds(entry?.models)) push(modelId);
+    // entry-declared ids keep their declared display name; a same-id preset
+    // pick already won the dedup above, so preset names stay authoritative.
+    for (const m of extractEntryModels(entry?.models)) push(m.id, m.name);
     for (const modelId of inUse.get(id) ?? []) push(modelId);
     entries.push({
       id,
       label: preset?.label ?? id,
       configured,
+      preset: preset !== undefined,
       ...(entry?.api !== undefined || preset !== undefined ? { api: entry?.api ?? preset!.api } : {}),
       ...(entry?.baseUrl !== undefined || preset?.baseUrl !== undefined ? { baseUrl: entry?.baseUrl ?? preset!.baseUrl } : {}),
       models,

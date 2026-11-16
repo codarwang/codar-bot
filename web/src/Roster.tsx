@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from "react";
 import type { Lang } from "./i18n";
-import { jsonFetch, post, type ApprovalEvent, type Overview, type ProviderInfo, type ProvidersResponse, type RoomMessage, type RoomRecord } from "./api";
+import { jsonFetch, post, THINKING_LEVELS, type ApprovalEvent, type Overview, type ProviderInfo, type ProvidersResponse, type RoomMessage, type RoomRecord } from "./api";
 import { ModelPicker } from "./ModelPicker";
 
 type T = ReturnType<typeof import("./i18n").makeT>;
@@ -256,10 +256,12 @@ function BotForm(props: {
   const [workDir, setWorkDir] = useState("");
   // Prefill from the CHIEF's model (the user's own init choice — the natural
   // team default), never a hardcoded developer provider; no chief → empty.
+  // thinkingLevel follows the chief too — the API's no-model path copies the
+  // whole chief.model, and the two default paths must not disagree.
   const chief = props.overview?.bots.find((b) => b.chief);
   const [provider, setProvider] = useState(chief?.model.provider ?? "");
   const [modelId, setModelId] = useState(chief?.model.modelId ?? "");
-  const [thinking, setThinking] = useState("low");
+  const [thinking, setThinking] = useState(chief?.model.thinkingLevel ?? "low");
   const [busy, setBusy] = useState(false);
   // Discovery list, fetched once per open form; null = fetch failed → the
   // picker degrades to free-text inputs (form still works).
@@ -295,7 +297,7 @@ function BotForm(props: {
         <ModelPicker t={t} providers={providers} provider={provider} modelId={modelId}
           onProvider={setProvider} onModelId={setModelId} />
         <select aria-label={t.thinkingLabel} value={thinking} onChange={(e) => setThinking(e.target.value)}>
-          {["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((lv) => <option key={lv} value={lv}>{lv}</option>)}
+          {THINKING_LEVELS.map((lv) => <option key={lv} value={lv}>{lv}</option>)}
         </select>
       </div>
       {props.error !== null && <div className="error">{props.error}</div>}

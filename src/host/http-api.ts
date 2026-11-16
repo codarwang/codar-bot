@@ -12,7 +12,7 @@ import type { BotManager } from "./bot-manager.js";
 import { mkdirSync, readFileSync } from "node:fs";
 import { resolve, relative, isAbsolute, sep, join } from "node:path";
 import { ApiError } from "./http-error.js";
-import { loadKeys, providersReport, SAFE_ID } from "./provider-config.js";
+import { loadKeys, providersReport, SAFE_ID, THINKING_LEVELS } from "./provider-config.js";
 
 /** UTC calendar-month start as a ledger `hour` string (§6.1a window). */
 function monthStartHour(): string {
@@ -30,8 +30,8 @@ function validateModel(model: unknown): BotRecord["model"] {
   const m = model as Record<string, unknown>;
   if (typeof m["provider"] !== "string" || !SAFE_ID.test(m["provider"]) ||
       typeof m["modelId"] !== "string" || !SAFE_ID.test(m["modelId"]) ||
-      typeof m["thinkingLevel"] !== "string" || m["thinkingLevel"] === "") {
-    throw new ApiError(400, "model needs string provider/modelId (charset [A-Za-z0-9._-]) /thinkingLevel");
+      typeof m["thinkingLevel"] !== "string" || !(THINKING_LEVELS as readonly string[]).includes(m["thinkingLevel"])) {
+    throw new ApiError(400, `model needs string provider/modelId (charset [A-Za-z0-9._-]) /thinkingLevel (one of ${THINKING_LEVELS.join("|")})`);
   }
   return m as unknown as BotRecord["model"];
 }
@@ -283,12 +283,14 @@ export class HttpApi {
               // hardcoded provider: the old zai-coding-cn fallback handed
               // strangers a provider they have no key for (v3 default-value
               // governance). Defensive copy — addBot must not share the
-              // chief's model object reference.
+              // chief's model object reference. The copy runs through
+              // validateModel so a legacy illegal model in state.json fails
+              // HERE instead of silently propagating to every new bot.
               const chief = this.deps.store.chief();
               if (chief === undefined) {
                 throw new ApiError(400, "no model given and no chief bot to default to — run codar init or pass model {provider, modelId, thinkingLevel}");
               }
-              return { ...chief.model };
+              return validateModel({ ...chief.model });
             })()
           : validateModel(body.model);
         const budget = body.budget ?? { maxTokens: 5_000_000, maxCostMicros: 20_000_000, maxTurns: 2_000, maxWallMs: 3_600_000 };

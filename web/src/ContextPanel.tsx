@@ -6,7 +6,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AuditPanel } from "./AuditPanel";
 import { money, type Lang } from "./i18n";
-import { jsonFetch, patch, post, put, type BudgetRow, type Overview, type ProviderInfo, type ProvidersResponse, type RoomRecord, type TurnEvent } from "./api";
+import { jsonFetch, patch, post, put, THINKING_LEVELS, type BudgetRow, type Overview, type ProviderInfo, type ProvidersResponse, type RoomRecord, type TurnEvent } from "./api";
 import { ModelPicker } from "./ModelPicker";
 import type { WorkView } from "./App";
 
@@ -240,7 +240,7 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
           <ModelPicker t={t} providers={providers} provider={draftProvider} modelId={draftModelId}
             onProvider={setDraftProvider} onModelId={setDraftModelId} />
           <select aria-label={t.effortLabel} value={draftThinking} onChange={(e) => setDraftThinking(e.target.value)}>
-            {["off", "minimal", "low", "medium", "high", "xhigh", "max"].map((lv) => <option key={lv} value={lv}>{lv}</option>)}
+            {THINKING_LEVELS.map((lv) => <option key={lv} value={lv}>{lv}</option>)}
           </select>
         </div>
         <div className="form-row">

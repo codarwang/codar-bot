@@ -243,6 +243,18 @@ test("registry integrity: PI_CATALOG_IDS ⊆ pinned pi catalog (set diff), keys 
       safeCatalog.sort(),
       `${provider}: frozen table must equal the SAFE_ID catalog id set`,
     );
+    // B3: rule-2 correctness also depends on endpoint parity — the provider
+    // block's baseUrl OVERWRITES every catalog entry's (provider-composer),
+    // so a preset baseUrl drift would silently repoint catalog-served models
+    // while every id-based test stays green. Lock baseUrl AND api protocol.
+    const catalogBaseUrls = new Set<string>();
+    const catalogApis = new Set<string>();
+    for (const [api, group] of Object.entries(catalog)) {
+      catalogApis.add(api);
+      for (const m of Object.values(group)) catalogBaseUrls.add((m as { baseUrl?: string }).baseUrl ?? "");
+    }
+    assert.ok(catalogBaseUrls.has(preset.baseUrl!), `${provider}: preset baseUrl matches the catalog endpoint`);
+    assert.ok(catalogApis.has(preset.api), `${provider}: preset api is the catalog's protocol (${[...catalogApis].join(",")})`);
   }
   for (const name of ["anthropic", "openai", "minimax-anthropic", "zai-coding-cn", "minimax-cn", "groq", "openrouter", "deepseek"]) {
     assert.ok(Object.hasOwn(PROVIDER_PRESETS, name), `preset ${name}`);
@@ -309,11 +321,41 @@ test("providersReport: union of keys/presets/in-use, ordering, configured semant
   // SAFE_ID: a slash in-use model id is filtered (POST/PATCH reject it anyway)
   const slashy = providersReport({ providers: {} }, [fakeBot("groq", "openai/gpt-oss-120b", "bot_s")], null);
   assert.deepEqual(slashy.find((p) => p.id === "groq")!.models.map((m) => m.id), []);
-  // renderProviders smoke
+  // renderProviders smoke — strict: the ✓/× markers must actually render
+  // for a configured and an unconfigured entry respectively.
   const text = renderProviders(report);
-  assert.ok(text.includes("✓ zai-coding-cn"));
-  assert.ok(text.includes("× openai") || text.includes("×  openai") || report.every((p) => p.configured) || text.includes("openai"));
+  assert.match(text, /✓ zai-coding-cn/);
+  assert.match(text, /×\s+openai/);
   assert.ok(renderProviders([]).includes("no providers configured"));
+});
+
+test("catalog-name collision is locked behavior (minimax-cn: generated entry deliberately replaces the catalog's, B5)", () => {
+  const r = root();
+  try {
+    // minimax-cn deliberately rides the generated-entry path (its catalog
+    // lives on a different API face — see PI_CATALOG_IDS note). Pin the
+    // semantics: MiniMax-M3 IS a catalog id there, and we still emit an
+    // entry — openai-completions on the /v1 endpoint, self-consistent.
+    const cfg = buildSpawnConfig(
+      { providers: { "minimax-cn": { apiKey: "k" } } }, r, "bot_mm", "minimax-cn", "MiniMax-M3"
+    );
+    const doc = JSON.parse(cfg.modelsJson!) as {
+      providers: { "minimax-cn": { api: string; baseUrl: string; models: Array<{ id: string }> } };
+    };
+    assert.equal(doc.providers["minimax-cn"].api, "openai-completions");
+    assert.equal(doc.providers["minimax-cn"].baseUrl, "https://api.minimaxi.com/v1");
+    assert.equal(doc.providers["minimax-cn"].models[0]!.id, "MiniMax-M3");
+    // And a user-named provider colliding with a NON-preset catalog provider
+    // (e.g. "google") takes the same generated path — documented residue.
+    const custom = buildSpawnConfig(
+      { providers: { google: { apiKey: "k", api: "google-generative-ai", baseUrl: "https://example.invalid/v1" } } },
+      r, "bot_gg", "google", "gemini-x"
+    );
+    const customDoc = JSON.parse(custom.modelsJson!) as { providers: { google: { models: Array<{ id: string }> } } };
+    assert.equal(customDoc.providers.google.models[0]!.id, "gemini-x");
+  } finally {
+    rmSync(r, { recursive: true, force: true });
+  }
 });
 
 test("registry models stay out of keys.json round-trips (no modelPrices resurrection)", () => {
