@@ -60,18 +60,21 @@ codar providers   # 内置预设 + 已配置 key + 在用模型一览
 ```
 
 内置预设：`openai`、`anthropic`、`deepseek`、`zai-coding-cn`、
-`minimax-anthropic`、`minimax-cn`、`groq`、`openrouter`——其他任何
-OpenAI 兼容中转也能用（自定义名字 + `--base-url` 即可）。Web 工作站的
-建 Bot 表单与 Bot 详情页提供同一份数据的 provider/模型下拉
+`minimax-anthropic`、`minimax-cn`、`groq`、`openrouter`——每家自带默认
+端点。其他任何 OpenAI 兼容中转也能用（自定义名字 + `--base-url` 即可）。
+Web 工作站的建 Bot 表单与 Bot 详情页提供同一份数据的 provider/模型下拉
 （`GET /api/providers`）；未知名的 provider 与模型 id 仍可自由填写。
 
-或直接编辑 `~/.codar-bot/keys.json`：
+要追加 key 或把 provider 指到自定义端点，编辑 `~/.codar-bot/keys.json`
+——`baseUrl` 覆盖预设端点，`api` 指定协议
+（`openai-completions` | `anthropic-messages` | …）：
 
 ```json
 {
   "providers": {
     "zai-coding-cn": { "apiKey": "你的 key" },
-    "minimax-anthropic": { "apiKey": "你的 key" }
+    "minimax-anthropic": { "apiKey": "你的 key" },
+    "myrelay": { "apiKey": "你的 key", "baseUrl": "https://your-relay.example/v1", "api": "openai-completions" }
   }
 }
 ```

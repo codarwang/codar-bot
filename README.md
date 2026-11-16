@@ -60,19 +60,22 @@ codar providers   # built-in presets + your configured keys + models in use
 ```
 
 Built-in presets: `openai`, `anthropic`, `deepseek`, `zai-coding-cn`,
-`minimax-anthropic`, `minimax-cn`, `groq`, `openrouter` — any other
-OpenAI-compatible relay works too (just name it and give a `--base-url`).
-The web workstation's bot form and bot detail page offer provider/model
-dropdowns fed by the same list (`GET /api/providers`); unknown providers and
-model ids stay free-text.
+`minimax-anthropic`, `minimax-cn`, `groq`, `openrouter` — each ships a
+default endpoint. Any other OpenAI-compatible relay works too (just name it
+and give a `--base-url`). The web workstation's bot form and bot detail
+page offer provider/model dropdowns fed by the same list
+(`GET /api/providers`); unknown providers and model ids stay free-text.
 
-Or edit `~/.codar-bot/keys.json`:
+To add more keys or point a provider at a custom endpoint, edit
+`~/.codar-bot/keys.json` — `baseUrl` overrides the preset's endpoint, `api`
+selects the protocol (`openai-completions` | `anthropic-messages` | …):
 
 ```json
 {
   "providers": {
     "zai-coding-cn": { "apiKey": "your-key" },
-    "minimax-anthropic": { "apiKey": "your-key" }
+    "minimax-anthropic": { "apiKey": "your-key" },
+    "myrelay": { "apiKey": "your-key", "baseUrl": "https://your-relay.example/v1", "api": "openai-completions" }
   }
 }
 ```

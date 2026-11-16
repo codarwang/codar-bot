@@ -68,6 +68,10 @@
       <p>
         API keys are written to your local data directory during <span class="mono">init</span> and passed to bots
         as environment variables at spawn time. They are never sent anywhere except your chosen provider.
+        Every preset ships a default endpoint; to point a provider at a custom relay, add a
+        <span class="mono">baseUrl</span> (and <span class="mono">api</span> protocol) to its entry in
+        <span class="mono">~/.codar-bot/keys.json</span> —
+        e.g. <span class="mono">"myrelay": { "apiKey": "…", "baseUrl": "https://your-relay.example/v1", "api": "openai-completions" }</span>.
       </p>
 
       <h2>Data directory</h2>
