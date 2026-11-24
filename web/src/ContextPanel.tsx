@@ -27,6 +27,8 @@ interface Props {
   onBack: () => void;
   onRefresh: () => Promise<void>;
   onBudgetChanged: () => Promise<void>;
+  /** M3-3.7: the detail editor ⚠ jumps to the Settings overlay. */
+  onOpenSettings: () => void;
 }
 
 const SLOT_LABEL: Record<string, string> = {
@@ -238,7 +240,7 @@ function BotDetail(props: Props & { botId: string }): JSX.Element {
         <h3>{t.modelSection}</h3>
         <div className="form-row model-picker">
           <ModelPicker t={t} providers={providers} provider={draftProvider} modelId={draftModelId}
-            onProvider={setDraftProvider} onModelId={setDraftModelId} />
+            onProvider={setDraftProvider} onModelId={setDraftModelId} onOpenSettings={props.onOpenSettings} />
           <select aria-label={t.effortLabel} value={draftThinking} onChange={(e) => setDraftThinking(e.target.value)}>
             {THINKING_LEVELS.map((lv) => <option key={lv} value={lv}>{lv}</option>)}
           </select>

@@ -24,6 +24,8 @@ interface Props {
   onSelectRoom: (id: string) => void;
   onSelectBot: (id: string) => void;
   onRefresh: () => Promise<void>;
+  /** M3-3.7: the create-form ⚠ jumps to the Settings overlay (key entry). */
+  onOpenSettings: () => void;
 }
 
 const AVATAR_COLORS = ["#6c8eff", "#41b883", "#e29a3a", "#c65cc4", "#3ab0c9", "#d4615f"];
@@ -179,6 +181,7 @@ export function Roster(p: Props): JSX.Element {
             await p.onRefresh();
           }}
           onCancel={() => setCreating(null)}
+          onOpenSettings={p.onOpenSettings}
         />
       )}
     </aside>
@@ -249,11 +252,14 @@ function BotForm(props: {
   setError: (e: string | null) => void;
   onDone: () => Promise<void>;
   onCancel: () => void;
+  onOpenSettings: () => void;
 }): JSX.Element {
   const { t } = props;
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
-  const [workDir, setWorkDir] = useState("");
+  // Prefill the chief's workDir too (M3-3.7): workers on the same project
+  // start from the same tree — non-IT users should not invent paths.
+  const [workDir, setWorkDir] = useState(props.overview?.bots.find((b) => b.chief)?.workDir ?? "");
   // Prefill from the CHIEF's model (the user's own init choice — the natural
   // team default), never a hardcoded developer provider; no chief → empty.
   // thinkingLevel follows the chief too — the API's no-model path copies the
@@ -295,7 +301,7 @@ function BotForm(props: {
       <input placeholder={t.workDirLabel} value={workDir} onChange={(e) => setWorkDir(e.target.value)} />
       <div className="form-row model-picker">
         <ModelPicker t={t} providers={providers} provider={provider} modelId={modelId}
-          onProvider={setProvider} onModelId={setModelId} />
+          onProvider={setProvider} onModelId={setModelId} onOpenSettings={props.onOpenSettings} />
         <select aria-label={t.thinkingLabel} value={thinking} onChange={(e) => setThinking(e.target.value)}>
           {THINKING_LEVELS.map((lv) => <option key={lv} value={lv}>{lv}</option>)}
         </select>

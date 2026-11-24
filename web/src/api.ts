@@ -8,6 +8,7 @@ export interface BotRecord {
   role: string;
   chief: boolean;
   model: { provider: string; modelId: string; thinkingLevel: string };
+  workDir: string;
   sandbox: { mode: string };
   sessionPath: string | null;
   budget: Budget4;
@@ -92,6 +93,60 @@ export interface ProviderInfo {
   models: ProviderModelInfo[];
 }
 export type ProvidersResponse = { providers: ProviderInfo[] };
+
+/** Entry surface (GET /api/settings/providers, M3-3.7): the discovery report
+ *  plus masked key / per-bot in-use lists — never key material. */
+export interface ProviderSettingsUse {
+  kind: "bot" | "review";
+  id: string | null;
+  name: string;
+  modelId: string;
+}
+export interface ProviderSettingsEntry {
+  id: string;
+  label: string;
+  preset: boolean;
+  api?: string;
+  baseUrl?: string;
+  baseUrlCustom: boolean;
+  apiCustom: boolean;
+  configured: boolean;
+  keyPresent: boolean;
+  maskedKey: string | null;
+  entryPresent: boolean;
+  models: ProviderModelInfo[];
+  inUse: ProviderSettingsUse[];
+}
+export type ProviderSettingsResponse = { providers: ProviderSettingsEntry[] };
+export type ProviderPatch = { apiKey?: string | null; baseUrl?: string | null; api?: string | null };
+export type ProviderTestResult =
+  | { ok: true; models: string[] }
+  | { ok: false; error: { code: "auth" | "not_found" | "timeout" | "network"; message: string } };
+
+export const getSettingsProviders = (): Promise<ProviderSettingsResponse> =>
+  jsonFetch<ProviderSettingsResponse>("/api/settings/providers");
+
+export const putProvider = (id: string, patch: ProviderPatch): Promise<ProviderSettingsResponse> =>
+  jsonFetch<ProviderSettingsResponse>(`/api/settings/providers/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+
+export const deleteProvider = (id: string): Promise<ProviderSettingsResponse> =>
+  jsonFetch<ProviderSettingsResponse>(`/api/settings/providers/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+
+export const testProvider = (id: string): Promise<ProviderTestResult> =>
+  jsonFetch<ProviderTestResult>(`/api/settings/providers/${encodeURIComponent(id)}/test`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    // Body intentionally empty: the endpoint composes stored entry ?? preset
+    // values ONLY (R1-P1 — a body-supplied baseUrl must never pair with the
+    // stored key).
+    body: JSON.stringify({}),
+  });
 
 /** pi ThinkingLevel (7 values). One definition for both the create form and
  *  the detail editor — mirrors the host's THINKING_LEVELS validation. */

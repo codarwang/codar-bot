@@ -19,6 +19,8 @@ import {
 import { Roster } from "./Roster";
 import { Chat } from "./Chat";
 import { ContextPanel } from "./ContextPanel";
+import { SettingsOverlay } from "./SettingsOverlay";
+import { OnboardingWizard } from "./OnboardingWizard";
 
 export interface WorkView extends WorkRecord {
   oneLiner?: string;
@@ -59,6 +61,7 @@ export function App(): JSX.Element {
   const [approvalErrors, setApprovalErrors] = useState<Record<string, string>>({});
   const [ctxOpen, setCtxOpen] = useState(true);
   const [rosterOpen, setRosterOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const lastSeqRef = useRef(0);
 
@@ -434,8 +437,15 @@ export function App(): JSX.Element {
     setDrafts((prev) => ({ ...prev, [roomRef.current]: text }));
   }, []);
 
+  // M3-3.7: fresh install (no bots at all) → the §3.2 bootstrap wizard; the
+  // settings overlay stays reachable above it (the ⚠ in the pickers jumps
+  // there) but is not stacked underneath it.
+  const needsSetup = overview !== null && overview.bots.length === 0;
+
   return (
     <div className={`app ${rosterOpen ? "" : "roster-closed"} ${ctxOpen ? "" : "ctx-closed"}`}>
+      {settingsOpen && <SettingsOverlay t={t} onClose={() => setSettingsOpen(false)} />}
+      {needsSetup && !settingsOpen && <OnboardingWizard t={t} onDone={refreshOverview} />}
       <header className="topbar">
         <button className="ghost" onClick={() => setRosterOpen((v) => !v)} aria-label="roster">☰</button>
         <div className="brand">
@@ -446,6 +456,7 @@ export function App(): JSX.Element {
           <span className={`dot dot-${sse === "live" ? "live" : "off"}`} />
           {sse === "live" ? t.connected : t.reconnecting}
         </div>
+        <button className="ghost" title={t.settings} onClick={() => setSettingsOpen((v) => !v)}>⚙ {t.settings}</button>
         <button className="ghost" onClick={() => setCtxOpen((v) => !v)} aria-label="context">▤</button>
         <button className="lang" onClick={toggleLang}>{t.langToggle}</button>
       </header>
@@ -464,6 +475,7 @@ export function App(): JSX.Element {
           onSelectRoom={setRoomId}
           onSelectBot={setDetailBotId}
           onRefresh={refreshOverview}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
         <Chat
           t={t}
@@ -502,6 +514,7 @@ export function App(): JSX.Element {
           onBack={() => setDetailBotId(null)}
           onRefresh={refreshOverview}
           onBudgetChanged={refreshBudget}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
       </div>
     </div>

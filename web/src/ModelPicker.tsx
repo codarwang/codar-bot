@@ -31,6 +31,10 @@ interface Props {
   modelId: string;
   onProvider: (provider: string) => void;
   onModelId: (modelId: string) => void;
+  /** M3-3.7: when given, the keyless-provider ⚠ becomes a jump into the
+   *  Settings overlay (carrying the provider id — the settings page opens
+   *  that card's prefilled edit form), closing the dead end. */
+  onOpenSettings?: (providerId: string) => void;
 }
 
 export function ModelPicker(props: Props): JSX.Element {
@@ -117,7 +121,13 @@ export function ModelPicker(props: Props): JSX.Element {
         </select>
       )}
       {entry !== undefined && !entry.configured && (
-        <div className="provider-warn dim" title={t.providerNoKey}>⚠ {t.providerNoKey}</div>
+        props.onOpenSettings !== undefined ? (
+          <button type="button" className="provider-warn-btn" title={t.providerNoKey} onClick={() => props.onOpenSettings?.(entry.id)}>
+            ⚠ {t.providerFixInSettings}
+          </button>
+        ) : (
+          <div className="provider-warn dim" title={t.providerNoKey}>⚠ {t.providerNoKey}</div>
+        )
       )}
       {modelCustom || (props.modelId !== "" && !modelKnown) || models.length === 0 ? (
         <input placeholder={t.modelIdLabel} value={props.modelId} onChange={(e) => customModelChanged(e.target.value)} />

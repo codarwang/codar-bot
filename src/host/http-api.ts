@@ -12,7 +12,17 @@ import type { BotManager } from "./bot-manager.js";
 import { mkdirSync, readFileSync } from "node:fs";
 import { resolve, relative, isAbsolute, sep, join } from "node:path";
 import { ApiError } from "./http-error.js";
-import { loadKeys, providersReport, SAFE_ID, THINKING_LEVELS } from "./provider-config.js";
+import { loadKeys, PROVIDER_PRESETS, providersReport, SAFE_ID, THINKING_LEVELS } from "./provider-config.js";
+import {
+  ProviderInputError,
+  providerSettingsReport,
+  removeProvider,
+  testProvider,
+  upsertProvider,
+  type ProviderSettingsEntry,
+  type ProviderTestResult,
+  type ProviderUpsert,
+} from "./provider-settings.js";
 
 /** UTC calendar-month start as a ledger `hour` string (§6.1a window). */
 function monthStartHour(): string {
@@ -55,6 +65,8 @@ export interface ApiDeps {
   auditQuery: AuditQuery;
   /** keys.json path — re-read per request so `codar init` needs no restart. */
   keysPath: string;
+  /** audit.jsonl path — the entry surface appends key.set/remove lines. */
+  auditPath: string;
   /** Built web UI dir (web/dist); absent ⇒ API-only mode. */
   webDir?: string;
 }
@@ -182,14 +194,38 @@ export class HttpApi {
     // every /api/* request including SSE requires it. Static assets are
     // exempt — the ?token= bootstrap page must load without auth.
     const token = process.env.CODAR_API_TOKEN;
-    if (token !== undefined && token !== "" && parts[0] === "api") {
+    const auth = req.headers.authorization;
+    const query = url.searchParams.get("token");
+    const tokenOk =
+      token !== undefined && token !== "" &&
+      (auth === `Bearer ${token}` || query === token);
+    if (token !== undefined && token !== "" && parts[0] === "api" && !tokenOk) {
       // M3.4b: Authorization header OR ?token= query (EventSource cannot
       // send headers — the SSE client falls back to the query param).
-      const auth = req.headers.authorization;
-      const query = url.searchParams.get("token");
-      if (auth !== `Bearer ${token}` && query !== token) {
-        res.writeHead(401, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "unauthorized" }));
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    // Drive-by CSRF guard (M3-3.7 R1 P1-1 amplification): a browser page can
+    // POST to this loopback API cross-origin; the request always carries an
+    // Origin that will not match our Host. Non-browser clients (curl, tests,
+    // the CLI) send no Origin at all and pass; our own UI is same-origin and
+    // passes. Mutating verbs only — SSE/static GETs are unaffected. Skipped
+    // for Bearer-authenticated calls (R2-F3): a caller holding the token is
+    // not a drive-by, and a reverse proxy that rewrites Host must not have
+    // its legitimate UI bricked by a host mismatch the token already vouches
+    // for (tokenless local deployments keep the full guard).
+    const origin = req.headers.origin;
+    if (!tokenOk && origin !== undefined && req.method !== "GET" && req.method !== "HEAD") {
+      let sameOrigin = false;
+      try {
+        sameOrigin = new URL(origin).host === (req.headers.host ?? "");
+      } catch {
+        sameOrigin = false; // "null" origin (sandboxed frame) — reject
+      }
+      if (!sameOrigin) {
+        res.writeHead(403, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "cross-origin write rejected" }));
         return;
       }
     }
@@ -247,6 +283,100 @@ export class HttpApi {
       return;
     }
 
+    // M3-3.7 key entry surface (§3.3 录入面, v0.14) — mounted BEFORE the
+    // >4-segment guard because /settings/providers/:id/test runs 5 deep.
+    // GET echoes masked keys only; PUT/DELETE merge-write keys.json (atomic,
+    // 0600) + append one audit line each; POST test fires one {base}/models
+    // request, no probing.
+    if (resource === "settings") {
+      const settingsReport = (): { providers: ProviderSettingsEntry[] } =>
+        ({ providers: providerSettingsReport(loadKeys(this.deps.keysPath), this.deps.store.state.bots, this.deps.store.state.reviewModel ?? null) });
+      if (req.method === "GET" && id === undefined && parts.length === 2) {
+        this.send(res, 200, { reviewModel: this.deps.store.state.reviewModel });
+        return;
+      }
+      if (req.method === "GET" && id === "providers" && action === undefined && parts.length === 3) {
+        this.send(res, 200, settingsReport());
+        return;
+      }
+      if (req.method === "PUT" && id === "providers" && action !== undefined && parts.length === 4) {
+        if (!SAFE_ID.test(action)) throw new ApiError(400, `invalid provider id "${action}" (use [A-Za-z0-9._-])`);
+        const body = (await this.readJson(req)) as Record<string, unknown>;
+        const patch: ProviderUpsert = {};
+        for (const field of ["apiKey", "baseUrl", "api"] as const) {
+          const v = body[field];
+          if (v === undefined) continue;
+          if (v !== null && typeof v !== "string") throw new ApiError(400, `${field} must be a string or null`);
+          patch[field] = v as string | null;
+        }
+        if (Object.keys(patch).length === 0) {
+          throw new ApiError(400, "nothing to update (fields: apiKey, baseUrl, api; null clears a field)");
+        }
+        try {
+          upsertProvider(this.deps.keysPath, action, patch, this.deps.auditPath);
+        } catch (e) {
+          // Validation failures carry their status; fs/IO failures are NOT
+          // client errors — a 400 for a failed disk write would read as
+          // "your input was wrong" (R1 P3-5).
+          if (e instanceof ProviderInputError) throw new ApiError(e.status, String(e.message).slice(0, 200));
+          throw e;
+        }
+        this.send(res, 200, { ok: true, ...settingsReport() });
+        return;
+      }
+      if (req.method === "DELETE" && id === "providers" && action !== undefined && parts.length === 4) {
+        if (!SAFE_ID.test(action)) throw new ApiError(400, `invalid provider id "${action}" (use [A-Za-z0-9._-])`);
+        // In-use guard (§3.3): removing a provider a bot or the review model
+        // still points at would strand them at next start — name the bots
+        // instead (MilletCode's "never write a mismatched config" guard,
+        // applied as "never delete an in-use one").
+        const users = [
+          ...this.deps.store.state.bots.filter((b) => b.model.provider === action).map((b) => b.name),
+          ...(this.deps.store.state.reviewModel?.provider === action ? ["memory review"] : []),
+        ];
+        if (users.length > 0) {
+          throw new ApiError(409, `provider "${action}" is in use by ${users.join(", ")} — switch them to another model first`);
+        }
+        try {
+          removeProvider(this.deps.keysPath, action, this.deps.auditPath);
+        } catch (e) {
+          if (e instanceof ProviderInputError) throw new ApiError(e.status, String(e.message).slice(0, 200));
+          throw e;
+        }
+        this.send(res, 200, { ok: true, ...settingsReport() });
+        return;
+      }
+      if (req.method === "POST" && id === "providers" && action !== undefined && parts.length === 5 && parts[4] === "test") {
+        // R1 P1-1: NO request-body overrides. A caller-supplied baseUrl paired
+        // with the STORED key (body omitting apiKey) would let any local page
+        // aim our long-lived credential at their host via a no-cors drive-by
+        // POST — the one endpoint that could move a key off the machine. The
+        // UI tests after saving (both callers send no meaningful body), so
+        // composition is entry ?? preset ONLY, and both are https-guaranteed
+        // (PUT enforces https; presets ship https). typeof guards keep a
+        // hand-mangled keys.json field from crashing the route (R1 P2-1).
+        if (!SAFE_ID.test(action)) throw new ApiError(400, `invalid provider id "${action}" (use [A-Za-z0-9._-])`);
+        const keys = loadKeys(this.deps.keysPath);
+        const entry = Object.hasOwn(keys.providers, action) ? keys.providers[action] : undefined;
+        const preset = Object.hasOwn(PROVIDER_PRESETS, action) ? PROVIDER_PRESETS[action] : undefined;
+        const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
+        const result: ProviderTestResult = await testProvider({
+          api: str(entry?.api) ?? preset?.api,
+          baseUrl: str(entry?.baseUrl) ?? preset?.baseUrl,
+          apiKey: str(entry?.apiKey),
+        });
+        this.send(res, 200, result);
+        return;
+      }
+      if (req.method === "PUT" && id === "review-model" && action === undefined && parts.length === 3) {
+        const body = (await this.readJson(req)) as Record<string, unknown>;
+        const model = validateModel(body);
+        this.deps.store.setReviewModel(model);
+        this.send(res, 200, { reviewModel: model });
+        return;
+      }
+    }
+
     if (parts.length > 4) {
       this.send(res, 404, { error: "no route (too many path segments)" });
       return;
@@ -266,7 +396,16 @@ export class HttpApi {
         const body = (await this.readJson(req)) as Partial<BotRecord>;
         const name = String(body.name ?? "").trim();
         if (name.length === 0) throw new ApiError(400, "name required");
-        const workDir = String(body.workDir ?? "");
+        let workDir = String(body.workDir ?? "");
+        if (workDir === "" && body.chief === true) {
+          // §3.2 bootstrap via the Web wizard (M3-3.7): a chief created by
+          // the onboarding flow gets init's default workdir — the non-IT
+          // path must not ask for absolute paths. An EXPLICIT workDir still
+          // validates below; workers keep the requirement (their dirs are
+          // per-role choices, not bootstrap mechanics).
+          workDir = join(this.deps.store.statePath, "..", "work");
+          mkdirSync(workDir, { recursive: true });
+        }
         if (!workDir.startsWith("/")) {
           throw new ApiError(400, "workDir must be an absolute path");
         }
@@ -681,19 +820,6 @@ export class HttpApi {
           throw new ApiError(400, String(e).slice(0, 200));
         }
         this.send(res, 200, { ok: true });
-        return;
-      }
-    }
-    if (resource === "settings") {
-      if (req.method === "GET" && id === undefined) {
-        this.send(res, 200, { reviewModel: this.deps.store.state.reviewModel });
-        return;
-      }
-      if (req.method === "PUT" && id === "review-model") {
-        const body = (await this.readJson(req)) as Record<string, unknown>;
-        const model = validateModel(body);
-        this.deps.store.setReviewModel(model);
-        this.send(res, 200, { reviewModel: model });
         return;
       }
     }

@@ -66,8 +66,15 @@ and give a `--base-url`). The web workstation's bot form and bot detail
 page offer provider/model dropdowns fed by the same list
 (`GET /api/providers`); unknown providers and model ids stay free-text.
 
+**No-terminal path:** the web UI covers the whole setup — a first-start
+wizard (pick provider → paste key → test → Chief) runs when the team is
+empty, and the ⚙ Settings panel adds/changes/removes keys and endpoints,
+tests the connection (one `GET {base}/models` request), and sets the
+memory-review model. Keys saved there apply to bots at their next start.
+
 To add more keys or point a provider at a custom endpoint, edit
-`~/.codar-bot/keys.json` — `baseUrl` overrides the preset's endpoint, `api`
+`~/.codar-bot/keys.json` (or use the Settings panel — same file) —
+`baseUrl` overrides the preset's endpoint, `api`
 selects the protocol (`openai-completions` | `anthropic-messages` | …):
 
 ```json

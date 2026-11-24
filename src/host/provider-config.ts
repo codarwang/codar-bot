@@ -335,6 +335,12 @@ export function providersReport(
     const configured =
       (entry !== undefined && typeof entry.apiKey === "string" && entry.apiKey !== "") ||
       (entry !== undefined && typeof entry.baseUrl === "string" && entry.baseUrl !== ""); // keyless relay with explicit baseUrl is deliberate (empty string is not)
+    // Effective values must pass the same typeof gate: a hand-edited
+    // "baseUrl": 999 must read as UNSET (preset default / honest omission),
+    // never echo into the report or ride into models.json via spawn (R1
+    // P2-1 — the entry surface inherited its values from here).
+    const effApi = typeof entry?.api === "string" && entry.api !== "" ? entry.api : preset?.api;
+    const effBaseUrl = typeof entry?.baseUrl === "string" && entry.baseUrl !== "" ? entry.baseUrl : preset?.baseUrl;
     const models: ProviderReportEntry["models"] = [];
     const seen = new Set<string>();
     const push = (modelId: string, name?: string, badge?: string): void => {
@@ -352,8 +358,8 @@ export function providersReport(
       label: preset?.label ?? id,
       configured,
       preset: preset !== undefined,
-      ...(entry?.api !== undefined || preset !== undefined ? { api: entry?.api ?? preset!.api } : {}),
-      ...(entry?.baseUrl !== undefined || preset?.baseUrl !== undefined ? { baseUrl: entry?.baseUrl ?? preset!.baseUrl } : {}),
+      ...(effApi !== undefined ? { api: effApi } : {}),
+      ...(effBaseUrl !== undefined ? { baseUrl: effBaseUrl } : {}),
       models,
     });
   }
